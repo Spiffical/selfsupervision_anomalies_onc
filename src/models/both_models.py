@@ -17,16 +17,18 @@ from timm.models.layers import to_2tuple
 from random import randrange
 from matplotlib import pyplot as plt
 import random
-sys.path.append('/home/ss6928/ssast/Vim')
-sys.path.append('/home/ss6928/ssast/Vim/vim')
-sys.path.append('/home/ss6928/ssast/Vim/vim/mamba-1p1p1')
+sys.path.append('/home/sbialek/ONC/ml/Vim')
+sys.path.append('/home/sbialek/ONC/ml/Vim/vim')
+sys.path.append('/home/sbialek/ONC/ml/Vim/mamba-1p1p1')
 
 
 try:
     from models_mamba import VisionMamba
-    from mamba_ssm.ops.triton.layernorm import RMSNorm, layer_norm_fn, rms_norm_fn
+    from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn
+    print("VisionMamba and RMSNorm imported successfully")
     
 except ImportError:
+    print("Failed to import VisionMamba or RMSNorm")
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
     
     
@@ -60,6 +62,27 @@ def get_sinusoid_encoding(n_position, d_hid):
 
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
+class VisionRotaryEmbeddingFast(nn.Module):
+    def __init__(self, dim, pt_seq_len=16, ft_seq_len=None):
+        super().__init__()
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.pt_seq_len = pt_seq_len
+        self.ft_seq_len = ft_seq_len if ft_seq_len is not None else pt_seq_len
+        
+        t = torch.arange(self.ft_seq_len).type_as(self.inv_freq)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos()[:, None, None, :])
+        self.register_buffer("sin_cached", emb.sin()[:, None, None, :])
+
+    def forward(self, x):
+        return x * self.cos_cached + self.rotate_half(x) * self.sin_cached
+
+    def rotate_half(self, x):
+        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+        return torch.cat((-x2, x1), dim=-1)
+
 class AMBAModel(nn.Module):
     def __init__(self, label_dim=527,
                  fshape=128, tshape=2, fstride=128, tstride=2,
@@ -80,28 +103,29 @@ class AMBAModel(nn.Module):
             if fstride != fshape or tstride != tshape:
                 raise ValueError('fstride != fshape or tstride != tshape, they must be same at the pretraining stage, patch split overlapping is not supported.')
 
-            
+            # Update default config to match our spectrogram dimensions
             default_vision_mamba_config = {
-            'img_size': (128, 1024),
-            'patch_size': 16,
-            'stride': 8,
-            'embed_dim': 768,
-            'depth': 24,
-            'rms_norm': True,
-            'residual_in_fp32': True,
-            'fused_add_norm': True,
-            'final_pool_type': 'mean',
-            'if_abs_pos_embed': True,
-            'if_rope': False,
-            'if_rope_residual': False,
-            'bimamba_type': "v2",
-            'if_cls_token': True,
-            'if_devide_out': True,
-            'use_middle_cls_token': True,
-        }
+                'img_size': (512, 512),  # Changed to match our input dimensions
+                'patch_size': 16,
+                'stride': 16,
+                'embed_dim': 768,
+                'depth': 24,
+                'rms_norm': False,
+                'residual_in_fp32': False,
+                'fused_add_norm': False,
+                'final_pool_type': 'none',
+                'if_abs_pos_embed': True,
+                'if_rope': False,
+                'if_rope_residual': False,
+                'if_cls_token': True,
+                'if_devide_out': True,
+                'use_middle_cls_token': False,
+            }
             
-            
-            combined_vision_mamba_config = {**default_vision_mamba_config, **vision_mamba_config}
+            combined_vision_mamba_config = {**default_vision_mamba_config, **(vision_mamba_config or {})}
+            # Remove 'bimamba_type' if present to avoid compatibility issues with newer mamba
+            if 'bimamba_type' in combined_vision_mamba_config:
+                del combined_vision_mamba_config['bimamba_type']
             # Replace self.v with MambaBlocksSequential
             print("combined_vision_mamba_config",combined_vision_mamba_config)
             self.v = VisionMamba(**combined_vision_mamba_config)
@@ -123,7 +147,7 @@ class AMBAModel(nn.Module):
             self.cpredlayer = nn.Sequential(nn.Linear(self.original_embedding_dim, self.original_embedding_dim), nn.ReLU(), nn.Linear(self.original_embedding_dim, 256))
             # masked patch reconstruction (generative objective) layer
             self.gpredlayer = nn.Sequential(nn.Linear(self.original_embedding_dim, self.original_embedding_dim), nn.ReLU(), nn.Linear(self.original_embedding_dim, 256))
-            self.unfold = torch.nn.Unfold(kernel_size=(fshape, tshape), stride=(fstride, tstride))
+            self.unfold = nn.Unfold(kernel_size=(self.fshape, self.tshape), stride=(self.fstride, self.tstride), padding=(self.fshape//2, self.tshape//2))
 
             # we use learnable mask embedding (follow the BEIT paper), but using a fixed mask embedding (e.g., 0) leads to same performance.
             self.mask_embed = nn.Parameter(torch.zeros([1, 1, self.original_embedding_dim]))
@@ -187,6 +211,9 @@ class AMBAModel(nn.Module):
             
             
             combined_vision_mamba_config = {**default_vision_mamba_config, **vision_mamba_config}
+            # Remove 'bimamba_type' if present to avoid compatibility issues with newer mamba
+            if 'bimamba_type' in combined_vision_mamba_config:
+                del combined_vision_mamba_config['bimamba_type']
             # Replace self.v with MambaBlocksSequential
             print("combined_vision_mamba_config",combined_vision_mamba_config)
 
@@ -697,10 +724,30 @@ class AMBAModel(nn.Module):
         
      
     def forward(self, x, task, cluster=True, mask_patch=400):
-        # expect input x = (batch_size, time_frame_num, frequency_bins), e.g., (12, 1024, 128)
-        x = x.unsqueeze(1)
-        x = x.transpose(2, 3)
-
+        # Handle different input formats
+        if x.dim() == 3:
+            # Input is (B, time, freq); add channel dimension
+            x = x.unsqueeze(1)
+        elif x.dim() == 4:
+            # Input is (B, H, W, C); permute to (B, C, H, W)
+            if x.shape[-1] == 1:
+                x = x.permute(0, 3, 1, 2)
+        elif x.dim() == 5:
+            # Input is (B, 1, time, freq, 1); remove the extra trailing dimension
+            x = x.squeeze(-1)
+        
+        # For finetuning tasks, we need to transpose to (B, 1, freq, time).
+        # For pretraining tasks, keep the original (B, 1, time, freq) orientation
+        if task in ['ft_avgtok', 'ft_avgtok_1sec', 'ft_cls']:
+            x = x.transpose(2, 3)
+        
+        # Ensure input dimensions match model's expected size
+        B, C, T, F = x.shape
+        if T != 512 or F != 512:
+            raise ValueError(f'Input shape {x.shape} does not match expected shape (B, 1, 512, 512)')
+        if C != 1:
+            raise ValueError(f'Expected 1 channel but got {C} channels')
+        
         # finetuning (ft), use the mean of all token (patch) output as clip-level representation.
         # this is default for SSAMBA fine-tuning as during pretraining, supervision signal is given to each token, not the [cls] token
         if task == 'ft_avgtok':
@@ -781,7 +828,7 @@ class ASTModel(nn.Module):
             self.cpredlayer = nn.Sequential(nn.Linear(self.original_embedding_dim, self.original_embedding_dim), nn.ReLU(), nn.Linear(self.original_embedding_dim, 256))
             # masked patch reconstruction (generative objective) layer
             self.gpredlayer = nn.Sequential(nn.Linear(self.original_embedding_dim, self.original_embedding_dim), nn.ReLU(), nn.Linear(self.original_embedding_dim, 256))
-            self.unfold = torch.nn.Unfold(kernel_size=(fshape, tshape), stride=(fstride, tstride))
+            self.unfold = torch.nn.Unfold(kernel_size=(fshape, tshape), stride=(fstride, tstride), padding=(fshape//2, tshape//2))
 
             # we use learnable mask embedding (follow the BEIT paper), but using a fixed mask embedding (e.g., 0) leads to same performance.
             self.mask_embed = nn.Parameter(torch.zeros([1, 1, self.original_embedding_dim]))
@@ -1020,17 +1067,12 @@ class ASTModel(nn.Module):
 
         # pass through the Transformer layers
         cls_tokens = self.v.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        if self.cls_token_num == 2: 
-            dist_token = self.v.dist_token.expand(B, -1, -1)
-            x = torch.cat((cls_tokens, dist_token, x), dim=1)
-        else:
-            x = torch.cat((cls_tokens, x), dim=1)
+        #dist_token = self.v.dist_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.v.pos_embed
         x = self.v.pos_drop(x)
-        #print("x before blk.shape",x.shape)
         for blk in self.v.blocks:
             x = blk(x)
-            #print("blk(x).shape",x.shape)
         x = self.v.norm(x)
 
         # prediction of the masked patch
@@ -1110,11 +1152,8 @@ class ASTModel(nn.Module):
 
         # go through the Transformer layers
         cls_tokens = self.v.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        if self.cls_token_num == 2: 
-            dist_token = self.v.dist_token.expand(B, -1, -1)
-            x = torch.cat((cls_tokens, dist_token, x), dim=1)
-        else:
-            x = torch.cat((cls_tokens, x), dim=1)
+        #dist_token = self.v.dist_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.v.pos_embed
         x = self.v.pos_drop(x)
         for blk in self.v.blocks:
@@ -1135,12 +1174,32 @@ class ASTModel(nn.Module):
         return mse
 
     def forward(self, x, task, cluster=True, mask_patch=400):
-        # expect input x = (batch_size, time_frame_num, frequency_bins), e.g., (12, 1024, 128)
-        x = x.unsqueeze(1)
-        x = x.transpose(2, 3)
-
+        # Handle different input formats
+        if x.dim() == 3:
+            # Input is (B, time, freq); add channel dimension
+            x = x.unsqueeze(1)
+        elif x.dim() == 4:
+            # Input is (B, H, W, C); permute to (B, C, H, W)
+            if x.shape[-1] == 1:
+                x = x.permute(0, 3, 1, 2)
+        elif x.dim() == 5:
+            # Input is (B, 1, time, freq, 1); remove the extra trailing dimension
+            x = x.squeeze(-1)
+        
+        # For finetuning tasks, we need to transpose to (B, 1, freq, time).
+        # For pretraining tasks, keep the original (B, 1, time, freq) orientation
+        if task in ['ft_avgtok', 'ft_avgtok_1sec', 'ft_cls']:
+            x = x.transpose(2, 3)
+        
+        # Ensure input dimensions match model's expected size
+        B, C, T, F = x.shape
+        if T != 512 or F != 512:
+            raise ValueError(f'Input shape {x.shape} does not match expected shape (B, 1, 512, 512)')
+        if C != 1:
+            raise ValueError(f'Expected 1 channel but got {C} channels')
+        
         # finetuning (ft), use the mean of all token (patch) output as clip-level representation.
-        # this is default for SSAST fine-tuning as during pretraining, supervision signal is given to each token, not the [cls] token
+        # this is default for SSAMBA fine-tuning as during pretraining, supervision signal is given to each token, not the [cls] token
         if task == 'ft_avgtok':
             return self.finetuningavgtok(x)
         elif task == 'ft_avgtok_1sec':

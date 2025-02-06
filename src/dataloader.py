@@ -16,6 +16,8 @@ import torch.nn.functional
 from torch.utils.data import Dataset
 import random
 import logging
+import h5py
+from tqdm import tqdm
 
 logging.basicConfig(filename='audio_loading.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
 
@@ -219,3 +221,177 @@ class AudioDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+def calculate_dataset_stats(h5_path, batch_size=100):
+    """
+    Calculate mean and standard deviation of a HDF5 dataset using online/streaming calculations.
+    Uses Welford's online algorithm for numerical stability.
+    
+    Args:
+        h5_path: Path to HDF5 file
+        batch_size: Number of samples to process at once
+    
+    Returns:
+        mean: Mean value of the dataset
+        std: Standard deviation of the dataset
+    """
+    with h5py.File(h5_path, 'r') as f:
+        spectrograms = f['spectrograms']
+        total_samples = len(spectrograms)
+        
+        # Initialize variables for Welford's online algorithm
+        mean = 0
+        M2 = 0  # Sum of squared distances from mean
+        count = 0
+        
+        # Process data in batches
+        num_batches = (total_samples + batch_size - 1) // batch_size
+        with tqdm(total=num_batches, desc="Calculating dataset statistics") as pbar:
+            for i in range(0, total_samples, batch_size):
+                batch = spectrograms[i:min(i + batch_size, total_samples)][:]
+                batch_size_actual = batch.shape[0]
+                
+                # Flatten all dimensions except the batch dimension
+                batch_flat = batch.reshape(batch_size_actual, -1)
+                
+                # Update running statistics for each sample in the batch
+                for x in batch_flat:
+                    count += 1
+                    delta = x - mean
+                    mean += delta / count
+                    delta2 = x - mean
+                    M2 += delta * delta2
+                
+                pbar.update(1)
+        
+        # Calculate final statistics
+        std = np.sqrt(M2 / (count - 1))
+        
+        # Average across all dimensions
+        mean = float(np.mean(mean))
+        std = float(np.mean(std))
+        
+        print(f"\nDataset statistics:")
+        print(f"Mean: {mean:.6f}")
+        print(f"Std:  {std:.6f}")
+        
+        return mean, std
+
+class HDF5Dataset(Dataset):
+    def __init__(self, h5_path, split='train', train_ratio=0.8, val_ratio=0.1, seed=42, 
+                 target_length=1024, num_mel_bins=128, freqm=0, timem=0, 
+                 dataset_mean=None, dataset_std=None, mixup=0.0):
+        """
+        Args:
+            h5_path: Path to HDF5 file
+            split: One of ['train', 'val', 'test']
+            train_ratio: Ratio of data to use for training
+            val_ratio: Ratio of data to use for validation
+            seed: Random seed for reproducibility
+            target_length: Target length of spectrograms
+            num_mel_bins: Number of mel bins in spectrograms
+            freqm: Maximum number of frequency bands to mask
+            timem: Maximum number of time steps to mask
+            dataset_mean: Dataset mean for normalization (if None, will be calculated)
+            dataset_std: Dataset standard deviation for normalization (if None, will be calculated)
+            mixup: Mixup probability
+        """
+        super(HDF5Dataset, self).__init__()
+        
+        self.h5_path = h5_path
+        self.split = split
+        self.target_length = target_length
+        self.num_mel_bins = num_mel_bins
+        self.freqm = freqm
+        self.timem = timem
+        self.mixup = mixup
+        
+        # Calculate dataset statistics if not provided
+        if dataset_mean is None or dataset_std is None:
+            self.dataset_mean, self.dataset_std = calculate_dataset_stats(h5_path)
+        else:
+            self.dataset_mean = dataset_mean
+            self.dataset_std = dataset_std
+        
+        # Set random seed for reproducibility
+        random.seed(seed)
+        np.random.seed(seed)
+        
+        # Open HDF5 file
+        self.h5_file = h5py.File(h5_path, 'r')
+        
+        # Create indices for train/val/test splits
+        total_size = len(self.h5_file['spectrograms'])
+        indices = np.arange(total_size)
+        np.random.shuffle(indices)
+        
+        train_size = int(train_ratio * total_size)
+        val_size = int(val_ratio * total_size)
+        
+        if split == 'train':
+            self.indices = indices[:train_size]
+        elif split == 'val':
+            self.indices = indices[train_size:train_size + val_size]
+        else:  # test
+            self.indices = indices[train_size + val_size:]
+        
+        print(f"Using {len(self.indices)} samples for {split} split")
+
+    def __getitem__(self, index):
+        """
+        Returns a spectrogram and its labels
+        """
+        # Get actual index from split indices
+        actual_index = self.indices[index]
+        
+        # Get spectrogram and convert to torch tensor
+        fbank = torch.from_numpy(self.h5_file['spectrograms'][actual_index]).float()
+        
+        # Get labels
+        label_indices = torch.from_numpy(self.h5_file['labels'][actual_index]).float()
+        
+        # do mix-up for this sample (controlled by the given mixup rate)
+        if random.random() < self.mixup:
+            # sample another index from our split
+            mix_idx = random.randint(0, len(self.indices)-1)
+            actual_mix_idx = self.indices[mix_idx]
+            
+            # get the mixed spectrogram
+            mix_fbank = torch.from_numpy(self.h5_file['spectrograms'][actual_mix_idx]).float()
+            mix_label = torch.from_numpy(self.h5_file['labels'][actual_mix_idx]).float()
+            
+            # sample lambda from beta distribution
+            mix_lambda = np.random.beta(10, 10)
+            
+            # mix the spectrograms and labels
+            fbank = mix_lambda * fbank + (1 - mix_lambda) * mix_fbank
+            label_indices = mix_lambda * label_indices + (1 - mix_lambda) * mix_label
+
+        # SpecAug, not do for eval set
+        if self.split == 'train':
+            freqm = torchaudio.transforms.FrequencyMasking(self.freqm)
+            timem = torchaudio.transforms.TimeMasking(self.timem)
+            fbank = torch.transpose(fbank, 0, 1)
+            # this is just to satisfy new torchaudio version
+            fbank = fbank.unsqueeze(0)
+            if self.freqm != 0:
+                fbank = freqm(fbank)
+            if self.timem != 0:
+                fbank = timem(fbank)
+            # squeeze back
+            fbank = fbank.squeeze(0)
+            fbank = torch.transpose(fbank, 0, 1)
+
+        # normalize the input
+        fbank = (fbank - self.dataset_mean) / (self.dataset_std * 2)
+
+        # the output fbank shape is [time_frame_num, frequency_bins], e.g., [1024, 128]
+        return fbank, label_indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __del__(self):
+        """Clean up any open HDF5 file handles"""
+        if hasattr(self, 'h5_file') and self.h5_file is not None:
+            self.h5_file.close()

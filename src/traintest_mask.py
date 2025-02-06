@@ -162,8 +162,8 @@ def trainmask(audio_model, train_loader, test_loader, args):
                                 "Validation Accuracy": acc_eval,
                                 "Validation Loss": nce_eval,
                 })
-                if acc > best_acc:
-                    best_acc = acc
+                if acc_eval > best_acc:
+                    best_acc = acc_eval
                     torch.save(audio_model.state_dict(), "%s/models/best_audio_model.pth" % (exp_dir))
 
                 torch.save(audio_model.state_dict(), "%s/models/audio_model.%d.pth" % (exp_dir, equ_epoch))

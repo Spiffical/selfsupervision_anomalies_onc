@@ -1,0 +1,8 @@
+.venv/
+exp/
+src/__pycache__/
+**__pycache__/
+cuda-keyring_1.1-1_all.deb
+cuda-keyring_1.1-1_all.deb.1
+audio_loading.log
+wandb/

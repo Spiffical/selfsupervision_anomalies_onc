@@ -17,10 +17,6 @@ from timm.models.layers import to_2tuple
 from random import randrange
 from matplotlib import pyplot as plt
 import random
-sys.path.append('/home/sbialek/ONC/ml/Vim')
-sys.path.append('/home/sbialek/ONC/ml/Vim/vim')
-sys.path.append('/home/sbialek/ONC/ml/Vim/mamba-1p1p1')
-
 
 try:
     from models_mamba import VisionMamba

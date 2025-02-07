@@ -19,12 +19,17 @@ from matplotlib import pyplot as plt
 import random
 
 try:
-    from models_mamba import VisionMamba
-    from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn
-    print("VisionMamba and RMSNorm imported successfully")
-    
+    from .models_mamba import VisionMamba
+    print("VisionMamba imported successfully")
 except ImportError:
-    print("Failed to import VisionMamba or RMSNorm")
+    print("Failed to import VisionMamba")
+    VisionMamba = None
+
+try:
+    from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn
+    print("RMSNorm imported successfully")
+except ImportError:
+    print("Failed to import RMSNorm")
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
     
     

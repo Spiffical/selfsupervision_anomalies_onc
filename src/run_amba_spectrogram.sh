@@ -1,7 +1,13 @@
 #!/bin/bash
+# Load necessary modules
+module load python/3.10
 
+# Activate your virtual environment
+source ~/ssamba/myenv/bin/activate
 set -x
 export TORCH_HOME=../../pretrained_models
+export PYTHONPATH=$PYTHONPATH:/home/merileo/ssamba
+
 mkdir -p exp
 
 # Dataset parameters
@@ -56,7 +62,7 @@ use_middle_cls_token='false'
 
 # Training hyperparameters
 bal=none
-batch_size=16
+batch_size=6
 lr=1e-4
 lr_patience=2
 epoch=30
@@ -68,9 +74,9 @@ mixup=0
 exp_dir=./exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${task}-${dataset}
 
 # Run the training script
-python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
+python -W ignore /home/merileo/ssamba/src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
 --dataset ${dataset} \
---data-train /home/sbialek/ONC/ml/data/different_locations_incl_backgroundpipelinenormals_multilabel.h5 \
+--data-train /scratch/merileo/different_locations_incl_backgroundpipelinenormals_multilabel.h5 \
 --exp-dir $exp_dir \
 --n_class 2 \
 --train_ratio ${train_ratio} \

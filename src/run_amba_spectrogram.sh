@@ -3,12 +3,26 @@
 module load python/3.10
 
 # Activate your virtual environment
-source ~/ssamba/myenv/bin/activate
+source $HOME/ssamba/myenv/bin/activate
+
+# Load environment variables from .env file
+if [ -f ~/ssamba/.env ]; then
+    export $(grep -v '^#' ~/ssamba/.env | xargs)
+fi
+
+# Get the training data path from arguments (default if not provided)
+DATA_TRAIN_PATH=${1:-$SCRATCH/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
+TRAIN_RATIO=${2:-0.8}  # Default to 0.8 if not provided
+WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
+
 set -x
 export TORCH_HOME=../../pretrained_models
-export PYTHONPATH=$PYTHONPATH:/home/merileo/ssamba
+export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
+export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project
+export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project
 
-mkdir -p exp
+# Create experiment directory in scratch
+mkdir -p $SCRATCH/exp
 
 # Dataset parameters
 dataset=custom
@@ -18,7 +32,7 @@ target_length=512  # Your spectrogram time dimension
 num_mel_bins=512  # Your spectrogram frequency dimension
 
 # Dataset split parameters
-train_ratio=0.8
+train_ratio=$TRAIN_RATIO
 val_ratio=0.1
 split_seed=42
 
@@ -62,21 +76,22 @@ use_middle_cls_token='false'
 
 # Training hyperparameters
 bal=none
-batch_size=6
+batch_size=16
 lr=1e-4
 lr_patience=2
-epoch=30
+epoch=40
 freqm=0
 timem=0
 mixup=0
 
 # Experiment directory
-exp_dir=./exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${task}-${dataset}
+exp_dir=$SCRATCH/exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${task}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
 
 # Run the training script
-python -W ignore /home/merileo/ssamba/src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
+python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
+--wandb_group ${WANDB_GROUP} \
 --dataset ${dataset} \
---data-train /scratch/merileo/different_locations_incl_backgroundpipelinenormals_multilabel.h5 \
+--data-train "$DATA_TRAIN_PATH" \
 --exp-dir $exp_dir \
 --n_class 2 \
 --train_ratio ${train_ratio} \
@@ -87,7 +102,7 @@ python -W ignore /home/merileo/ssamba/src/run_amba_spectrogram.py --use_wandb --
 --tstride $tstride --fstride $fstride --fshape ${fshape} --tshape ${tshape} \
 --target_length ${target_length} --num_mel_bins ${num_mel_bins} \
 --model_size ${model_size} --mask_patch ${mask_patch} --n-print-steps 100 \
---task ${task} --lr_patience ${lr_patience} --epoch_iter 4000 \
+--task ${task} --lr_patience ${lr_patience} --epoch_iter 1 \
 --patch_size ${patch_size} --embed_dim ${embed_dim} --depth ${depth} \
 --rms_norm ${rms_norm} --residual_in_fp32 ${residual_in_fp32} \
 --fused_add_norm ${fused_add_norm} --if_rope ${if_rope} --if_rope_residual ${if_rope_residual} \

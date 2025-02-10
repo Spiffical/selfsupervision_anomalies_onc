@@ -325,15 +325,16 @@ class HDF5Dataset(Dataset):
         indices = np.arange(total_size)
         np.random.shuffle(indices)
         
-        train_size = int(train_ratio * total_size)
+        # train_size = int(train_ratio * total_size)
         val_size = int(val_ratio * total_size)
-        
-        if split == 'train':
-            self.indices = indices[:train_size]
-        elif split == 'val':
-            self.indices = indices[train_size:train_size + val_size]
+
+        if split == 'val':
+            self.indices = indices[:val_size]  # Fixed validation set from the first val_size samples
+        elif split == 'train':
+            self.indices = indices[val_size:val_size + int(train_ratio * total_size)]  # Training set follows
         else:  # test
-            self.indices = indices[train_size + val_size:]
+            self.indices = indices[val_size + int(train_ratio * total_size):]  # Remaining samples for test
+
         
         print(f"Using {len(self.indices)} samples for {split} split")
 

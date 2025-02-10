@@ -164,7 +164,8 @@ def trainmask(audio_model, train_loader, test_loader, args):
                 })
                 if acc_eval > best_acc:
                     best_acc = acc_eval
-                    torch.save(audio_model.state_dict(), "%s/models/best_audio_model.pth" % (exp_dir))
+                    torch.save(audio_model.state_dict(), f"{exp_dir}/models/best_audio_model.pth")
+                    torch.save(optimizer.state_dict(), f"{exp_dir}/models/optim_state.pth")  # Save optimizer state
 
                 torch.save(audio_model.state_dict(), "%s/models/audio_model.%d.pth" % (exp_dir, equ_epoch))
                 if len(train_loader.dataset) > 2e5:

@@ -87,21 +87,44 @@ parser.add_argument('--use_middle_cls_token', type=str, choices=['true', 'false'
 parser.add_argument("--task", type=str, default='ft_cls', help="pretraining or fine-tuning task", 
                     choices=["ft_avgtok", "ft_cls", "pretrain_mpc", "pretrain_mpg", "pretrain_joint"])
 parser.add_argument("--mask_patch", type=int, default=300, help="number of patches to mask")
-parser.add_argument("--epoch_iter", type=int, default=4000, help="iterations per epoch")
+parser.add_argument("--epoch_iter", type=float, default=0.5, 
+                    help="fraction of training set to process before saving (e.g., 0.25 = 25% of dataset)")
 
 # Wandb logging
 parser.add_argument('--use_wandb', action='store_true', help='Enable logging to Weights & Biases')
 parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity (username or team) to use')
+parser.add_argument('--wandb_group', type=str, default=None, help='WandB group name for organizing runs')
+parser.add_argument('--wandb_project', type=str, default='amba_spectrogram', help='WandB project name')
 
 args = parser.parse_args()
 
+# Ensure experiment directory exists
+os.makedirs(args.exp_dir, exist_ok=True)
+os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
+
+run_id_file = os.path.join(args.exp_dir, 'wandb_run_id.txt')
+
+# Check if a previous run ID exists
+if os.path.exists(run_id_file):
+    with open(run_id_file, 'r') as f:
+        run_id = f.read().strip()
+    print(f"Resuming W&B run with ID: {run_id}")
+else:
+    run_id = None
+
 if args.use_wandb:
-    project_name = "amba_spectrogram"
     wandb.init(
-        project=project_name,
+        project=args.wandb_project,
         config=args,
-        entity=args.wandb_entity  # Use command line specified entity or default to personal account
+        entity=args.wandb_entity,
+        resume="allow",
+        group=args.wandb_group,
+        id=run_id  # Use the same run ID if resuming
     )
+    # Save the run ID for future resumption
+    if not os.path.exists(run_id_file):
+        with open(run_id_file, 'w') as f:
+            f.write(wandb.run.id)
 
 # Convert string arguments to boolean
 args.rms_norm = args.rms_norm == 'true'
@@ -317,10 +340,32 @@ else:
 if not isinstance(audio_model, torch.nn.DataParallel):
     audio_model = torch.nn.DataParallel(audio_model)
 
-print("\nCreating experiment directory: %s" % args.exp_dir)
-os.makedirs("%s/models" % args.exp_dir, exist_ok=True)
+# Auto-resume training if experiment directory and model exist
+model_path = os.path.join(args.exp_dir, 'models/best_audio_model.pth')
+optimizer_path = os.path.join(args.exp_dir, 'models/optim_state.pth')
+
+if os.path.isfile(model_path):
+    print(f"Found existing model at {model_path}. Resuming training...")
+    checkpoint = torch.load(model_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+    audio_model.load_state_dict(checkpoint, strict=False)
+    
+    # Load optimizer state if it exists
+    if os.path.isfile(optimizer_path):
+        print(f"Found optimizer state at {optimizer_path}. Resuming optimizer state...")
+        optimizer = torch.optim.AdamW(audio_model.parameters(), args.lr, weight_decay=5e-8, betas=(0.95, 0.999))
+        optimizer.load_state_dict(torch.load(optimizer_path))
+    else:
+        print("No optimizer state found. Starting with a fresh optimizer.")
+else:
+    print(f"No existing model found in {args.exp_dir}. Starting from scratch.")
+
 with open("%s/args.pkl" % args.exp_dir, "wb") as f:
     pickle.dump(args, f)
+
+# Calculate epoch_iter based on dataset size
+steps_per_epoch = len(train_loader)  # number of batches per epoch
+args.epoch_iter = int(steps_per_epoch * args.epoch_iter)
+print(f"Saving model every {args.epoch_iter} steps ({args.epoch_iter/steps_per_epoch:.1%} of an epoch)")
 
 # Start training
 if 'pretrain' not in args.task:

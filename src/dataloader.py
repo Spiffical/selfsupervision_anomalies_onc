@@ -292,12 +292,15 @@ class HDF5Dataset(Dataset):
             num_mel_bins: Number of mel bins in spectrograms
             freqm: Maximum number of frequency bands to mask
             timem: Maximum number of time steps to mask
-            dataset_mean: Dataset mean for normalization (if None, will be calculated)
-            dataset_std: Dataset standard deviation for normalization (if None, will be calculated)
+            dataset_mean: Dataset mean for normalization (required)
+            dataset_std: Dataset standard deviation for normalization (required)
             mixup: Mixup probability
         """
         super(HDF5Dataset, self).__init__()
         
+        if dataset_mean is None or dataset_std is None:
+            raise ValueError("dataset_mean and dataset_std must be provided")
+            
         self.h5_path = h5_path
         self.split = split
         self.target_length = target_length
@@ -305,13 +308,8 @@ class HDF5Dataset(Dataset):
         self.freqm = freqm
         self.timem = timem
         self.mixup = mixup
-        
-        # Calculate dataset statistics if not provided
-        if dataset_mean is None or dataset_std is None:
-            self.dataset_mean, self.dataset_std = calculate_dataset_stats(h5_path)
-        else:
-            self.dataset_mean = dataset_mean
-            self.dataset_std = dataset_std
+        self.dataset_mean = dataset_mean
+        self.dataset_std = dataset_std
         
         # Set random seed for reproducibility
         random.seed(seed)
@@ -325,7 +323,6 @@ class HDF5Dataset(Dataset):
         indices = np.arange(total_size)
         np.random.shuffle(indices)
         
-        # train_size = int(train_ratio * total_size)
         val_size = int(val_ratio * total_size)
 
         if split == 'val':
@@ -334,7 +331,6 @@ class HDF5Dataset(Dataset):
             self.indices = indices[val_size:val_size + int(train_ratio * total_size)]  # Training set follows
         else:  # test
             self.indices = indices[val_size + int(train_ratio * total_size):]  # Remaining samples for test
-
         
         print(f"Using {len(self.indices)} samples for {split} split")
 

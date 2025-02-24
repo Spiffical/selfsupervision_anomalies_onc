@@ -5,8 +5,15 @@ import os
 import datetime
 sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
 from utilities import *
+from utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet
+from utilities.metrics.validation_metrics import ValidationMetricsCollector
+from utilities.metrics.hydrophone_metrics import (
+    calculate_hydrophone_metrics, print_hydrophone_metrics, 
+    extract_hydrophone, calculate_binary_metrics
+)
 import time
 import torch
+from torch import nn
 import numpy as np
 import pickle
 import wandb
@@ -15,30 +22,21 @@ def trainmask(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('Now running on : ' + str(device))
 
-    # initialize all of the statistics we want to keep track of
-    batch_time = AverageMeter()
-    per_sample_time = AverageMeter()
-    data_time = AverageMeter()
-    per_sample_data_time = AverageMeter()
-    loss_meter = AverageMeter()
-    per_sample_dnn_time = AverageMeter()
-    train_acc_meter = AverageMeter()
-    train_nce_meter = AverageMeter()
-    progress = []
-    best_epoch, best_acc = 0, -np.inf
-    global_step, epoch = 0, 0
+    # Initialize metrics tracking
+    metrics_tracker = MetricsTracker(args.exp_dir, args, use_wandb=args.use_wandb)
+    train_meters = AverageMeterSet()
+    val_collector = ValidationMetricsCollector(task=args.task)
+    
+    # Initialize training state
+    global_step = args.start_epoch * args.epoch_iter if hasattr(args, 'start_epoch') else 0
+    epoch = args.start_epoch if hasattr(args, 'start_epoch') else 1
     start_time = time.time()
-    exp_dir = args.exp_dir
-
-    def _save_progress():
-        progress.append([epoch, global_step, best_epoch, time.time() - start_time])
-        with open("%s/progress.pkl" % exp_dir, "wb") as f:
-            pickle.dump(progress, f)
 
     if not isinstance(audio_model, nn.DataParallel):
         audio_model = nn.DataParallel(audio_model)
 
     audio_model = audio_model.to(device)
+    
     # Set up the optimizer
     audio_trainables = [p for p in audio_model.parameters() if p.requires_grad]
     print('Total parameter number is : {:.9f} million'.format(sum(p.numel() for p in audio_model.parameters()) / 1e6))
@@ -48,12 +46,42 @@ def trainmask(audio_model, train_loader, test_loader, args):
 
     # LR scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True)
-    epoch += 1
+
+    # Load previous progress if available
+    if hasattr(args, 'start_epoch') and args.start_epoch > 1:
+        model_path = f"{args.exp_dir}/models/audio_model.{args.start_epoch-1}.pth"
+        if os.path.exists(model_path):
+            print(f"Found last saved model at {model_path}. Resuming training...")
+            try:
+                # Load state dict
+                state_dict = torch.load(model_path, map_location=device)
+                
+                # Check if state dict needs module prefix
+                if not any(k.startswith('module.') for k in state_dict.keys()):
+                    # Add 'module.' prefix for DataParallel
+                    state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+                
+                # Load the state dict
+                audio_model.load_state_dict(state_dict)
+                print("Successfully loaded previous model state.")
+                
+                # Try to load optimizer and scheduler states
+                optim_path = f"{args.exp_dir}/models/optim_state.{args.start_epoch-1}.pth"
+                if os.path.exists(optim_path):
+                    optimizer.load_state_dict(torch.load(optim_path, map_location=device))
+                    print("Successfully loaded optimizer state.")
+                
+            except Exception as e:
+                print(f"Failed to load checkpoint: {str(e)}")
+                print("Starting from scratch.")
+                args.start_epoch = 1
+        else:
+            print(f"No saved model found at {model_path}. Starting from scratch.")
+            args.start_epoch = 1
 
     print("current #steps=%s, #epochs=%s" % (global_step, epoch))
     print("start training...")
 
-    result = []
     audio_model.train()
 
     # training until break
@@ -63,16 +91,13 @@ def trainmask(audio_model, train_loader, test_loader, args):
         audio_model.train()
         print(datetime.datetime.now())
 
-        # save from-scratch models before the first epoch
-        torch.save(audio_model.state_dict(), "%s/models/audio_model.%d.pth" % (exp_dir, global_step+1))
-
         for i, (audio_input, _) in enumerate(train_loader):
-            # measure data loading time
             B = audio_input.size(0)
             audio_input = audio_input.to(device, non_blocking=True)
 
-            data_time.update(time.time() - end_time)
-            per_sample_data_time.update((time.time() - end_time) / audio_input.shape[0])
+            # Update timing metrics
+            train_meters.update('data_time', time.time() - end_time)
+            train_meters.update('per_sample_data_time', (time.time() - end_time) / B)
             dnn_start_time = time.time()
 
             # first several steps for warm-up
@@ -82,21 +107,15 @@ def trainmask(audio_model, train_loader, test_loader, args):
                     param_group['lr'] = warm_lr
                 print('warm-up learning rate is {:f}'.format(optimizer.param_groups[0]['lr']))
 
-            # use cluster masking only when masking patches, not frames
+            # Forward pass
             cluster = (args.num_mel_bins != args.fshape)
-            # if pretrain with discriminative objective
             if args.task == 'pretrain_mpc':
                 acc, loss = audio_model(audio_input, args.task, mask_patch=args.mask_patch, cluster=cluster)
-                # this is for multi-gpu support, in our code, loss is calculated in the model
-                # pytorch concatenates the output of each gpu, we thus get mean of the losses of each gpu
                 acc, loss = acc.mean(), loss.mean()
-            # if pretrain with generative objective
             elif args.task == 'pretrain_mpg':
                 loss = audio_model(audio_input, args.task, mask_patch=args.mask_patch, cluster=cluster)
                 loss = loss.mean()
-                # dirty code to make the code report mse loss for generative objective
-                acc = loss
-            # if pretrain with joint discriminative and generative objective
+                acc = loss  # For MPG, we track MSE as accuracy
             elif args.task == 'pretrain_joint':
                 acc, loss1 = audio_model(audio_input, 'pretrain_mpc', mask_patch=args.mask_patch, cluster=cluster)
                 acc, loss1 = acc.mean(), loss1.mean()
@@ -104,100 +123,157 @@ def trainmask(audio_model, train_loader, test_loader, args):
                 loss2 = loss2.mean()
                 loss = loss1 + 10 * loss2
 
+            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # record loss
-            train_acc_meter.update(acc.detach().cpu().item())
-            train_nce_meter.update(loss.detach().cpu().item())
-            loss_meter.update(loss.item(), B)
-            batch_time.update(time.time() - end_time)
-            per_sample_time.update((time.time() - end_time)/audio_input.shape[0])
-            per_sample_dnn_time.update((time.time() - dnn_start_time)/audio_input.shape[0])
+            # Update metrics
+            train_meters.update('acc', acc.detach().cpu().item())
+            train_meters.update('nce', loss.detach().cpu().item())
+            train_meters.update('loss', loss.item(), B)
+            train_meters.update('batch_time', time.time() - end_time)
+            train_meters.update('per_sample_time', (time.time() - end_time) / B)
+            train_meters.update('per_sample_dnn_time', (time.time() - dnn_start_time) / B)
 
+            # Print progress
             print_step = global_step % args.n_print_steps == 0
             early_print_step = epoch == 0 and global_step % (args.n_print_steps/10) == 0
             print_step = print_step or early_print_step
 
             if print_step and global_step != 0:
                 print('Epoch: [{0}][{1}/{2}]\t'
-                  'Per Sample Total Time {per_sample_time.avg:.5f}\t'
-                  'Per Sample Data Time {per_sample_data_time.avg:.5f}\t'
-                  'Per Sample DNN Time {per_sample_dnn_time.avg:.5f}\t'
-                  'Train Loss {loss_meter.val:.4f}\t'.format(
-                   epoch, i, len(train_loader), per_sample_time=per_sample_time, per_sample_data_time=per_sample_data_time,
-                      per_sample_dnn_time=per_sample_dnn_time, loss_meter=loss_meter), flush=True)
-                if args.use_wandb:
-                    wandb.log({
-                    "Train Loss": loss.item(),
-                    "Train Accuracy": acc.detach().cpu().item(),
-                    "Learning Rate": optimizer.param_groups[0]['lr'],
-                    "Epoch": epoch,
-                    "Step": global_step
-                })
-                if np.isnan(loss_meter.avg):
+                      'Per Sample Total Time {3:.5f}\t'
+                      'Per Sample Data Time {4:.5f}\t'
+                      'Per Sample DNN Time {5:.5f}\t'
+                      'Train Loss {6:.4f}\t'.format(
+                       epoch, i, len(train_loader),
+                       train_meters.get_value('per_sample_time'),
+                       train_meters.get_value('per_sample_data_time'),
+                       train_meters.get_value('per_sample_dnn_time'),
+                       train_meters.get_value('loss')), flush=True)
+                
+                if np.isnan(train_meters.get_value('loss')):
                     print("training diverged...")
                     return
 
             end_time = time.time()
             global_step += 1
 
-            # pretraining data is usually very large, save model every epoch is too sparse.
-            # save the model every args.epoch_iter steps.
-            epoch_iteration = args.epoch_iter
-            if global_step % epoch_iteration == 0:
+            # Validation and checkpointing
+            if global_step % args.epoch_iter == 0:
                 print('---------------- step '+ str(global_step) +' evaluation ----------------')
-                equ_epoch = int(global_step/epoch_iteration) + 1
-                acc_eval, nce_eval = validatemask(audio_model, test_loader, args, equ_epoch)
+                equ_epoch = int(global_step/args.epoch_iter) + 1
+                
+                # Run validation
+                audio_model.eval()
+                val_collector.reset()
+                
+                with torch.no_grad():
+                    for val_batch, (val_input, _) in enumerate(test_loader):
+                        val_input = val_input.to(device)
+                        sources = None
+                        if hasattr(test_loader.dataset, 'sources'):
+                            sources = test_loader.dataset.sources[test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size]]
+                        
+                        # Get model output based on task
+                        if args.task == 'pretrain_mpc':
+                            output = audio_model(val_input, args.task, mask_patch=400, cluster=cluster)
+                        elif args.task == 'pretrain_mpg':
+                            output = audio_model(val_input, args.task, mask_patch=400, cluster=cluster)
+                        elif args.task == 'pretrain_joint':
+                            mpc_output = audio_model(val_input, 'pretrain_mpc', mask_patch=400, cluster=cluster)
+                            mpg_output = audio_model(val_input, 'pretrain_mpg', mask_patch=400, cluster=cluster)
+                            output = (mpc_output, mpg_output)
+                        
+                        val_collector.update(output, val_input, sources)
+                
+                # Compute and log validation metrics
+                val_metrics = val_collector.compute_metrics()
+                val_collector.log_metrics(val_metrics, epoch=equ_epoch, prefix="pt_", use_wandb=args.use_wandb)
+                
+                # Print training metrics
+                print("masked acc train: {:.6f}".format(train_meters.get_value('acc')))
+                print("nce loss train: {:.6f}".format(train_meters.get_value('nce')))
+                
+                # Save results
+                result = [
+                    train_meters.get_value('acc'),
+                    train_meters.get_value('nce'),
+                    val_metrics['acc'],
+                    val_metrics['nce'],
+                    optimizer.param_groups[0]['lr']
+                ]
+                np.savetxt(f"{args.exp_dir}/result.csv", result, delimiter=',')
 
-                print("masked acc train: {:.6f}".format(acc))
-                print("nce loss train: {:.6f}".format(loss))
-                print("masked acc eval: {:.6f}".format(acc_eval))
-                print("nce loss eval: {:.6f}".format(nce_eval))
-                result.append([train_acc_meter.avg, train_nce_meter.avg, acc_eval, nce_eval, optimizer.param_groups[0]['lr']])
-                np.savetxt(exp_dir + '/result.csv', result, delimiter=',')
+                # Log metrics to wandb at the end of each epoch
                 if args.use_wandb:
-                    wandb.log({
-                                "Validation Accuracy": acc_eval,
-                                "Validation Loss": nce_eval,
-                })
-                if acc_eval > best_acc:
-                    best_acc = acc_eval
-                    torch.save(audio_model.state_dict(), f"{exp_dir}/models/best_audio_model.pth")
-                    torch.save(optimizer.state_dict(), f"{exp_dir}/models/optim_state.pth")  # Save optimizer state
+                    metrics_tracker.log_training_metrics({
+                        "pt_epoch": equ_epoch,
+                        "pt_train_loss": train_meters.get_value('nce'),
+                        "pt_train_accuracy": train_meters.get_value('acc'),
+                        "pt_val_loss": val_metrics['nce'],
+                        "pt_val_accuracy": val_metrics['acc'],
+                        "pt_learning_rate": optimizer.param_groups[0]['lr'],
+                        "pt_step": global_step
+                    })
 
-                torch.save(audio_model.state_dict(), "%s/models/audio_model.%d.pth" % (exp_dir, equ_epoch))
-                if len(train_loader.dataset) > 2e5:
-                    torch.save(optimizer.state_dict(), "%s/models/optim_state.pth" % (exp_dir))
+                # Save model if validation accuracy improved
+                if metrics_tracker.should_save_best(val_metrics['acc']):
+                    metrics_tracker.save_model(
+                        audio_model, optimizer, val_metrics['acc'],
+                        metric_name='acc', is_best=True
+                    )
 
-                # if the task is generation, stop after eval mse loss stop improve
+                # Save periodic checkpoint with all states
+                checkpoint = {
+                    'epoch': equ_epoch,
+                    'global_step': global_step,
+                    'model_state_dict': audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'best_metrics': metrics_tracker.best_metrics,
+                    # Save only necessary args as a dict
+                    'args': {
+                        'task': args.task,
+                        'lr': args.lr,
+                        'n_epochs': args.n_epochs,
+                        'epoch_iter': args.epoch_iter,
+                        'mask_patch': args.mask_patch,
+                        'num_mel_bins': args.num_mel_bins,
+                        'fshape': args.fshape
+                    }
+                }
+                torch.save(checkpoint, f"{args.exp_dir}/models/checkpoint.{equ_epoch}.pth")
+
+                # Save individual states for backward compatibility
+                model_state = audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict()
+                torch.save(model_state, f"{args.exp_dir}/models/audio_model.{equ_epoch}.pth")
+                torch.save(optimizer.state_dict(), f"{args.exp_dir}/models/optim_state.{equ_epoch}.pth")
+
+                # Update learning rate
                 if args.task == 'pretrain_mpg':
-                    # acc_eval is in fact the mse loss, it is dirty code
-                    scheduler.step(-acc_eval)
+                    scheduler.step(-val_metrics['acc'])  # For MPG, lower MSE is better
                 else:
-                    scheduler.step(acc_eval)
+                    scheduler.step(val_metrics['acc'])
 
-                print('# {:d}, step {:d}-{:d}, lr: {:e}'.format(equ_epoch, global_step-epoch_iteration, global_step, optimizer.param_groups[0]['lr']))
+                print('# {:d}, step {:d}-{:d}, lr: {:e}'.format(
+                    equ_epoch, global_step-args.epoch_iter, global_step,
+                    optimizer.param_groups[0]['lr']))
 
-                _save_progress()
+                metrics_tracker.save_progress(epoch, global_step, equ_epoch)
 
                 finish_time = time.time()
-                print('# {:d}, step {:d}-{:d}, training time: {:.3f}'.format(equ_epoch, global_step-epoch_iteration, global_step, finish_time-begin_time))
+                print('# {:d}, step {:d}-{:d}, training time: {:.3f}'.format(
+                    equ_epoch, global_step-args.epoch_iter, global_step,
+                    finish_time-begin_time))
                 begin_time = time.time()
 
-                train_acc_meter.reset()
-                train_nce_meter.reset()
-                batch_time.reset()
-                per_sample_time.reset()
-                data_time.reset()
-                per_sample_data_time.reset()
-                loss_meter.reset()
-                per_sample_dnn_time.reset()
-
-                # change the models back to train mode
+                # Reset metrics
+                train_meters.reset()
                 audio_model.train()
                 print('---------------- evaluation finished ----------------')
+
         epoch += 1
 
 def validatemask(audio_model, val_loader, args, epoch):
@@ -210,9 +286,18 @@ def validatemask(audio_model, val_loader, args, epoch):
 
     A_acc = []
     A_nce = []
+    A_predictions = []
+    A_targets = []
+    A_sources = []
+
     with torch.no_grad():
         for i, (audio_input, _) in enumerate(val_loader):
             audio_input = audio_input.to(device)
+
+            # Get sources from the dataloader if available
+            if hasattr(val_loader.dataset, 'sources'):
+                batch_sources = val_loader.dataset.sources[val_loader.dataset.indices[i*val_loader.batch_size:(i+1)*val_loader.batch_size]]
+                A_sources.extend(batch_sources)
 
             # use cluster masking only when masking patches, not frames
             cluster = (args.num_mel_bins != args.fshape)
@@ -221,6 +306,11 @@ def validatemask(audio_model, val_loader, args, epoch):
                 acc, nce = audio_model(audio_input, args.task, mask_patch=400, cluster=cluster)
                 A_acc.append(torch.mean(acc).cpu())
                 A_nce.append(torch.mean(nce).cpu())
+                # Store predictions and targets for hydrophone metrics
+                predictions = torch.sigmoid(acc).cpu().detach()
+                targets = torch.ones_like(predictions)  # In MPC, we're predicting masked tokens
+                A_predictions.append(predictions)
+                A_targets.append(targets)
             elif args.task == 'pretrain_mpg':
                 mse = audio_model(audio_input, args.task, mask_patch=400, cluster=cluster)
                 # this is dirty code to track mse loss, A_acc and A_nce now track mse, not the name suggests
@@ -229,7 +319,6 @@ def validatemask(audio_model, val_loader, args, epoch):
             elif args.task == 'pretrain_joint':
                 acc, _ = audio_model(audio_input, 'pretrain_mpc', mask_patch=400, cluster=cluster)
                 mse = audio_model(audio_input, 'pretrain_mpg', mask_patch=400, cluster=cluster)
-
                 A_acc.append(torch.mean(acc).cpu())
                 # A_nce then tracks the mse loss
                 A_nce.append(torch.mean(mse).cpu())
@@ -237,4 +326,58 @@ def validatemask(audio_model, val_loader, args, epoch):
         acc = np.mean(A_acc)
         nce = np.mean(A_nce)
 
-    return acc, nce
+        # Calculate hydrophone metrics if we have sources and predictions
+        hydrophone_metrics = {}
+        global_precision = global_recall = global_f2 = 0
+        
+        if A_sources and A_predictions and args.task == 'pretrain_mpc':
+            predictions = torch.cat(A_predictions).numpy()
+            targets = torch.cat(A_targets).numpy()
+            global_precision, global_recall, global_f2, hydrophone_metrics = calculate_hydrophone_metrics(predictions, targets, A_sources)
+
+            if args.use_wandb:
+                # Log global metrics
+                metrics_dict = {
+                    "pt_epoch": epoch,
+                    "pt_val_acc": acc,
+                    "pt_val_nce": nce,
+                    "pt_val_precision": global_precision,
+                    "pt_val_recall": global_recall,
+                    "pt_val_f2": global_f2
+                }
+                
+                # Log per-hydrophone metrics
+                for hydrophone, metrics in hydrophone_metrics.items():
+                    wandb.log({
+                        f"PT_Precision/{hydrophone}": metrics['precision'],
+                        f"PT_Recall/{hydrophone}": metrics['recall'],
+                        f"PT_F2/{hydrophone}": metrics['f2'],
+                        f"PT_Sample_Count/{hydrophone}": metrics['count']
+                    })
+                
+                # Create custom wandb.Table for sample distribution periodically
+                if isinstance(epoch, int) and (epoch == 1 or epoch % 10 == 0):
+                    table_data = [[hydrophone, metrics['count']] for hydrophone, metrics in hydrophone_metrics.items()]
+                    wandb.log({
+                        "PT_Sample_Distribution": wandb.Table(
+                            data=table_data,
+                            columns=["Hydrophone", "Sample Count"]
+                        )
+                    })
+
+        # Print metrics if available
+        if hydrophone_metrics:
+            print("\nGlobal Metrics:")
+            print(f"Precision: {global_precision:.4f}")
+            print(f"Recall: {global_recall:.4f}")
+            print(f"F2: {global_f2:.4f}")
+            
+            print("\nPer-Hydrophone Metrics:")
+            for hydrophone, metrics in hydrophone_metrics.items():
+                print(f"\n{hydrophone}:")
+                print(f"  Samples: {metrics['count']}")
+                print(f"  Precision: {metrics['precision']:.4f}")
+                print(f"  Recall: {metrics['recall']:.4f}")
+                print(f"  F2: {metrics['f2']:.4f}")
+
+    return acc, nce, global_precision, global_recall, global_f2, hydrophone_metrics

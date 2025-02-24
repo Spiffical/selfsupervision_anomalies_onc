@@ -151,6 +151,15 @@ print(f"Val: {args.val_ratio:.1%}")
 print(f"Test: {test_ratio:.1%}")
 print(f"Using random seed: {args.split_seed}")
 
+# Calculate dataset statistics if needed
+if args.dataset_mean == "none" or args.dataset_std == "none":
+    print("Calculating dataset statistics...")
+    mean, std = dataloader.calculate_dataset_stats(args.data_train)
+    print(f"Calculated dataset mean: {mean:.6f}")
+    print(f"Calculated dataset std: {std:.6f}")
+    args.dataset_mean = mean
+    args.dataset_std = std
+
 # Audio configuration
 audio_conf = {
     'num_mel_bins': args.num_mel_bins,
@@ -341,23 +350,88 @@ if not isinstance(audio_model, torch.nn.DataParallel):
     audio_model = torch.nn.DataParallel(audio_model)
 
 # Auto-resume training if experiment directory and model exist
-model_path = os.path.join(args.exp_dir, 'models/best_audio_model.pth')
-optimizer_path = os.path.join(args.exp_dir, 'models/optim_state.pth')
+best_metric_path = os.path.join(args.exp_dir, 'models/best_metric.pth')
+progress_path = os.path.join(args.exp_dir, 'progress.pkl')
 
-if os.path.isfile(model_path):
-    print(f"Found existing model at {model_path}. Resuming training...")
-    checkpoint = torch.load(model_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
-    audio_model.load_state_dict(checkpoint, strict=False)
-    
-    # Load optimizer state if it exists
-    if os.path.isfile(optimizer_path):
-        print(f"Found optimizer state at {optimizer_path}. Resuming optimizer state...")
-        optimizer = torch.optim.AdamW(audio_model.parameters(), args.lr, weight_decay=5e-8, betas=(0.95, 0.999))
-        optimizer.load_state_dict(torch.load(optimizer_path))
-    else:
-        print("No optimizer state found. Starting with a fresh optimizer.")
+# Try to get the last epoch and model path
+last_epoch = 0
+last_model_path = None
+if os.path.exists(progress_path):
+    try:
+        with open(progress_path, "rb") as f:
+            progress = pickle.load(f)
+            if progress:
+                last_epoch = progress[-1][0]  # First element is epoch
+                print(f"Found previous training progress at epoch {last_epoch}")
+                # Look for the last saved model
+                last_model_path = os.path.join(args.exp_dir, f'models/audio_model.{last_epoch}.pth')
+                last_optimizer_path = os.path.join(args.exp_dir, f'models/optim_state.{last_epoch}.pth')
+    except Exception as e:
+        print(f"Could not load progress file: {str(e)}")
+        last_epoch = 0
+
+if last_model_path and os.path.isfile(last_model_path):
+    print(f"Found last saved model at {last_model_path}. Resuming training...")
+    try:
+        checkpoint = torch.load(last_model_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+        audio_model.load_state_dict(checkpoint)
+        print("Successfully loaded model state.")
+        
+        # Initialize optimizer based on task
+        if 'pretrain' in args.task:
+            optimizer = torch.optim.AdamW(
+                audio_model.parameters(), 
+                args.lr, 
+                weight_decay=5e-8, 
+                betas=(0.95, 0.999)
+            )
+        else:
+            # Fine-tuning optimizer setup
+            mlp_list = ['mlp_head.0.weight', 'mlp_head.0.bias', 'mlp_head.1.weight', 'mlp_head.1.bias']
+            mlp_params = list(filter(lambda kv: kv[0] in mlp_list, audio_model.module.named_parameters()))
+            base_params = list(filter(lambda kv: kv[0] not in mlp_list, audio_model.module.named_parameters()))
+            optimizer = torch.optim.Adam(
+                [
+                    {'params': [i[1] for i in base_params], 'lr': args.lr},
+                    {'params': [i[1] for i in mlp_params], 'lr': args.lr * args.head_lr}
+                ],
+                weight_decay=5e-7,
+                betas=(0.95, 0.999)
+            )
+        
+        # Try to load last optimizer state
+        if os.path.isfile(last_optimizer_path):
+            try:
+                print(f"Found last optimizer state at {last_optimizer_path}. Attempting to resume optimizer state...")
+                optimizer_state = torch.load(last_optimizer_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+                optimizer.load_state_dict(optimizer_state)
+                print("Successfully loaded optimizer state.")
+            except Exception as e:
+                print(f"Failed to load optimizer state: {str(e)}")
+                print("Starting with a fresh optimizer.")
+        else:
+            print("No optimizer state found. Starting with a fresh optimizer.")
+
+        # Try to load best metric if it exists
+        if os.path.isfile(best_metric_path):
+            try:
+                best_metric = torch.load(best_metric_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+                print(f"Restored previous best metric: {best_metric:.6f}")
+            except Exception as e:
+                print(f"Failed to load best metric: {str(e)}")
+                print("Starting with default best metric.")
+                best_metric = -float('inf')
+        else:
+            best_metric = -float('inf')
+            
+        args.start_epoch = last_epoch
+    except Exception as e:
+        print(f"Failed to load checkpoint: {str(e)}")
+        print("Starting from scratch.")
+        args.start_epoch = 0
 else:
     print(f"No existing model found in {args.exp_dir}. Starting from scratch.")
+    args.start_epoch = 0
 
 with open("%s/args.pkl" % args.exp_dir, "wb") as f:
     pickle.dump(args, f)

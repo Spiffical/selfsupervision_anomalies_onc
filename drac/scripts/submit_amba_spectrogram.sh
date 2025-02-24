@@ -10,7 +10,9 @@
 
 # Input arguments
 TRAINING_DATA_PATH=${1:-$HOME/projects/def-kmoran/merileo/ssl_hydrophones/data/h5/training_data.h5}
-PROJECT_PATH=${2:-$HOME/ssamba}
+WANDB_GROUP=${2:-"default_experiment"}  # Default group if not provided
+TRAIN_RATIO=${3:-0.8}  # Default to 0.8 if not provided
+PROJECT_PATH=${4:-$HOME/ssamba}
 
 # Extract the filename from the training data path
 TRAINING_DATA_FILENAME=$(basename "$TRAINING_DATA_PATH")
@@ -38,4 +40,4 @@ cp -ru "$PROJECT_PATH" "$SLURM_TMPDIR/ssamba_project"
 cd "$SLURM_TMPDIR/ssamba_project"
 
 # Run the training script, passing the temporary data path with original filename
-bash src/run_amba_spectrogram.sh "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME"
+bash src/run_amba_spectrogram.sh "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME" "$TRAIN_RATIO" "$WANDB_GROUP"

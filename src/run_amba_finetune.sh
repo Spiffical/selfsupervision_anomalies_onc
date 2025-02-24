@@ -10,10 +10,11 @@ if [ -f ~/ssamba/.env ]; then
     export $(grep -v '^#' ~/ssamba/.env | xargs)
 fi
 
-# Get the training data path from arguments (default if not provided)
+# Get command line arguments
 DATA_TRAIN_PATH=${1:-$SCRATCH/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
-TRAIN_RATIO=${2:-0.8}  # Default to 0.8 if not provided
-WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
+PRETRAINED_MODEL_PATH=${2:-""}  # Path to pretrained model
+TRAIN_RATIO=${3:-0.8}  # Default to 0.8 if not provided
+WANDB_GROUP=${4:-"default_finetune"}  # Default group if not provided
 
 set -x
 export TORCH_HOME=../../pretrained_models
@@ -28,8 +29,8 @@ mkdir -p $SCRATCH/exp
 dataset=custom
 dataset_mean=51.506817  # Set to "none" to calculate from dataset
 dataset_std=13.638703   # Set to "none" to calculate from dataset
-target_length=512  # Your spectrogram time dimension
-num_mel_bins=512  # Your spectrogram frequency dimension
+target_length=512
+num_mel_bins=512
 
 # Dataset split parameters
 train_ratio=$TRAIN_RATIO
@@ -37,20 +38,20 @@ val_ratio=0.1
 split_seed=42
 
 # Training parameters
-task=pretrain_joint  # or ft_cls for fine-tuning
-mask_patch=300  # Number of patches to mask during pretraining
+task=ft_cls  # finetuning task
+mask_patch=0  # No masking during finetuning
 
-# Model architecture
+# Model architecture (should match pretrained model)
 model_size=small
 patch_size=16
 embed_dim=768
 depth=24
 
-# Patch parameters - no overlap in pretraining
+# Patch parameters
 fshape=16
 tshape=16
-fstride=${fshape}
-tstride=${tshape}
+fstride=16
+tstride=16
 
 # Model configuration
 rms_norm='false'
@@ -62,7 +63,7 @@ bimamba_type="v2"
 drop_path_rate=0.1
 stride=16
 channels=1
-num_classes=1000
+num_classes=2
 drop_rate=0.
 norm_epsilon=1e-5
 if_bidirectional='true'
@@ -74,18 +75,18 @@ if_devide_out='true'
 use_double_cls_token='false'
 use_middle_cls_token='false'
 
-# Training hyperparameters
+# Finetuning hyperparameters
 bal=none
-batch_size=16
-lr=1e-4
-lr_patience=2
-epoch=40
+batch_size=32  # Can be larger than pretraining since no masking
+lr=5e-5  # Lower learning rate for finetuning
+lr_patience=5  # More patience for finetuning
+epoch=50
 freqm=0
 timem=0
 mixup=0
 
 # Experiment directory
-exp_dir=$SCRATCH/exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${task}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
+exp_dir=$SCRATCH/exp/amba-ft-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-${task}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
 
 # Run the training script
 python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
@@ -93,8 +94,7 @@ python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer
 --dataset ${dataset} \
 --data-train "$DATA_TRAIN_PATH" \
 --exp-dir $exp_dir \
---dataset_mean ${dataset_mean} \
---dataset_std ${dataset_std} \
+--pretrained_model_path "$PRETRAINED_MODEL_PATH" \
 --n_class 2 \
 --train_ratio ${train_ratio} \
 --val_ratio ${val_ratio} \
@@ -114,4 +114,7 @@ python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
---use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} 
+--use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
+--adaptschedule true --main_metric f2  # Use F2 score for model selection \
+--dataset_mean ${dataset_mean} \
+--dataset_std ${dataset_std} 

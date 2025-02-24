@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=def-kmoran               # Replace with your Compute Canada project account
 #SBATCH --job-name=amba_train_size         # Job name
-#SBATCH --output=amba_train_size_%j.out    # Standard output log (%j adds job ID)
-#SBATCH --error=amba_train_size_%j.err     # Standard error log
+#SBATCH --output=out/amba_train_size_%j.out    # Standard output log (%j adds job ID)
+#SBATCH --error=err/amba_train_size_%j.err     # Standard error log
 #SBATCH --time=08:00:00                    # Maximum runtime (HH:MM:SS)
 #SBATCH --gres=gpu:v100l:1                 # Request 1 V100 GPU
 #SBATCH --cpus-per-task=4                  # Number of CPU cores

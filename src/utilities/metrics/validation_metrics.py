@@ -5,8 +5,12 @@ Utilities for handling validation metrics and predictions.
 import torch
 import numpy as np
 import os
-from .hydrophone_metrics import calculate_hydrophone_metrics, print_hydrophone_metrics, log_hydrophone_metrics_to_wandb
-import wandb
+from torch import nn
+from .hydrophone_metrics import calculate_hydrophone_metrics, print_hydrophone_metrics
+from ..wandb_utils import log_validation_metrics
+
+# Import calculate_stats from stats module
+from ..stats import calculate_stats
 
 class ValidationMetricsCollector:
     """Class to collect and process validation metrics."""
@@ -128,30 +132,7 @@ class ValidationMetricsCollector:
             
             # Log to wandb if enabled
             if use_wandb:
-                wandb_metrics = {
-                    f"{prefix}val_accuracy": metrics['acc'],
-                    f"{prefix}val_loss": metrics['nce'],
-                    f"{prefix}epoch": epoch if epoch is not None else 0
-                }
-                
-                # Add per-hydrophone metrics for pretraining if available
-                if metrics['hydrophone_metrics']:
-                    for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
-                        for metric_name, value in hyd_metrics.items():
-                            if self.task == 'pretrain_mpc':
-                                if metric_name in ['accuracy']:
-                                    wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                            elif self.task == 'pretrain_mpg':
-                                if metric_name in ['mse']:
-                                    wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                            elif self.task == 'pretrain_joint':
-                                if metric_name in ['mpc_accuracy', 'mpg_mse']:
-                                    wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                            
-                            if metric_name == 'count':
-                                wandb_metrics[f"{prefix}hydrophone/{hydrophone}/sample_count"] = value
-                
-                wandb.log(wandb_metrics, step=epoch if epoch is not None else None)
+                log_validation_metrics(metrics, self.task, epoch, prefix, use_wandb)
         else:
             # Fine-tuning metrics
             print(f"Global accuracy: {metrics['acc']:.6f}")
@@ -174,25 +155,46 @@ class ValidationMetricsCollector:
             
             # Log to wandb if enabled
             if use_wandb:
-                wandb_metrics = {
-                    f"{prefix}val_loss": metrics['loss'],
-                    f"{prefix}val_accuracy": metrics['acc'],
-                    f"{prefix}val_auc": metrics['auc'],
-                    f"{prefix}val_precision": metrics['global_precision'],
-                    f"{prefix}val_recall": metrics['global_recall'],
-                    f"{prefix}val_f2": metrics['global_f2']
-                }
-                
-                # Add per-hydrophone metrics
-                if metrics['hydrophone_metrics']:
-                    for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
-                        for metric_name, value in hyd_metrics.items():
-                            if metric_name in ['accuracy', 'precision', 'recall', 'f2']:
-                                wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                            elif metric_name == 'count':
-                                wandb_metrics[f"{prefix}hydrophone/{hydrophone}/sample_count"] = value
-                
-                wandb.log(wandb_metrics, step=epoch if epoch is not None else None)
+                log_validation_metrics(metrics, self.task, epoch, prefix, use_wandb)
+
+def validate(audio_model, val_loader, args, epoch):
+    """Run validation and compute metrics."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not isinstance(audio_model, nn.DataParallel):
+        audio_model = nn.DataParallel(audio_model)
+    audio_model = audio_model.to(device)
+    audio_model.eval()
+
+    val_collector = ValidationMetricsCollector(task=args.task)
+    
+    with torch.no_grad():
+        for i, (audio_input, labels) in enumerate(val_loader):
+            audio_input = audio_input.to(device)
+            labels = labels.to(device)
+            
+            # Get sources if available
+            sources = None
+            if hasattr(val_loader.dataset, 'sources'):
+                sources = val_loader.dataset.sources[val_loader.dataset.indices[i*val_loader.batch_size:(i+1)*val_loader.batch_size]]
+            
+            # Forward pass
+            audio_output = audio_model(audio_input, args.task)
+            
+            # Calculate loss
+            if isinstance(args.loss_fn, torch.nn.CrossEntropyLoss):
+                loss = args.loss_fn(audio_output, torch.argmax(labels.long(), axis=1))
+            else:
+                loss = args.loss_fn(audio_output, labels)
+            
+            val_collector.update((audio_output, loss), labels, sources)
+    
+    # Compute metrics
+    metrics = val_collector.compute_metrics()
+    
+    # Log metrics
+    val_collector.log_metrics(metrics, epoch=epoch, prefix="ft_", use_wandb=args.use_wandb)
+    
+    return metrics
 
 def validate_ensemble(metrics_tracker, predictions, targets, epoch):
     """Calculate ensemble validation metrics."""

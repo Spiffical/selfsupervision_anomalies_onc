@@ -12,16 +12,21 @@ from utilities.metrics.hydrophone_metrics import (
     extract_hydrophone, calculate_binary_metrics
 )
 from utilities.checkpoint_utils import save_checkpoint, load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint
+from utilities.wandb_utils import init_wandb, log_validation_metrics, finish_run
 import time
 import torch
 from torch import nn
 import numpy as np
 import pickle
-import wandb
 
 def trainmask(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('Now running on : ' + str(device))
+
+    # Initialize wandb if enabled and not already initialized
+    if args.use_wandb and not hasattr(args, 'wandb_initialized'):
+        init_wandb(args)
+        args.wandb_initialized = True
 
     # Initialize metrics tracking
     metrics_tracker = MetricsTracker(args.exp_dir, args, use_wandb=args.use_wandb)
@@ -210,7 +215,8 @@ def trainmask(audio_model, train_loader, test_loader, args):
 
                 # Log metrics to wandb at the end of each epoch
                 if args.use_wandb:
-                    metrics_tracker.log_training_metrics({
+                    # Create metrics dictionary with training and validation metrics
+                    metrics_dict = {
                         "pt_epoch": equ_epoch,
                         "pt_train_loss": train_meters.get_value('nce'),
                         "pt_train_accuracy": train_meters.get_value('acc'),
@@ -218,7 +224,14 @@ def trainmask(audio_model, train_loader, test_loader, args):
                         "pt_val_accuracy": val_metrics['acc'],
                         "pt_learning_rate": optimizer.param_groups[0]['lr'],
                         "pt_step": global_step
-                    })
+                    }
+                    
+                    # Include hydrophone metrics if available
+                    if 'hydrophone_metrics' in val_metrics and val_metrics['hydrophone_metrics']:
+                        metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
+                        
+                    # Log all metrics
+                    metrics_tracker.log_training_metrics(metrics_dict)
 
                 # Save model if validation accuracy improved
                 if metrics_tracker.should_save_best(val_metrics['acc']):
@@ -278,6 +291,11 @@ def trainmask(audio_model, train_loader, test_loader, args):
 
         # We've already incremented the epoch after validation, so we don't need to do it here
         # epoch += 1
+
+    # Finish wandb run if enabled and initialized in this function
+    if args.use_wandb and hasattr(args, 'wandb_initialized') and args.wandb_initialized:
+        finish_run()
+        args.wandb_initialized = False
 
 def validatemask(audio_model, val_loader, args, epoch):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -339,34 +357,18 @@ def validatemask(audio_model, val_loader, args, epoch):
             global_precision, global_recall, global_f2, hydrophone_metrics = calculate_hydrophone_metrics(predictions, targets, A_sources)
 
             if args.use_wandb:
-                # Log global metrics
-                metrics_dict = {
-                    "pt_epoch": epoch,
-                    "pt_val_acc": acc,
-                    "pt_val_nce": nce,
-                    "pt_val_precision": global_precision,
-                    "pt_val_recall": global_recall,
-                    "pt_val_f2": global_f2
+                # Create metrics dictionary
+                metrics = {
+                    "acc": acc,
+                    "nce": nce,
+                    "global_precision": global_precision,
+                    "global_recall": global_recall,
+                    "global_f2": global_f2,
+                    "hydrophone_metrics": hydrophone_metrics
                 }
                 
-                # Log per-hydrophone metrics
-                for hydrophone, metrics in hydrophone_metrics.items():
-                    wandb.log({
-                        f"PT_Precision/{hydrophone}": metrics['precision'],
-                        f"PT_Recall/{hydrophone}": metrics['recall'],
-                        f"PT_F2/{hydrophone}": metrics['f2'],
-                        f"PT_Sample_Count/{hydrophone}": metrics['count']
-                    })
-                
-                # Create custom wandb.Table for sample distribution periodically
-                if isinstance(epoch, int) and (epoch == 1 or epoch % 10 == 0):
-                    table_data = [[hydrophone, metrics['count']] for hydrophone, metrics in hydrophone_metrics.items()]
-                    wandb.log({
-                        "PT_Sample_Distribution": wandb.Table(
-                            data=table_data,
-                            columns=["Hydrophone", "Sample Count"]
-                        )
-                    })
+                # Log validation metrics
+                log_validation_metrics(metrics, args.task, epoch, prefix="pt_", use_wandb=args.use_wandb)
 
         # Print metrics if available
         if hydrophone_metrics:

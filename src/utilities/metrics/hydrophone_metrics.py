@@ -4,7 +4,6 @@ Utilities for calculating and tracking hydrophone-specific metrics.
 
 import numpy as np
 import torch
-import wandb
 from collections import defaultdict
 
 def extract_hydrophone(source):
@@ -57,30 +56,6 @@ def calculate_hydrophone_metrics(predictions, targets, sources):
             }
     
     return global_precision, global_recall, global_f2, hydrophone_metrics
-
-def log_hydrophone_metrics_to_wandb(metrics_dict, hydrophone_metrics, prefix="", epoch=None):
-    """Log hydrophone metrics to wandb with proper organization."""
-    # Log global metrics
-    wandb.log(metrics_dict)
-    
-    # Log per-hydrophone metrics
-    for hydrophone, metrics in hydrophone_metrics.items():
-        wandb.log({
-            f"{prefix}Precision/{hydrophone}": metrics['precision'],
-            f"{prefix}Recall/{hydrophone}": metrics['recall'],
-            f"{prefix}F2/{hydrophone}": metrics['f2'],
-            f"{prefix}Sample_Count/{hydrophone}": metrics['count']
-        })
-    
-    # Create custom wandb.Table for sample distribution periodically
-    if isinstance(epoch, int) and (epoch == 1 or epoch % 10 == 0):
-        table_data = [[hydrophone, metrics['count']] for hydrophone, metrics in hydrophone_metrics.items()]
-        wandb.log({
-            f"{prefix}Sample_Distribution": wandb.Table(
-                data=table_data,
-                columns=["Hydrophone", "Sample Count"]
-            )
-        })
 
 def print_hydrophone_metrics(hydrophone_metrics, global_precision=None, global_recall=None, global_f2=None):
     """Print formatted hydrophone metrics to console."""

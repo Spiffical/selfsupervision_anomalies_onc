@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
 from utilities import *
 from utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet
 from utilities.metrics.validation_metrics import (
-    ValidationMetricsCollector, validate_ensemble, validate_wa
+    ValidationMetricsCollector, validate_ensemble, validate_wa, validate
 )
 from utilities.metrics.hydrophone_metrics import (
     calculate_hydrophone_metrics, print_hydrophone_metrics, 
@@ -19,7 +19,7 @@ from torch import nn
 import numpy as np
 import pickle
 from torch.cuda.amp import autocast,GradScaler
-import wandb
+from utilities.wandb_utils import log_training_metrics
 
 def train(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -264,11 +264,7 @@ def train(audio_model, train_loader, test_loader, args):
                         elif metric_name == 'count':
                             metrics_dict[f"hydrophone_metrics/{hydrophone}/sample_count"] = value
             
-            # Add training ratio as a tag if it exists
-            if hasattr(args, 'train_ratio'):
-                wandb.run.tags = wandb.run.tags + (f"ratio_{args.train_ratio}",)
-            
-            wandb.log(metrics_dict)
+            log_training_metrics(metrics_dict)
 
         # Save model if performance improved
         if metrics_tracker.should_save_best(val_metrics[args.main_metric], metric_name=args.main_metric):
@@ -328,42 +324,3 @@ def train(audio_model, train_loader, test_loader, args):
         print(f"AUC: {stats['auc']:.6f}")
         print(f"Accuracy: {stats['acc']:.6f}")
         np.savetxt(args.exp_dir + '/wa_result.csv', [stats['mAP'], stats['auc'], stats['acc']])
-
-def validate(audio_model, val_loader, args, epoch):
-    """Run validation and compute metrics."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if not isinstance(audio_model, nn.DataParallel):
-        audio_model = nn.DataParallel(audio_model)
-    audio_model = audio_model.to(device)
-    audio_model.eval()
-
-    val_collector = ValidationMetricsCollector(task=args.task)
-    
-    with torch.no_grad():
-        for i, (audio_input, labels) in enumerate(val_loader):
-            audio_input = audio_input.to(device)
-            labels = labels.to(device)
-            
-            # Get sources if available
-            sources = None
-            if hasattr(val_loader.dataset, 'sources'):
-                sources = val_loader.dataset.sources[val_loader.dataset.indices[i*val_loader.batch_size:(i+1)*val_loader.batch_size]]
-            
-            # Forward pass
-            audio_output = audio_model(audio_input, args.task)
-            
-            # Calculate loss
-            if isinstance(args.loss_fn, torch.nn.CrossEntropyLoss):
-                loss = args.loss_fn(audio_output, torch.argmax(labels.long(), axis=1))
-            else:
-                loss = args.loss_fn(audio_output, labels)
-            
-            val_collector.update((audio_output, loss), labels, sources)
-    
-    # Compute metrics
-    metrics = val_collector.compute_metrics()
-    
-    # Log metrics
-    val_collector.log_metrics(metrics, epoch=epoch, prefix="ft_", use_wandb=args.use_wandb)
-    
-    return metrics

@@ -6,10 +6,10 @@ import os
 import torch
 import pickle
 import numpy as np
-import wandb
 import time
 from collections import defaultdict
 import torch.nn as nn
+from ..wandb_utils import log_training_metrics, create_hydrophone_table
 
 class MetricsTracker:
     """Class to track training metrics and handle model checkpointing."""
@@ -24,16 +24,9 @@ class MetricsTracker:
         # Initialize wandb table for hydrophone metrics
         if self.use_wandb:
             if hasattr(args, 'task'):
-                if args.task == 'pretrain_mpc':
-                    self.hydrophone_table = wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Reconstruction Accuracy"])
-                elif args.task == 'pretrain_mpg':
-                    self.hydrophone_table = wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Patch Localization MSE"])
-                elif args.task == 'pretrain_joint':
-                    self.hydrophone_table = wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Reconstruction Accuracy", "Patch Localization MSE"])
-                else:
-                    self.hydrophone_table = wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Accuracy", "Precision", "Recall", "F2"])
+                self.hydrophone_table = create_hydrophone_table(args.task)
             else:
-                self.hydrophone_table = wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Reconstruction Accuracy"])
+                self.hydrophone_table = create_hydrophone_table('pretrain_mpc')
         
         # Create necessary directories
         os.makedirs(f"{exp_dir}/models", exist_ok=True)
@@ -154,8 +147,7 @@ class MetricsTracker:
     def log_training_metrics(self, metrics_dict, step=None):
         """Log training metrics to wandb."""
         if self.use_wandb:
-            # Log regular metrics
-            wandb.log(metrics_dict, step=step)
+            log_training_metrics(metrics_dict, step=step, use_wandb=self.use_wandb)
             
             # If hydrophone metrics are present, update the table
             if 'hydrophone_metrics' in metrics_dict:
@@ -197,10 +189,10 @@ class MetricsTracker:
                         )
                 
                 # Log the updated table
-                wandb.log({
+                log_training_metrics({
                     "pt_Sample_Distribution": self.hydrophone_table,
                     f"pt_epoch": epoch
-                })
+                }, use_wandb=self.use_wandb)
     
     def should_save_best(self, current_value, metric_name='acc'):
         """Check if current metric value is better than best so far."""

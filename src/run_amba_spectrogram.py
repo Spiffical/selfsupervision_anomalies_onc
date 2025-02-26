@@ -13,7 +13,7 @@ import numpy as np
 from traintest import train, validate
 from traintest_mask import trainmask
 import datetime
-import wandb
+from utilities.wandb_utils import init_wandb, finish_run
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
 
@@ -115,19 +115,20 @@ if os.path.exists(run_id_file):
 else:
     run_id = None
 
+# Initialize wandb using our centralized utility
 if args.use_wandb:
-    wandb.init(
-        project=args.wandb_project,
-        config=args,
+    run = init_wandb(
+        args,
+        project_name=args.wandb_project,
         entity=args.wandb_entity,
-        resume="allow",
         group=args.wandb_group,
-        id=run_id  # Use the same run ID if resuming
+        run_id=run_id
     )
+    
     # Save the run ID for future resumption
-    if not os.path.exists(run_id_file):
+    if not os.path.exists(run_id_file) and run is not None:
         with open(run_id_file, 'w') as f:
-            f.write(wandb.run.id)
+            f.write(run.id)
 
 # Convert string arguments to boolean
 args.rms_norm = args.rms_norm == 'true'
@@ -410,6 +411,15 @@ if args.data_eval is not None:
     print("Accuracy: {:.6f}".format(eval_acc))
     print("AUC: {:.6f}".format(eval_mAUC))
     if args.use_wandb:
-        wandb.log({"val_accuracy": val_acc, "val_mAUC": val_mAUC,
-                  "eval_accuracy": eval_acc, "eval_mAUC": eval_mAUC})
-    np.savetxt(args.exp_dir + '/eval_result.csv', [val_acc, val_mAUC, eval_acc, eval_mAUC]) 
+        from utilities.wandb_utils import log_training_metrics
+        log_training_metrics({
+            "val_accuracy": val_acc, 
+            "val_mAUC": val_mAUC,
+            "eval_accuracy": eval_acc, 
+            "eval_mAUC": eval_mAUC
+        }, use_wandb=args.use_wandb)
+    np.savetxt(args.exp_dir + '/eval_result.csv', [val_acc, val_mAUC, eval_acc, eval_mAUC])
+
+# Finish wandb run if it was started
+if args.use_wandb:
+    finish_run() 

@@ -1,0 +1,71 @@
+2025-02-10 16:06:32,159 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:06:32,162 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:06:32,169 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:06:32,170 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:06:32,170 Found 'credsStore' section
+2025-02-10 16:06:32,675 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:06:32,679 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:06:32,680 interactive is False
+2025-02-10 16:06:32,680 platform is linux
+2025-02-10 16:06:32,707 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:06:32,708 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json
+2025-02-10 16:12:14,641 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:14,642 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:14,649 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:12:14,649 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:12:14,650 Found 'credsStore' section
+2025-02-10 16:12:24,782 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:24,783 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:24,787 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:12:24,787 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:12:24,787 Found 'credsStore' section
+2025-02-10 16:12:25,313 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:12:25,316 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:12:25,317 interactive is False
+2025-02-10 16:12:25,317 platform is linux
+2025-02-10 16:12:25,343 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:12:25,344 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json
+2025-02-10 16:12:56,969 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:56,970 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:12:56,973 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:12:56,973 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:12:56,974 Found 'credsStore' section
+2025-02-10 16:12:57,355 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:12:57,358 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:12:57,358 interactive is False
+2025-02-10 16:12:57,358 platform is linux
+2025-02-10 16:12:57,381 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:12:57,382 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json
+2025-02-10 16:15:13,311 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:15:13,312 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:15:13,318 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:15:13,318 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:15:13,319 Found 'credsStore' section
+2025-02-10 16:15:13,800 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:15:13,803 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:15:13,804 interactive is False
+2025-02-10 16:15:13,804 platform is linux
+2025-02-10 16:15:13,836 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:15:13,837 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json
+2025-02-10 16:16:20,310 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:16:20,312 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:16:20,315 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:16:20,315 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:16:20,315 Found 'credsStore' section
+2025-02-10 16:16:20,692 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:16:20,694 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:16:20,695 interactive is False
+2025-02-10 16:16:20,695 platform is linux
+2025-02-10 16:16:20,717 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:16:20,718 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json
+2025-02-10 16:19:32,383 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:19:32,384 Popen(['git', 'version'], cwd=/home/sbialek/ONC/ml/ssamba, stdin=None, shell=False, universal_newlines=False)
+2025-02-10 16:19:32,390 Trying paths: ['/home/sbialek/.docker/config.json', '/home/sbialek/.dockercfg']
+2025-02-10 16:19:32,390 Found file at path: /home/sbialek/.docker/config.json
+2025-02-10 16:19:32,391 Found 'credsStore' section
+2025-02-10 16:19:32,870 matplotlib data path: /home/sbialek/ONC/ml/ssamba/.venv/lib/python3.10/site-packages/matplotlib/mpl-data
+2025-02-10 16:19:32,873 CONFIGDIR=/home/sbialek/.config/matplotlib
+2025-02-10 16:19:32,874 interactive is False
+2025-02-10 16:19:32,874 platform is linux
+2025-02-10 16:19:32,899 CACHEDIR=/home/sbialek/.cache/matplotlib
+2025-02-10 16:19:32,900 Using fontManager instance from /home/sbialek/.cache/matplotlib/fontlist-v330.json

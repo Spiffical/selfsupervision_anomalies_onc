@@ -1,7 +1,7 @@
 import os
 import argparse
 import torch
-import wandb
+from utilities.wandb_utils import init_wandb, finish_run
 from run_amba_spectrogram import AMBAModel
 import dataloader
 import numpy as np
@@ -87,12 +87,15 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True):
     args.use_wandb = use_wandb
     
     if use_wandb:
-        wandb.init(
-            project="ssamba_test",
-            config=args,
-            name=f"test_{task}",
+        run = init_wandb(
+            args,
+            project_name="ssamba_test",
             group="testing"
         )
+        # Set run name manually if needed
+        if run:
+            run.name = f"test_{task}"
+            run.save()
     
     # Calculate dataset statistics
     print("Calculating dataset statistics...")
@@ -200,7 +203,7 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True):
         train(audio_model, train_loader, val_loader, args)
     
     if use_wandb:
-        wandb.finish()
+        finish_run()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test AMBA training pipeline')

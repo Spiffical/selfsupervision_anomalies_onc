@@ -96,6 +96,9 @@ parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity
 parser.add_argument('--wandb_group', type=str, default=None, help='WandB group name for organizing runs')
 parser.add_argument('--wandb_project', type=str, default='amba_spectrogram', help='WandB project name')
 
+# Resume training
+parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint if available')
+
 args = parser.parse_args()
 
 # Ensure experiment directory exists
@@ -349,90 +352,11 @@ else:
 if not isinstance(audio_model, torch.nn.DataParallel):
     audio_model = torch.nn.DataParallel(audio_model)
 
-# Auto-resume training if experiment directory and model exist
-best_metric_path = os.path.join(args.exp_dir, 'models/best_metric.pth')
-progress_path = os.path.join(args.exp_dir, 'progress.pkl')
+# Create experiment directory if it doesn't exist
+os.makedirs(args.exp_dir, exist_ok=True)
+os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
 
-# Try to get the last epoch and model path
-last_epoch = 0
-last_model_path = None
-if os.path.exists(progress_path):
-    try:
-        with open(progress_path, "rb") as f:
-            progress = pickle.load(f)
-            if progress:
-                last_epoch = progress[-1][0]  # First element is epoch
-                print(f"Found previous training progress at epoch {last_epoch}")
-                # Look for the last saved model
-                last_model_path = os.path.join(args.exp_dir, f'models/audio_model.{last_epoch}.pth')
-                last_optimizer_path = os.path.join(args.exp_dir, f'models/optim_state.{last_epoch}.pth')
-    except Exception as e:
-        print(f"Could not load progress file: {str(e)}")
-        last_epoch = 0
-
-if last_model_path and os.path.isfile(last_model_path):
-    print(f"Found last saved model at {last_model_path}. Resuming training...")
-    try:
-        checkpoint = torch.load(last_model_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
-        audio_model.load_state_dict(checkpoint)
-        print("Successfully loaded model state.")
-        
-        # Initialize optimizer based on task
-        if 'pretrain' in args.task:
-            optimizer = torch.optim.AdamW(
-                audio_model.parameters(), 
-                args.lr, 
-                weight_decay=5e-8, 
-                betas=(0.95, 0.999)
-            )
-        else:
-            # Fine-tuning optimizer setup
-            mlp_list = ['mlp_head.0.weight', 'mlp_head.0.bias', 'mlp_head.1.weight', 'mlp_head.1.bias']
-            mlp_params = list(filter(lambda kv: kv[0] in mlp_list, audio_model.module.named_parameters()))
-            base_params = list(filter(lambda kv: kv[0] not in mlp_list, audio_model.module.named_parameters()))
-            optimizer = torch.optim.Adam(
-                [
-                    {'params': [i[1] for i in base_params], 'lr': args.lr},
-                    {'params': [i[1] for i in mlp_params], 'lr': args.lr * args.head_lr}
-                ],
-                weight_decay=5e-7,
-                betas=(0.95, 0.999)
-            )
-        
-        # Try to load last optimizer state
-        if os.path.isfile(last_optimizer_path):
-            try:
-                print(f"Found last optimizer state at {last_optimizer_path}. Attempting to resume optimizer state...")
-                optimizer_state = torch.load(last_optimizer_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
-                optimizer.load_state_dict(optimizer_state)
-                print("Successfully loaded optimizer state.")
-            except Exception as e:
-                print(f"Failed to load optimizer state: {str(e)}")
-                print("Starting with a fresh optimizer.")
-        else:
-            print("No optimizer state found. Starting with a fresh optimizer.")
-
-        # Try to load best metric if it exists
-        if os.path.isfile(best_metric_path):
-            try:
-                best_metric = torch.load(best_metric_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
-                print(f"Restored previous best metric: {best_metric:.6f}")
-            except Exception as e:
-                print(f"Failed to load best metric: {str(e)}")
-                print("Starting with default best metric.")
-                best_metric = -float('inf')
-        else:
-            best_metric = -float('inf')
-            
-        args.start_epoch = last_epoch
-    except Exception as e:
-        print(f"Failed to load checkpoint: {str(e)}")
-        print("Starting from scratch.")
-        args.start_epoch = 0
-else:
-    print(f"No existing model found in {args.exp_dir}. Starting from scratch.")
-    args.start_epoch = 0
-
+# Save arguments for future reference
 with open("%s/args.pkl" % args.exp_dir, "wb") as f:
     pickle.dump(args, f)
 
@@ -440,6 +364,19 @@ with open("%s/args.pkl" % args.exp_dir, "wb") as f:
 steps_per_epoch = len(train_loader)  # number of batches per epoch
 args.epoch_iter = int(steps_per_epoch * args.epoch_iter)
 print(f"Saving model every {args.epoch_iter} steps ({args.epoch_iter/steps_per_epoch:.1%} of an epoch)")
+
+# Initialize WandB if enabled
+if args.use_wandb:
+    wandb.init(
+        project=args.wandb_project,
+        config=args,
+        entity=args.wandb_entity,
+        resume="allow",
+        group=args.wandb_group
+    )
+    # Save the run ID for future resumption
+    with open(os.path.join(args.exp_dir, 'wandb_run_id.txt'), 'w') as f:
+        f.write(wandb.run.id)
 
 # Start training
 if 'pretrain' not in args.task:

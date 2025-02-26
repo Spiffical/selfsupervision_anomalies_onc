@@ -11,6 +11,7 @@ from utilities.metrics.hydrophone_metrics import (
     calculate_hydrophone_metrics, print_hydrophone_metrics, 
     extract_hydrophone, calculate_binary_metrics
 )
+from utilities.checkpoint_utils import save_checkpoint, load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint
 import time
 import torch
 from torch import nn
@@ -27,58 +28,59 @@ def trainmask(audio_model, train_loader, test_loader, args):
     train_meters = AverageMeterSet()
     val_collector = ValidationMetricsCollector(task=args.task)
     
-    # Initialize training state
-    global_step = args.start_epoch * args.epoch_iter if hasattr(args, 'start_epoch') else 0
-    epoch = args.start_epoch if hasattr(args, 'start_epoch') else 1
-    start_time = time.time()
-
     if not isinstance(audio_model, nn.DataParallel):
         audio_model = nn.DataParallel(audio_model)
 
     audio_model = audio_model.to(device)
     
-    # Set up the optimizer
-    audio_trainables = [p for p in audio_model.parameters() if p.requires_grad]
-    print('Total parameter number is : {:.9f} million'.format(sum(p.numel() for p in audio_model.parameters()) / 1e6))
-    print('Total trainable parameter number is : {:.9f} million'.format(sum(p.numel() for p in audio_trainables) / 1e6))
-    trainables = audio_trainables
-    optimizer = torch.optim.AdamW(trainables, args.lr, weight_decay=5e-8, betas=(0.95, 0.999))
-
-    # LR scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True)
-
-    # Load previous progress if available
-    if hasattr(args, 'start_epoch') and args.start_epoch > 1:
-        model_path = f"{args.exp_dir}/models/audio_model.{args.start_epoch-1}.pth"
-        if os.path.exists(model_path):
-            print(f"Found last saved model at {model_path}. Resuming training...")
-            try:
-                # Load state dict
-                state_dict = torch.load(model_path, map_location=device)
-                
-                # Check if state dict needs module prefix
-                if not any(k.startswith('module.') for k in state_dict.keys()):
-                    # Add 'module.' prefix for DataParallel
-                    state_dict = {f'module.{k}': v for k, v in state_dict.items()}
-                
-                # Load the state dict
-                audio_model.load_state_dict(state_dict)
-                print("Successfully loaded previous model state.")
-                
-                # Try to load optimizer and scheduler states
-                optim_path = f"{args.exp_dir}/models/optim_state.{args.start_epoch-1}.pth"
-                if os.path.exists(optim_path):
-                    optimizer.load_state_dict(torch.load(optim_path, map_location=device))
-                    print("Successfully loaded optimizer state.")
-                
-            except Exception as e:
-                print(f"Failed to load checkpoint: {str(e)}")
-                print("Starting from scratch.")
-                args.start_epoch = 1
+    # Define functions to create optimizer and scheduler
+    def create_optimizer(model):
+        audio_trainables = [p for p in model.parameters() if p.requires_grad]
+        print('Total parameter number is : {:.9f} million'.format(sum(p.numel() for p in model.parameters()) / 1e6))
+        print('Total trainable parameter number is : {:.9f} million'.format(sum(p.numel() for p in audio_trainables) / 1e6))
+        return torch.optim.AdamW(audio_trainables, args.lr, weight_decay=5e-8, betas=(0.95, 0.999))
+    
+    def create_scheduler(optimizer):
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True)
+    
+    # Check if we need to resume from a checkpoint
+    if hasattr(args, 'resume') and args.resume:
+        # Find the latest checkpoint
+        last_epoch, checkpoint_path = find_latest_checkpoint(args.exp_dir)
+        
+        if checkpoint_path and os.path.isfile(checkpoint_path):
+            # Load checkpoint
+            checkpoint = load_checkpoint(checkpoint_path, device)
+            
+            # Setup model, optimizer and scheduler from checkpoint
+            audio_model, optimizer, scheduler, start_epoch = setup_model_from_checkpoint(
+                checkpoint, audio_model, create_optimizer, create_scheduler
+            )
+            
+            # Restore best metrics if available
+            if 'best_metrics' in checkpoint and checkpoint['best_metrics']:
+                metrics_tracker.best_metrics = checkpoint['best_metrics']
+                print(f"Restored best metrics: {metrics_tracker.best_metrics}")
+            
+            # Set initial training state
+            global_step = start_epoch * args.epoch_iter
+            epoch = start_epoch
+            print(f"Resuming training from epoch {epoch}, global step {global_step}")
         else:
-            print(f"No saved model found at {model_path}. Starting from scratch.")
-            args.start_epoch = 1
-
+            # No checkpoint found, start from scratch
+            print("No checkpoint found. Starting from scratch.")
+            optimizer = create_optimizer(audio_model)
+            scheduler = create_scheduler(optimizer)
+            global_step = 0
+            epoch = 1
+    else:
+        # Start from scratch
+        optimizer = create_optimizer(audio_model)
+        scheduler = create_scheduler(optimizer)
+        global_step = 0
+        epoch = 1
+    
+    start_time = time.time()
     print("current #steps=%s, #epochs=%s" % (global_step, epoch))
     print("start training...")
 
@@ -163,7 +165,7 @@ def trainmask(audio_model, train_loader, test_loader, args):
             # Validation and checkpointing
             if global_step % args.epoch_iter == 0:
                 print('---------------- step '+ str(global_step) +' evaluation ----------------')
-                equ_epoch = int(global_step/args.epoch_iter) + 1
+                equ_epoch = epoch
                 
                 # Run validation
                 audio_model.eval()
@@ -220,36 +222,33 @@ def trainmask(audio_model, train_loader, test_loader, args):
 
                 # Save model if validation accuracy improved
                 if metrics_tracker.should_save_best(val_metrics['acc']):
-                    metrics_tracker.save_model(
-                        audio_model, optimizer, val_metrics['acc'],
-                        metric_name='acc', is_best=True
+                    # Use checkpoint utility to save best checkpoint
+                    save_checkpoint(
+                        model=audio_model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        metrics_tracker=metrics_tracker,
+                        args=args,
+                        exp_dir=args.exp_dir,
+                        epoch=equ_epoch,
+                        global_step=global_step,
+                        val_metrics=val_metrics,
+                        is_best=True
                     )
 
-                # Save periodic checkpoint with all states
-                checkpoint = {
-                    'epoch': equ_epoch,
-                    'global_step': global_step,
-                    'model_state_dict': audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'best_metrics': metrics_tracker.best_metrics,
-                    # Save only necessary args as a dict
-                    'args': {
-                        'task': args.task,
-                        'lr': args.lr,
-                        'n_epochs': args.n_epochs,
-                        'epoch_iter': args.epoch_iter,
-                        'mask_patch': args.mask_patch,
-                        'num_mel_bins': args.num_mel_bins,
-                        'fshape': args.fshape
-                    }
-                }
-                torch.save(checkpoint, f"{args.exp_dir}/models/checkpoint.{equ_epoch}.pth")
-
-                # Save individual states for backward compatibility
-                model_state = audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict()
-                torch.save(model_state, f"{args.exp_dir}/models/audio_model.{equ_epoch}.pth")
-                torch.save(optimizer.state_dict(), f"{args.exp_dir}/models/optim_state.{equ_epoch}.pth")
+                # Save periodic checkpoint
+                save_checkpoint(
+                    model=audio_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    metrics_tracker=metrics_tracker,
+                    args=args,
+                    exp_dir=args.exp_dir,
+                    epoch=equ_epoch,
+                    global_step=global_step,
+                    val_metrics=val_metrics,
+                    is_best=False
+                )
 
                 # Update learning rate
                 if args.task == 'pretrain_mpg':
@@ -273,8 +272,12 @@ def trainmask(audio_model, train_loader, test_loader, args):
                 train_meters.reset()
                 audio_model.train()
                 print('---------------- evaluation finished ----------------')
+                
+                # Increment epoch after validation
+                epoch += 1
 
-        epoch += 1
+        # We've already incremented the epoch after validation, so we don't need to do it here
+        # epoch += 1
 
 def validatemask(audio_model, val_loader, args, epoch):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

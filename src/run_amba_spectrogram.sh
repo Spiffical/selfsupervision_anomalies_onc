@@ -13,7 +13,9 @@ fi
 # Get the training data path from arguments (default if not provided)
 DATA_TRAIN_PATH=${1:-$SCRATCH/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
 TRAIN_RATIO=${2:-0.8}  # Default to 0.8 if not provided
-WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
+WANDB_PROJECT=${3:-"amba_spectrogram"}
+WANDB_GROUP=${4:-"default_experiment"}  # Default group if not provided
+RESUME=${5:-"true"}  # Default to true - will automatically resume if checkpoint exists
 
 set -x
 export TORCH_HOME=../../pretrained_models
@@ -89,6 +91,7 @@ exp_dir=$SCRATCH/exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${l
 
 # Run the training script
 python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
+--wandb_project ${WANDB_PROJECT} \
 --wandb_group ${WANDB_GROUP} \
 --dataset ${dataset} \
 --data-train "$DATA_TRAIN_PATH" \
@@ -114,4 +117,5 @@ python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
---use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} 
+--use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
+$([ "$RESUME" = "true" ] && echo "--resume") 

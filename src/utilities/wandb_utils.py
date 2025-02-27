@@ -95,23 +95,37 @@ def log_training_metrics(metrics_dict, step=None, use_wandb=True):
         use_wandb: Whether to use wandb for logging
     """
     if not use_wandb:
+        print("[DEBUG] wandb_utils.log_training_metrics: use_wandb is False, returning")
         return
+    
+    print("[DEBUG] wandb_utils.log_training_metrics: Starting")
     
     # Extract hydrophone metrics if present
     hydrophone_metrics = None
     if 'hydrophone_metrics' in metrics_dict:
+        print(f"[DEBUG] wandb_utils.log_training_metrics: Found hydrophone_metrics in metrics_dict")
         hydrophone_metrics = metrics_dict.pop('hydrophone_metrics')
+        print(f"[DEBUG] wandb_utils.log_training_metrics: Extracted hydrophone_metrics with {len(hydrophone_metrics)} hydrophones")
     
-    # Log regular metrics
-    wandb.log(metrics_dict, step=step)
+    # Get epoch from metrics_dict if available
+    epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', None))
+    
+    # Log regular metrics using epoch instead of step for x-axis
+    print(f"[DEBUG] wandb_utils.log_training_metrics: Logging regular metrics: {list(metrics_dict.keys())}")
+    wandb.log(metrics_dict, step=epoch)
     
     # Log hydrophone metrics separately if present
     if hydrophone_metrics:
-        epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', step))
+        epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', epoch))
         prefix = "pt_" if 'pt_epoch' in metrics_dict else "ft_"
+        print(f"[DEBUG] wandb_utils.log_training_metrics: Calling log_hydrophone_metrics for epoch {epoch} with prefix {prefix}")
         
         # Log per-hydrophone metrics
         log_hydrophone_metrics(hydrophone_metrics, epoch=epoch, prefix=prefix)
+    else:
+        print("[DEBUG] wandb_utils.log_training_metrics: No hydrophone_metrics to log")
+    
+    print("[DEBUG] wandb_utils.log_training_metrics: Finished")
 
 def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
     """
@@ -122,6 +136,8 @@ def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
         epoch: Current epoch number
         prefix: Prefix for metric names (e.g., 'pt_' for pretraining)
     """
+    print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Starting with {len(hydrophone_metrics)} hydrophones, epoch {epoch}, prefix {prefix}")
+    
     # Log per-hydrophone metrics
     for hydrophone, metrics in hydrophone_metrics.items():
         metric_dict = {}
@@ -137,11 +153,13 @@ def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
         # Add epoch to ensure metrics are tracked as a function of epoch
         if epoch is not None:
             metric_dict[f"{prefix}epoch"] = epoch
-            
-        wandb.log(metric_dict)
+        
+        print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Logging metrics for {hydrophone}: {metric_dict}")
+        wandb.log(metric_dict, step=epoch)  # Use epoch for x-axis
     
     # Create custom wandb.Table for sample distribution periodically
     if isinstance(epoch, int) and (epoch == 1 or epoch % 10 == 0):
+        print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Creating sample distribution table for epoch {epoch}")
         # Create table for sample distribution
         table_data = [[hydrophone, metrics['count']] for hydrophone, metrics in hydrophone_metrics.items()]
         wandb.log({
@@ -149,7 +167,7 @@ def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
                 data=table_data,
                 columns=["Hydrophone", "Sample Count"]
             )
-        })
+        }, step=epoch)  # Use epoch for x-axis
         
         # Create tables for each metric type
         metric_types = set()
@@ -167,7 +185,7 @@ def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
                         data=table_data,
                         columns=["Hydrophone", metric_type.capitalize(), "Sample Count"]
                     )
-                })
+                }, step=epoch)  # Use epoch for x-axis
         
         # Create interactive plots for metrics over time
         create_hydrophone_plots(hydrophone_metrics, epoch, prefix, metric_types)
@@ -221,7 +239,7 @@ def create_hydrophone_plots(hydrophone_metrics, epoch, prefix, metric_types):
                 metric_type.capitalize(),
                 title=f"{metric_type.capitalize()} by Hydrophone (Epoch {epoch})"
             )
-        })
+        }, step=epoch)  # Use epoch for x-axis
 
 def log_validation_metrics(metrics, task, epoch=None, prefix="", use_wandb=True):
     """
@@ -262,7 +280,7 @@ def log_validation_metrics(metrics, task, epoch=None, prefix="", use_wandb=True)
                         if metric_name in ['mse']:
                             wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
                     elif task == 'pretrain_joint':
-                        if metric_name in ['mpc_accuracy', 'mpg_mse']:
+                        if metric_name in ['accuracy', 'mpc_accuracy', 'mpg_mse']:
                             wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
                     
                     if metric_name == 'count':
@@ -292,7 +310,8 @@ def log_validation_metrics(metrics, task, epoch=None, prefix="", use_wandb=True)
                     elif metric_name == 'count':
                         wandb_metrics[f"{prefix}hydrophone/{hydrophone}/sample_count"] = value
     
-    wandb.log(wandb_metrics, step=epoch if epoch is not None else None)
+    # Always use epoch for x-axis
+    wandb.log(wandb_metrics, step=epoch)
 
 def log_model_artifact(model, model_path, name, type="model", metadata=None):
     """

@@ -71,17 +71,20 @@ def save_checkpoint(model, optimizer, scheduler, metrics_tracker, args, exp_dir,
         'args': args_to_save
     }
     
+    # Get task prefix for filenames
+    task_prefix = args.task.replace('_', '-')
+    
     # Save regular checkpoint
     os.makedirs(os.path.join(exp_dir, 'models'), exist_ok=True)
-    checkpoint_path = os.path.join(exp_dir, f'models/checkpoint.{epoch}.pth')
+    checkpoint_path = os.path.join(exp_dir, f'models/{task_prefix}_checkpoint.{epoch}.pth')
     torch.save(checkpoint, checkpoint_path)
-    print(f"Saved checkpoint for epoch {epoch} to {checkpoint_path}")
+    print(f"Saved {task_prefix} checkpoint for epoch {epoch} to {checkpoint_path}")
     
     # Save best checkpoint if needed
     if is_best:
-        best_path = os.path.join(exp_dir, 'models/best_checkpoint.pth')
+        best_path = os.path.join(exp_dir, f'models/{task_prefix}_best_checkpoint.pth')
         torch.save(checkpoint, best_path)
-        print(f"Saved new best checkpoint with accuracy: {safe_val_metrics.get('acc', 0.0):.6f}")
+        print(f"Saved new best {task_prefix} checkpoint with accuracy: {safe_val_metrics.get('acc', 0.0):.6f}")
 
 def load_checkpoint(checkpoint_path, device=None):
     """
@@ -116,12 +119,13 @@ def load_checkpoint(checkpoint_path, device=None):
     
     return checkpoint
 
-def find_latest_checkpoint(exp_dir):
+def find_latest_checkpoint(exp_dir, task=None):
     """
     Find the latest checkpoint in the experiment directory.
     
     Args:
         exp_dir: Experiment directory path
+        task: Optional task name to find task-specific checkpoints
         
     Returns:
         last_epoch: The epoch of the latest checkpoint
@@ -131,6 +135,9 @@ def find_latest_checkpoint(exp_dir):
     last_epoch = 0
     checkpoint_path = None
     
+    # Create task prefix if task is provided
+    task_prefix = f"{task.replace('_', '-')}_" if task else ""
+    
     # Try to get the last epoch from progress file
     if os.path.exists(progress_path):
         try:
@@ -139,8 +146,12 @@ def find_latest_checkpoint(exp_dir):
                 if progress:
                     last_epoch = progress[-1][0]  # First element is epoch
                     print(f"Found previous training progress at epoch {last_epoch}")
-                    # Look for the last saved checkpoint
-                    checkpoint_path = os.path.join(exp_dir, f'models/checkpoint.{last_epoch}.pth')
+                    # Look for the last saved checkpoint with task prefix if provided
+                    checkpoint_path = os.path.join(exp_dir, f'models/{task_prefix}checkpoint.{last_epoch}.pth')
+                    
+                    # If checkpoint with task prefix doesn't exist, try without prefix (for backward compatibility)
+                    if not os.path.isfile(checkpoint_path) and task:
+                        checkpoint_path = os.path.join(exp_dir, f'models/checkpoint.{last_epoch}.pth')
         except Exception as e:
             print(f"Could not load progress file: {str(e)}")
             last_epoch = 0
@@ -149,13 +160,34 @@ def find_latest_checkpoint(exp_dir):
     if checkpoint_path is None or not os.path.isfile(checkpoint_path):
         models_dir = os.path.join(exp_dir, 'models')
         if os.path.exists(models_dir):
-            checkpoint_files = [f for f in os.listdir(models_dir) if f.startswith('checkpoint.') and f.endswith('.pth')]
+            # Look for checkpoints with task prefix if provided
+            checkpoint_pattern = f"{task_prefix}checkpoint." if task else "checkpoint."
+            checkpoint_files = [f for f in os.listdir(models_dir) 
+                               if f.startswith(checkpoint_pattern) and f.endswith('.pth')]
+            
+            # If no checkpoints found with task prefix, try without prefix (for backward compatibility)
+            if not checkpoint_files and task:
+                checkpoint_files = [f for f in os.listdir(models_dir) 
+                                   if f.startswith("checkpoint.") and f.endswith('.pth')]
+            
             if checkpoint_files:
                 # Extract epoch numbers and find the latest
-                epochs = [int(f.split('.')[1]) for f in checkpoint_files]
-                last_epoch = max(epochs)
-                checkpoint_path = os.path.join(models_dir, f'checkpoint.{last_epoch}.pth')
-                print(f"Found checkpoint file for epoch {last_epoch}")
+                epochs = []
+                for f in checkpoint_files:
+                    # Extract epoch number from filename
+                    parts = f.split('.')
+                    if len(parts) >= 2 and parts[-1] == 'pth':
+                        try:
+                            epoch_num = int(parts[-2])
+                            epochs.append((epoch_num, f))
+                        except ValueError:
+                            continue
+                
+                if epochs:
+                    # Find the latest epoch
+                    last_epoch, latest_file = max(epochs, key=lambda x: x[0])
+                    checkpoint_path = os.path.join(models_dir, latest_file)
+                    print(f"Found checkpoint file for epoch {last_epoch}: {latest_file}")
     
     return last_epoch, checkpoint_path
 

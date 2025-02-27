@@ -1,20 +1,41 @@
+#!/usr/bin/env python
+"""
+Tiny model test script for running lightweight model training tests.
+This script creates a minimal model for testing on laptops or low-resource environments.
+"""
+
 import os
 import argparse
+import sys
+import numpy as np
 import torch
+
+# Parse arguments first, before importing any modules that might define their own argument parser
+def parse_args():
+    parser = argparse.ArgumentParser(description='Test AMBA training pipeline with tiny models')
+    parser.add_argument('data_path', type=str, help='Path to the test h5 dataset')
+    parser.add_argument('--exp_dir', type=str, default='test_exp',
+                      help='Directory to save experiment results')
+    parser.add_argument('--task', type=str, default='pretrain_joint',
+                      choices=['pretrain_mpc', 'pretrain_mpg', 'pretrain_joint', 'ft_cls'],
+                      help='Training task')
+    parser.add_argument('--no_wandb', action='store_true',
+                      help='Disable wandb logging')
+    parser.add_argument('--ultra_tiny', action='store_true',
+                      help='Use an extremely tiny model for very limited resources')
+    
+    return parser.parse_args()
+
+# Import only what we need from our utilities
 from utilities.wandb_utils import init_wandb, finish_run
 import dataloader
-import numpy as np
-from traintest_mask import trainmask
-from traintest import train
-import sys
 
-# Import AMBAModel after setting up our own argument parser to avoid conflicts
-def import_model():
-    from run_amba_spectrogram import AMBAModel
-    return AMBAModel
+# We'll import these later to avoid argument parser conflicts
+# from traintest_mask import trainmask
+# from models import AMBAModel
 
-def setup_test_args():
-    """Create a minimal set of arguments for testing with a small model."""
+def setup_tiny_model_args():
+    """Create a tiny model configuration for laptop testing."""
     args = argparse.Namespace()
     
     # Dataset parameters
@@ -23,29 +44,29 @@ def setup_test_args():
     args.val_ratio = 0.1
     args.split_seed = 42
     args.dataset = "custom"
-    args.num_mel_bins = 128  # Reduced from 512
-    args.target_length = 128  # Reduced from 512
+    args.num_mel_bins = 512  # Tiny input size
+    args.target_length = 512  # Tiny input size
     
-    # Model parameters - significantly smaller
-    args.patch_size = 8  # Smaller patches
-    args.embed_dim = 96  # Reduced from 768
-    args.depth = 4  # Reduced from 24
-    args.fshape = 8  # Reduced from 16
-    args.tshape = 8  # Reduced from 16
-    args.fstride = 8  # Reduced from 16
-    args.tstride = 8  # Reduced from 16
+    # Model parameters - tiny
+    args.patch_size = 4  # Small patches
+    args.embed_dim = 32  # Tiny embedding dimension
+    args.depth = 2  # Just 2 layers
+    args.fshape = 4
+    args.tshape = 4
+    args.fstride = 4
+    args.tstride = 4
     
     # Training parameters
-    args.batch_size = 8  # Reduced from 12
-    args.num_workers = 2  # Reduced from 4
-    args.n_epochs = 3  # Reduced from 5
+    args.batch_size = 4  # Small batch size
+    args.num_workers = 2
+    args.n_epochs = 2  # Just 2 epochs for testing
     args.lr = 1e-4
     args.warmup = True
-    args.n_print_steps = 20  # More frequent printing
+    args.n_print_steps = 10  # Frequent printing
     args.epoch_iter = 0.5  # Save every half epoch
     args.lr_patience = 2
     args.adaptschedule = True
-    args.mask_patch = 50  # Reduced from 300
+    args.mask_patch = 20  # Few patches to mask
     args.optim = "adam"
     args.save_model = True
     args.freqm = 0
@@ -68,55 +89,58 @@ def setup_test_args():
     args.use_double_cls_token = False
     args.use_middle_cls_token = False
     args.drop_path_rate = 0.1
-    args.stride = 8  # Reduced from 16
+    args.stride = 4
     args.channels = 1
-    args.num_classes = 10  # Reduced from 1000
+    args.num_classes = 10
     args.drop_rate = 0.0
     args.norm_epsilon = 1e-5
     args.bimamba_type = "v2"
+    args.model_size = "base"
     
     return args
 
-def setup_tiny_model_args():
-    """Create an extremely small model configuration for laptop testing."""
-    args = setup_test_args()
+def setup_ultra_tiny_model_args():
+    """Create an extremely tiny model configuration for very limited resources."""
+    args = setup_tiny_model_args()
     
-    # Even smaller model configuration
-    args.num_mel_bins = 64
-    args.target_length = 64
-    args.patch_size = 4
-    args.embed_dim = 32
-    args.depth = 2
-    args.fshape = 4
-    args.tshape = 4
-    args.fstride = 4
-    args.tstride = 4
-    args.batch_size = 4
-    args.mask_patch = 20
-    args.stride = 4
+    # Even smaller configuration
+    args.num_mel_bins = 512
+    args.target_length = 512
+    args.patch_size = 2
+    args.embed_dim = 16
+    args.depth = 1
+    args.fshape = 2
+    args.tshape = 2
+    args.fstride = 2
+    args.tstride = 2
+    args.batch_size = 2
+    args.mask_patch = 10
+    args.stride = 2
     
     return args
 
-def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tiny_model=False):
+def run_tiny_model_test(data_path, exp_dir, task='pretrain_joint', use_wandb=True, ultra_tiny=False):
     """
-    Run a test training loop with the specified configuration.
+    Run a test training loop with a tiny model configuration.
     
     Args:
         data_path: Path to the test h5 dataset
         exp_dir: Directory to save experiment results
         task: Training task (pretrain_mpc, pretrain_mpg, pretrain_joint, or ft_cls)
         use_wandb: Whether to log to wandb
-        tiny_model: Whether to use an extremely small model for laptop testing
+        ultra_tiny: Whether to use an extremely tiny model for very limited resources
     """
-    # Import the model here to avoid argument parser conflicts
-    AMBAModel = import_model()
+    # Import the model and training function here to avoid argument parser conflicts
+    from models import AMBAModel
+    from traintest_mask import trainmask
+    from traintest import train
     
     # Create experiment directory
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(os.path.join(exp_dir, 'models'), exist_ok=True)
     
     # Setup arguments
-    args = setup_tiny_model_args() if tiny_model else setup_test_args()
+    args = setup_ultra_tiny_model_args() if ultra_tiny else setup_tiny_model_args()
     args.data_train = data_path
     args.exp_dir = exp_dir
     args.task = task
@@ -130,7 +154,7 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tin
         )
         # Set run name manually if needed
         if run:
-            model_size = "tiny" if tiny_model else "small"
+            model_size = "ultra_tiny" if ultra_tiny else "tiny"
             run.name = f"test_{model_size}_{task}"
             run.save()
     
@@ -195,7 +219,7 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tin
     print(f"Val: {len(val_dataset)} samples")
     
     # Print model size information
-    model_size = "tiny" if tiny_model else "small"
+    model_size = "ultra_tiny" if ultra_tiny else "tiny"
     print(f"\nUsing {model_size} model configuration:")
     print(f"Embedding dimension: {args.embed_dim}")
     print(f"Depth (layers): {args.depth}")
@@ -230,15 +254,30 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tin
         'bimamba_type': args.bimamba_type
     }
     
-    audio_model = AMBAModel(
-        fshape=args.fshape, tshape=args.tshape,
-        fstride=args.fstride, tstride=args.tstride,
-        input_fdim=args.num_mel_bins,
-        input_tdim=args.target_length,
-        model_size='base',
-        pretrain_stage=True if 'pretrain' in task else False,
-        vision_mamba_config=vision_mamba_config
-    )
+    # Use the actual AMBAModel
+    if 'pretrain' in task:
+        print('Initializing model for pretraining task')
+        audio_model = AMBAModel(
+            fshape=args.fshape, tshape=args.tshape,
+            fstride=args.fshape, tstride=args.tshape,  # For pretraining, fstride=fshape and tstride=tshape
+            input_fdim=args.num_mel_bins,
+            input_tdim=args.target_length,
+            model_size=args.model_size,
+            pretrain_stage=True,
+            vision_mamba_config=vision_mamba_config
+        )
+    else:
+        print('Initializing model for fine-tuning task')
+        audio_model = AMBAModel(
+            label_dim=args.num_classes,
+            fshape=args.fshape, tshape=args.tshape,
+            fstride=args.fstride, tstride=args.tstride,
+            input_fdim=args.num_mel_bins,
+            input_tdim=args.target_length,
+            model_size=args.model_size,
+            pretrain_stage=False,
+            vision_mamba_config=vision_mamba_config
+        )
     
     # Calculate and print approximate model size
     model_parameters = sum(p.numel() for p in audio_model.parameters())
@@ -246,33 +285,34 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tin
     model_size_mb = model_parameters * 4 / (1024 * 1024)  # Assuming float32 (4 bytes)
     print(f"Approximate model size: {model_size_mb:.2f} MB")
     
-    # Start training
+    # Move model to GPU if available
+    if torch.cuda.is_available():
+        print("Using GPU for training")
+        audio_model = torch.nn.DataParallel(audio_model).cuda()
+    else:
+        print("Using CPU for training")
+        audio_model = torch.nn.DataParallel(audio_model)
+    
+    # Start training using the actual training functions
     if 'pretrain' in task:
-        print(f'Starting test pretraining for {args.n_epochs} epochs')
+        print(f'Starting pretraining for {args.n_epochs} epochs')
         trainmask(audio_model, train_loader, val_loader, args)
     else:
-        print(f'Starting test fine-tuning for {args.n_epochs} epochs')
+        print(f'Starting fine-tuning for {args.n_epochs} epochs')
         train(audio_model, train_loader, val_loader, args)
     
     if use_wandb:
         finish_run()
 
 if __name__ == "__main__":
-    # Create our own argument parser
-    parser = argparse.ArgumentParser(description='Test AMBA training pipeline with small models')
-    parser.add_argument('data_path', type=str, help='Path to the test h5 dataset')
-    parser.add_argument('--exp_dir', type=str, default='test_exp',
-                      help='Directory to save experiment results')
-    parser.add_argument('--task', type=str, default='pretrain_joint',
-                      choices=['pretrain_mpc', 'pretrain_mpg', 'pretrain_joint', 'ft_cls'],
-                      help='Training task')
-    parser.add_argument('--no_wandb', action='store_true',
-                      help='Disable wandb logging')
-    parser.add_argument('--tiny', action='store_true',
-                      help='Use an extremely small model for laptop testing')
+    # Get arguments
+    args = parse_args()
     
-    # Parse arguments before importing any modules that might define their own argument parser
-    args = parser.parse_args()
-    
-    # Run the test training
-    test_training(args.data_path, args.exp_dir, args.task, not args.no_wandb, args.tiny) 
+    # Run the test with the parsed arguments
+    run_tiny_model_test(
+        args.data_path, 
+        args.exp_dir, 
+        args.task, 
+        not args.no_wandb, 
+        args.ultra_tiny
+    ) 

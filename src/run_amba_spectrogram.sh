@@ -16,6 +16,8 @@ TRAIN_RATIO=${2:-0.8}  # Default to 0.8 if not provided
 WANDB_PROJECT=${3:-"amba_spectrogram"}
 WANDB_GROUP=${4:-"default_experiment"}  # Default group if not provided
 RESUME=${5:-"true"}  # Default to true - will automatically resume if checkpoint exists
+EXP_DIR=${6:-"/exp"}
+TASK=${7:-"pretrain_joint"}
 
 set -x
 export TORCH_HOME=../../pretrained_models
@@ -24,7 +26,7 @@ export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project
 export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project
 
 # Create experiment directory in scratch
-mkdir -p $SCRATCH/exp
+mkdir -p $EXP_DIR
 
 # Dataset parameters
 dataset=custom
@@ -39,14 +41,14 @@ val_ratio=0.1
 split_seed=42
 
 # Training parameters
-task=pretrain_joint  # or ft_cls for fine-tuning
-mask_patch=300  # Number of patches to mask during pretraining
+task=${TASK}  # or ft_cls for fine-tuning
+mask_patch=20  # Number of patches to mask during pretraining
 
 # Model architecture
 model_size=small
 patch_size=16
-embed_dim=768
-depth=24
+embed_dim=16
+depth=6
 
 # Patch parameters - no overlap in pretraining
 fshape=16
@@ -64,7 +66,7 @@ bimamba_type="v2"
 drop_path_rate=0.1
 stride=16
 channels=1
-num_classes=1000
+num_classes=10
 drop_rate=0.
 norm_epsilon=1e-5
 if_bidirectional='true'
@@ -78,7 +80,7 @@ use_middle_cls_token='false'
 
 # Training hyperparameters
 bal=none
-batch_size=16
+batch_size=5
 lr=1e-4
 lr_patience=2
 epoch=40
@@ -87,7 +89,8 @@ timem=0
 mixup=0
 
 # Experiment directory
-exp_dir=$SCRATCH/exp/amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${task}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
+exp_folder=amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
+exp_dir=${EXP_DIR}/${exp_folder}
 
 # Run the training script
 python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \

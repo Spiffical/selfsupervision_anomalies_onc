@@ -18,6 +18,7 @@ import random
 import logging
 import h5py
 from tqdm import tqdm
+import os
 
 logging.basicConfig(filename='audio_loading.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
 
@@ -97,62 +98,104 @@ class AudioDataset(Dataset):
         self.index_dict = make_index_dict(label_csv)
         self.label_num = len(self.index_dict)
         print('number of classes is {:d}'.format(self.label_num))
+        
+        # Create sources attribute for hydrophone metrics
+        self.sources = []
+        for item in self.data:
+            # Use filename as source if available, otherwise use a dummy source
+            if 'wav' in item:
+                # Extract hydrophone name from filename (e.g., "hydrophone_1_sample.wav" -> "hydrophone_1")
+                filename = item['wav']
+                basename = os.path.basename(filename)
+                parts = basename.split('_')
+                if len(parts) > 1:
+                    source = f"{parts[0]}_{parts[1]}"
+                else:
+                    source = f"hydrophone_{hash(filename) % 5 + 1}"
+            else:
+                # Create a dummy source
+                source = f"hydrophone_{len(self.sources) % 5 + 1}"
+            self.sources.append(source)
+        
+        print(f"Created {len(self.sources)} sources with {len(set(self.sources))} unique hydrophones")
 
     def _wav2fbank(self, filename, filename2=None):
-        # mixup
-        try:
-            if filename2 == None:
-                waveform, sr = torchaudio.load(filename)
-                waveform = waveform - waveform.mean()
-            # mixup
-            else:
-                waveform1, sr = torchaudio.load(filename)
-                waveform2, _ = torchaudio.load(filename2)
-
-                waveform1 = waveform1 - waveform1.mean()
-                waveform2 = waveform2 - waveform2.mean()
-
-                if waveform1.shape[1] != waveform2.shape[1]:
-                    if waveform1.shape[1] > waveform2.shape[1]:
-                        # padding
-                        temp_wav = torch.zeros(1, waveform1.shape[1])
-                        temp_wav[0, 0:waveform2.shape[1]] = waveform2
-                        waveform2 = temp_wav
-                    else:
-                        # cutting
-                        waveform2 = waveform2[0, 0:waveform1.shape[1]]
-
-                # sample lambda from uniform distribution
-                #mix_lambda = random.random()
-                # sample lambda from beta distribtion
-                mix_lambda = np.random.beta(10, 10)
-
-                mix_waveform = mix_lambda * waveform1 + (1 - mix_lambda) * waveform2
-                waveform = mix_waveform - mix_waveform.mean()
-        except Exception as e:
-            print(f"Error loading file {filename}: {e}")
-            logging.error(f"Error loading file {filename}: {e}")
-            raise e  
-
-        fbank = torchaudio.compliance.kaldi.fbank(waveform, htk_compat=True, sample_frequency=sr, use_energy=False,
-                                                  window_type='hanning', num_mel_bins=self.melbins, dither=0.0, frame_shift=10)
-
-        target_length = self.audio_conf.get('target_length')
-        n_frames = fbank.shape[0]
-
-        p = target_length - n_frames
-
-        # cut and pad
-        if p > 0:
-            m = torch.nn.ZeroPad2d((0, 0, 0, p))
-            fbank = m(fbank)
-        elif p < 0:
-            fbank = fbank[0:target_length, :]
-
-        if filename2 == None:
-            return fbank, 0
+        """
+        Loads and processes audio file into spectrogram.
+        
+        Args:
+            filename: Path to audio file
+            filename2: Path to second audio file for mixup (optional)
+            
+        Returns:
+            fbank: Spectrogram tensor
+        """
+        # Mixup with two files
+        if filename2 is not None:
+            waveform1, sr = torchaudio.load(filename)
+            waveform2, _ = torchaudio.load(filename2)
+            
+            # Ensure same length by padding or truncating
+            if waveform1.shape[1] != waveform2.shape[1]:
+                if waveform1.shape[1] > waveform2.shape[1]:
+                    # Pad waveform2
+                    temp_wav = torch.zeros(1, waveform1.shape[1])
+                    temp_wav[0, 0:waveform2.shape[1]] = waveform2
+                    waveform2 = temp_wav
+                else:
+                    # Truncate waveform1
+                    waveform1 = waveform1[0, 0:waveform2.shape[1]]
+            
+            # Sample lambda from beta distribution
+            mix_lambda = np.random.beta(10, 10)
+            
+            # Mix waveforms
+            waveform = mix_lambda * waveform1 + (1 - mix_lambda) * waveform2
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
         else:
-            return fbank, mix_lambda
+            # Load single file
+            try:
+                waveform, sr = torchaudio.load(filename)
+                # Convert to mono if stereo
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+            except Exception as e:
+                logging.error(f"Error loading {filename}: {e}")
+                # Return zeros if file can't be loaded
+                waveform = torch.zeros(1, 16000)
+                sr = 16000
+        
+        # Resample if needed
+        target_sr = self.audio_conf.get('target_sr', 16000)
+        if sr != target_sr:
+            waveform = torchaudio.transforms.Resample(sr, target_sr)(waveform)
+        
+        # Convert to spectrogram
+        fbank = torchaudio.compliance.kaldi.fbank(
+            waveform, 
+            htk_compat=True,
+            sample_frequency=target_sr,
+            use_energy=False,
+            window_type='hanning',
+            num_mel_bins=self.melbins,
+            dither=0.0,
+            frame_shift=10
+        )
+        
+        # Normalize if not skipping
+        if not self.skip_norm:
+            fbank = (fbank - self.norm_mean) / (self.norm_std * 2)
+        
+        # Add noise if enabled
+        if self.noise:
+            fbank = fbank + torch.rand(fbank.shape[0], fbank.shape[1]) * np.random.rand() / 10
+            fbank = torch.roll(fbank, np.random.randint(-10, 10), 0)
+        
+        # Return spectrogram
+        return fbank
 
     def __getitem__(self, index):
         """
@@ -161,63 +204,57 @@ class AudioDataset(Dataset):
         audio is a FloatTensor of size (N_freq, N_frames) for spectrogram, or (N_frames) for waveform
         nframes is an integer
         """
-        # do mix-up for this sample (controlled by the given mixup rate)
-        if random.random() < self.mixup:
-            datum = self.data[index]
-            # find another sample to mix, also do balance sampling
-            # sample the other sample from the multinomial distribution, will make the performance worse
-            # mix_sample_idx = np.random.choice(len(self.data), p=self.sample_weight_file)
-            # sample the other sample from the uniform distribution
-            mix_sample_idx = random.randint(0, len(self.data)-1)
-            mix_datum = self.data[mix_sample_idx]
-            # get the mixed fbank
-            fbank, mix_lambda = self._wav2fbank(datum['wav'], mix_datum['wav'])
-            # initialize the label
-            label_indices = np.zeros(self.label_num)
-            # add sample 1 labels
+        datum = self.data[index]
+        label_indices = np.zeros(self.label_num)
+        # wav
+        fbank = self._wav2fbank(datum['wav'])
+        label_indices = np.zeros(self.label_num)
+
+        if not self.audio_conf.get('multi_label'):
+            # integer encode
             for label_str in datum['labels'].split(','):
-                label_indices[int(self.index_dict[label_str])] += mix_lambda
-            # add sample 2 labels
-            for label_str in mix_datum['labels'].split(','):
-                label_indices[int(self.index_dict[label_str])] += (1.0-mix_lambda)
-            label_indices = torch.FloatTensor(label_indices)
-        # if not do mixup
+                label_indices[int(self.index_dict[label_str])] = 1.0
         else:
-            datum = self.data[index]
-            label_indices = np.zeros(self.label_num)
-            fbank, mix_lambda = self._wav2fbank(datum['wav'])
+            # one-hot encode
             for label_str in datum['labels'].split(','):
                 label_indices[int(self.index_dict[label_str])] = 1.0
 
-            label_indices = torch.FloatTensor(label_indices)
+        label_indices = torch.FloatTensor(label_indices)
 
         # SpecAug, not do for eval set
         freqm = torchaudio.transforms.FrequencyMasking(self.freqm)
         timem = torchaudio.transforms.TimeMasking(self.timem)
         fbank = torch.transpose(fbank, 0, 1)
-        # this is just to satisfy new torchaudio version.
-        fbank = fbank.unsqueeze(0)
         if self.freqm != 0:
             fbank = freqm(fbank)
         if self.timem != 0:
             fbank = timem(fbank)
-        # squeeze back
-        fbank = fbank.squeeze(0)
         fbank = torch.transpose(fbank, 0, 1)
 
-        # normalize the input for both training and test
-        if not self.skip_norm:
-            fbank = (fbank - self.norm_mean) / (self.norm_std * 2)
-        # skip normalization the input if you are trying to get the normalization stats.
-        else:
-            pass
+        # mixup
+        if random.random() < self.mixup:
+            mix_sample_idx = random.randint(0, len(self.data)-1)
+            mix_datum = self.data[mix_sample_idx]
+            mix_fbank = self._wav2fbank(mix_datum['wav'])
+            mix_label_indices = np.zeros(self.label_num)
+            
+            if not self.audio_conf.get('multi_label'):
+                for label_str in mix_datum['labels'].split(','):
+                    mix_label_indices[int(self.index_dict[label_str])] = 1.0
+            else:
+                for label_str in mix_datum['labels'].split(','):
+                    mix_label_indices[int(self.index_dict[label_str])] = 1.0
+                    
+            mix_label_indices = torch.FloatTensor(mix_label_indices)
+            lam = np.random.beta(10, 10)
+            fbank = lam * fbank + (1 - lam) * mix_fbank
+            label_indices = lam * label_indices + (1 - lam) * mix_label_indices
 
-        if self.noise == True:
-            fbank = fbank + torch.rand(fbank.shape[0], fbank.shape[1]) * np.random.rand() / 10
-            fbank = torch.roll(fbank, np.random.randint(-10, 10), 0)
-
-        # the output fbank shape is [time_frame_num, frequency_bins], e.g., [1024, 128]
-        return fbank, label_indices
+        # Get source for this sample
+        source = self.sources[index]
+        
+        # Return spectrogram, labels, and source
+        return fbank, label_indices, source
 
     def __len__(self):
         return len(self.data)
@@ -333,6 +370,35 @@ class HDF5Dataset(Dataset):
             self.indices = indices[val_size + int(train_ratio * total_size):]  # Remaining samples for test
         
         print(f"Using {len(self.indices)} samples for {split} split")
+        
+        # Load sources if available in the HDF5 file
+        if 'sources' in self.h5_file:
+            try:
+                # Try to load all sources at once for better performance
+                all_sources = self.h5_file['sources'][:]
+                # Convert bytes to strings if needed
+                if isinstance(all_sources[0], bytes):
+                    all_sources = [s.decode('utf-8') for s in all_sources]
+                self.sources = all_sources
+                print(f"Loaded {len(self.sources)} sources from HDF5 file")
+            except Exception as e:
+                print(f"Error loading sources from HDF5 file: {e}")
+                # Create dummy sources as fallback
+                self._create_dummy_sources()
+        else:
+            print("No 'sources' dataset found in HDF5 file. Creating dummy sources.")
+            self._create_dummy_sources()
+    
+    def _create_dummy_sources(self):
+        """Create dummy sources for hydrophone metrics tracking."""
+        total_size = len(self.h5_file['spectrograms'])
+        # Create dummy hydrophone names (hydrophone_1, hydrophone_2, etc.)
+        self.sources = []
+        for i in range(total_size):
+            # Create 5 different dummy hydrophones
+            hydrophone_id = f"hydrophone_{i % 5 + 1}"
+            self.sources.append(hydrophone_id)
+        print(f"Created {len(self.sources)} dummy sources with {len(set(self.sources))} unique hydrophones")
 
     def __getitem__(self, index):
         """
@@ -348,42 +414,40 @@ class HDF5Dataset(Dataset):
         label_indices = torch.from_numpy(self.h5_file['labels'][actual_index]).float()
         
         # do mix-up for this sample (controlled by the given mixup rate)
-        if random.random() < self.mixup:
-            # sample another index from our split
-            mix_idx = random.randint(0, len(self.indices)-1)
-            actual_mix_idx = self.indices[mix_idx]
+        if random.random() < self.mixup and self.split == 'train':
+            # select another sample
+            mix_sample_idx = random.randint(0, len(self.indices)-1)
+            mix_actual_index = self.indices[mix_sample_idx]
             
-            # get the mixed spectrogram
-            mix_fbank = torch.from_numpy(self.h5_file['spectrograms'][actual_mix_idx]).float()
-            mix_label = torch.from_numpy(self.h5_file['labels'][actual_mix_idx]).float()
+            # get the spectrogram and labels
+            mix_fbank = torch.from_numpy(self.h5_file['spectrograms'][mix_actual_index]).float()
+            mix_label_indices = torch.from_numpy(self.h5_file['labels'][mix_actual_index]).float()
             
             # sample lambda from beta distribution
-            mix_lambda = np.random.beta(10, 10)
+            lam = np.random.beta(10, 10)
             
-            # mix the spectrograms and labels
-            fbank = mix_lambda * fbank + (1 - mix_lambda) * mix_fbank
-            label_indices = mix_lambda * label_indices + (1 - mix_lambda) * mix_label
-
-        # SpecAug, not do for eval set
-        if self.split == 'train':
-            freqm = torchaudio.transforms.FrequencyMasking(self.freqm)
-            timem = torchaudio.transforms.TimeMasking(self.timem)
-            fbank = torch.transpose(fbank, 0, 1)
-            # this is just to satisfy new torchaudio version
-            fbank = fbank.unsqueeze(0)
-            if self.freqm != 0:
-                fbank = freqm(fbank)
-            if self.timem != 0:
-                fbank = timem(fbank)
-            # squeeze back
-            fbank = fbank.squeeze(0)
-            fbank = torch.transpose(fbank, 0, 1)
-
+            # mix
+            fbank = lam * fbank + (1 - lam) * mix_fbank
+            label_indices = lam * label_indices + (1 - lam) * mix_label_indices
+        
         # normalize the input
-        fbank = (fbank - self.dataset_mean) / (self.dataset_std * 2)
-
-        # the output fbank shape is [time_frame_num, frequency_bins], e.g., [1024, 128]
-        return fbank, label_indices
+        fbank = (fbank - self.dataset_mean) / self.dataset_std
+        
+        # SpecAug, not do for eval set
+        freqm = torchaudio.transforms.FrequencyMasking(self.freqm)
+        timem = torchaudio.transforms.TimeMasking(self.timem)
+        
+        if self.freqm != 0 and self.split == 'train':
+            fbank = freqm(fbank)
+        
+        if self.timem != 0 and self.split == 'train':
+            fbank = timem(fbank)
+        
+        # Get source for this sample
+        source = self.sources[actual_index]
+        
+        # Return spectrogram, labels, and source
+        return fbank, label_indices, source
 
     def __len__(self):
         return len(self.indices)

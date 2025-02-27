@@ -13,7 +13,8 @@ import numpy as np
 from traintest import train, validate
 from traintest_mask import trainmask
 import datetime
-from utilities.wandb_utils import init_wandb, finish_run
+from utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
+from onc_dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
 
@@ -191,106 +192,87 @@ val_audio_conf = {
     'noise': False
 }
 
-# Create data loaders using HDF5Dataset with splits
-print('Creating train/val/test splits from HDF5 dataset')
+# Create data loaders using ONCSpectrogramDataset with splits
+print('Creating train/val/test splits from ONC dataset')
 
-# Create datasets with consistent split parameters
-train_dataset = dataloader.HDF5Dataset(
-    h5_path=args.data_train,
-    split='train',
+# Get datasets using the helper function from onc_dataset.py
+ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = get_onc_spectrogram_data(
+    data_path=args.data_train,
+    seed=args.split_seed,
     train_ratio=args.train_ratio,
     val_ratio=args.val_ratio,
-    seed=args.split_seed,
     target_length=args.target_length,
     num_mel_bins=args.num_mel_bins,
     freqm=args.freqm,
     timem=args.timem,
     dataset_mean=args.dataset_mean,
     dataset_std=args.dataset_std,
-    mixup=args.mixup
+    mixup=args.mixup,
+    ood=-1,  # No OOD filtering
+    amount=1.0,
+    subsample_test=True
 )
 
-val_dataset = dataloader.HDF5Dataset(
-    h5_path=args.data_train,
-    split='val',
-    train_ratio=args.train_ratio,
-    val_ratio=args.val_ratio,
-    seed=args.split_seed,
-    target_length=args.target_length,
-    num_mel_bins=args.num_mel_bins,
-    freqm=0,  # No augmentation for validation
-    timem=0,  # No augmentation for validation
-    dataset_mean=args.dataset_mean,
-    dataset_std=args.dataset_std,
-    mixup=0.0  # No mixup for validation
-)
-
-train_loader = torch.utils.data.DataLoader(
-    train_dataset,
-    batch_size=args.batch_size, 
-    shuffle=True, 
-    num_workers=args.num_workers, 
-    pin_memory=False, 
-    drop_last=True
-)
-
-print(f"Training dataset size: {len(train_dataset)}")
-print(f"Number of training batches: {len(train_loader)}")
-
-val_loader = torch.utils.data.DataLoader(
-    val_dataset,
-    batch_size=args.batch_size * 2, 
-    shuffle=False, 
-    num_workers=args.num_workers, 
-    pin_memory=False
-)
-
-# Create test loader if evaluation is needed
-if args.data_eval is None:
-    print("Using test split from training data")
-    eval_dataset = dataloader.HDF5Dataset(
-        h5_path=args.data_train,
-        split='test',
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        seed=args.split_seed,
-        target_length=args.target_length,
-        num_mel_bins=args.num_mel_bins,
-        freqm=0,  # No augmentation for test
-        timem=0,  # No augmentation for test
-        dataset_mean=args.dataset_mean,
-        dataset_std=args.dataset_std,
-        mixup=0.0  # No mixup for test
+# Use the appropriate datasets based on the task
+if 'pretrain' in args.task:
+    # For pretraining, use the SSL datasets (normal samples only)
+    train_loader = torch.utils.data.DataLoader(
+        ssl_train_dataset,
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers, 
+        pin_memory=False, 
+        drop_last=True
+    )
+    
+    val_loader = torch.utils.data.DataLoader(
+        ssl_val_dataset,
+        batch_size=args.batch_size * 2, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        pin_memory=False
+    )
+    
+    eval_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size * 2, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        pin_memory=True
     )
 else:
-    print("Using separate evaluation dataset")
-    eval_dataset = dataloader.HDF5Dataset(
-        h5_path=args.data_eval,
-        split='test',
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        seed=args.split_seed,
-        target_length=args.target_length,
-        num_mel_bins=args.num_mel_bins,
-        freqm=0,  # No augmentation for test
-        timem=0,  # No augmentation for test
-        dataset_mean=args.dataset_mean,
-        dataset_std=args.dataset_std,
-        mixup=0.0  # No mixup for test
+    # For fine-tuning, use the supervised datasets (balanced normal/anomalous)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers, 
+        pin_memory=False, 
+        drop_last=True
+    )
+    
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size * 2, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        pin_memory=False
+    )
+    
+    eval_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size * 2, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        pin_memory=True
     )
 
-eval_loader = torch.utils.data.DataLoader(
-    eval_dataset,
-    batch_size=args.batch_size * 2, 
-    shuffle=False, 
-    num_workers=args.num_workers, 
-    pin_memory=True
-)
-
 print('Dataset splits:')
-print(f'Train: {len(train_dataset)} samples')
-print(f'Val: {len(val_dataset)} samples')
-print(f'Test: {len(eval_dataset)} samples')
+print(f'SSL Train (normal only): {len(ssl_train_dataset)} samples')
+print(f'SSL Val (normal only): {len(ssl_val_dataset)} samples')
+print(f'Supervised Train (balanced): {len(train_dataset)} samples')
+print(f'Supervised Val (balanced): {len(val_dataset)} samples')
+print(f'Test: {len(test_dataset)} samples')
 
 # Vision Mamba configuration
 vision_mamba_config = {
@@ -366,19 +348,6 @@ steps_per_epoch = len(train_loader)  # number of batches per epoch
 args.epoch_iter = int(steps_per_epoch * args.epoch_iter)
 print(f"Saving model every {args.epoch_iter} steps ({args.epoch_iter/steps_per_epoch:.1%} of an epoch)")
 
-# Initialize WandB if enabled
-if args.use_wandb:
-    wandb.init(
-        project=args.wandb_project,
-        config=args,
-        entity=args.wandb_entity,
-        resume="allow",
-        group=args.wandb_group
-    )
-    # Save the run ID for future resumption
-    with open(os.path.join(args.exp_dir, 'wandb_run_id.txt'), 'w') as f:
-        f.write(wandb.run.id)
-
 # Start training
 if 'pretrain' not in args.task:
     print('Now starting fine-tuning for {:d} epochs'.format(args.n_epochs))
@@ -411,7 +380,6 @@ if args.data_eval is not None:
     print("Accuracy: {:.6f}".format(eval_acc))
     print("AUC: {:.6f}".format(eval_mAUC))
     if args.use_wandb:
-        from utilities.wandb_utils import log_training_metrics
         log_training_metrics({
             "val_accuracy": val_acc, 
             "val_mAUC": val_mAUC,

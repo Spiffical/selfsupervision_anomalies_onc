@@ -7,3 +7,5 @@ cuda-keyring_1.1-1_all.deb.1
 audio_loading.log
 wandb/
 .env
+testing_dataset.h5
+onc_dataset.log

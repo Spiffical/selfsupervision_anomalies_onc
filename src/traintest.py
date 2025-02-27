@@ -19,12 +19,17 @@ from torch import nn
 import numpy as np
 import pickle
 from torch.cuda.amp import autocast,GradScaler
-from utilities.wandb_utils import log_training_metrics
+from utilities.wandb_utils import log_training_metrics, init_wandb, finish_run
 
 def train(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('running on ' + str(device))
     torch.set_grad_enabled(True)
+
+    # Initialize wandb if enabled and not already initialized
+    if args.use_wandb and not hasattr(args, 'wandb_initialized'):
+        init_wandb(args)
+        args.wandb_initialized = True
 
     # Initialize metrics tracking
     metrics_tracker = MetricsTracker(args.exp_dir, args, use_wandb=args.use_wandb)
@@ -111,7 +116,16 @@ def train(audio_model, train_loader, test_loader, args):
         print(datetime.datetime.now())
         print("Current epoch=%s, steps=%s" % (epoch, global_step))
 
-        for i, (audio_input, labels) in enumerate(train_loader):
+        for i, batch_data in enumerate(train_loader):
+            # Handle different return formats from different dataset classes
+            if isinstance(batch_data, tuple) and len(batch_data) == 3:  # Dataset returns (input, labels, sources)
+                audio_input, labels, sources = batch_data
+            elif isinstance(batch_data, tuple) and len(batch_data) == 2:  # Dataset returns (input, labels)
+                audio_input, labels = batch_data
+                sources = None
+            else:
+                raise ValueError(f"Unexpected batch data format with {len(batch_data)} elements")
+                
             B = audio_input.size(0)
             audio_input = audio_input.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
@@ -182,13 +196,45 @@ def train(audio_model, train_loader, test_loader, args):
         print('Starting validation...')
         val_collector.reset()
         
+        print("\n[DEBUG] Starting validation...")
+
+        # Check if dataset returns sources directly or has sources attribute
+        has_sources = hasattr(test_loader.dataset, 'sources') or hasattr(test_loader.dataset, 'sample_info')
+        if not has_sources:
+            print("[DEBUG] Dataset doesn't have sources attribute or sample_info. Hydrophone metrics may not be available.")
+            print("[DEBUG] Make sure your dataset's __getitem__ method returns sources or has a sources attribute.")
+
         with torch.no_grad():
-            for val_batch, (val_input, val_labels) in enumerate(test_loader):
-                val_input = val_input.to(device)
-                val_labels = val_labels.to(device)
-                sources = None
-                if hasattr(test_loader.dataset, 'sources'):
-                    sources = test_loader.dataset.sources[test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size]]
+            for val_batch, batch_data in enumerate(test_loader):
+                # Handle different return formats from different dataset classes
+                if isinstance(batch_data, tuple) and len(batch_data) == 3:  # Dataset returns (input, labels, sources)
+                    val_input, val_labels, sources = batch_data
+                    val_input = val_input.to(device)
+                    val_labels = val_labels.to(device)
+                    if val_batch == 0:  # Only print for first batch to avoid too much output
+                        print(f"[DEBUG] Batch {val_batch}: Found sources with length {len(sources)}")
+                        print(f"[DEBUG] First few sources: {sources[:5] if len(sources) >= 5 else sources}")
+                elif isinstance(batch_data, tuple) and len(batch_data) == 2:  # Dataset returns (input, labels)
+                    val_input, val_labels = batch_data
+                    val_input = val_input.to(device)
+                    val_labels = val_labels.to(device)
+                    sources = None
+                    if val_batch == 0:
+                        print(f"[DEBUG] Batch {val_batch}: No sources found in batch data")
+                        
+                        # Try to get sources from dataset if available
+                        if hasattr(test_loader.dataset, 'sample_info'):
+                            # For ONCSpectrogramDataset
+                            batch_indices = list(range(val_batch*test_loader.batch_size, 
+                                                  min((val_batch+1)*test_loader.batch_size, 
+                                                      len(test_loader.dataset))))
+                            sources = [test_loader.dataset.sample_info[i]['source'] for i in batch_indices]
+                            print(f"[DEBUG] Retrieved sources from ONCSpectrogramDataset sample_info: {len(sources)}")
+                        elif hasattr(test_loader.dataset, 'sources'):
+                            # For other dataset types
+                            batch_indices = test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size] if hasattr(test_loader.dataset, 'indices') else list(range(val_batch*test_loader.batch_size, min((val_batch+1)*test_loader.batch_size, len(test_loader.dataset))))
+                            sources = [test_loader.dataset.sources[i] for i in batch_indices]
+                            print(f"[DEBUG] Retrieved sources from dataset.sources: {len(sources)}")
                 
                 # Get model output
                 val_output = audio_model(val_input, args.task)
@@ -202,7 +248,9 @@ def train(audio_model, train_loader, test_loader, args):
                 val_collector.update((val_output, val_loss), val_labels, sources)
         
         # Compute validation metrics
+        print("[DEBUG] Computing validation metrics...")
         val_metrics = val_collector.compute_metrics()
+        print("[DEBUG] Logging validation metrics...")
         val_collector.log_metrics(val_metrics, epoch=epoch, prefix="ft_", use_wandb=args.use_wandb)
         
         # Calculate ensemble metrics
@@ -240,6 +288,7 @@ def train(audio_model, train_loader, test_loader, args):
 
         # Log metrics to wandb at the end of each epoch
         if args.use_wandb:
+            # Create metrics dictionary with training and validation metrics
             metrics_dict = {
                 "ft_epoch": epoch,
                 "ft_train_loss": train_meters.get_value('loss'),
@@ -254,17 +303,26 @@ def train(audio_model, train_loader, test_loader, args):
                 "learning_rate": optimizer.param_groups[0]['lr']
             }
             
-            # Add per-hydrophone metrics with proper naming for WandB visualization
-            if val_metrics['hydrophone_metrics']:
-                for hydrophone, metrics in val_metrics['hydrophone_metrics'].items():
-                    for metric_name, value in metrics.items():
-                        # Format metric names for better visualization in WandB
-                        if metric_name in ['accuracy', 'precision', 'recall', 'f2']:
-                            metrics_dict[f"hydrophone_metrics/{hydrophone}/val_{metric_name}"] = value
-                        elif metric_name == 'count':
-                            metrics_dict[f"hydrophone_metrics/{hydrophone}/sample_count"] = value
+            # Include hydrophone metrics if available
+            print("\n[DEBUG] Checking for hydrophone_metrics in val_metrics...")
+            if 'hydrophone_metrics' in val_metrics:
+                print(f"[DEBUG] hydrophone_metrics found in val_metrics: {bool(val_metrics['hydrophone_metrics'])}")
+                if val_metrics['hydrophone_metrics']:
+                    print(f"[DEBUG] Number of hydrophones: {len(val_metrics['hydrophone_metrics'])}")
+                    print(f"[DEBUG] Hydrophones: {list(val_metrics['hydrophone_metrics'].keys())}")
+                    for hydrophone, metrics in val_metrics['hydrophone_metrics'].items():
+                        print(f"[DEBUG] {hydrophone} metrics: {metrics}")
+                    metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
+                else:
+                    print("[DEBUG] hydrophone_metrics is empty")
+            else:
+                print("[DEBUG] No hydrophone_metrics key in val_metrics")
+                print(f"[DEBUG] val_metrics keys: {val_metrics.keys()}")
             
-            log_training_metrics(metrics_dict)
+            # Log all metrics
+            print("[DEBUG] Calling metrics_tracker.log_training_metrics...")
+            metrics_tracker.log_training_metrics(metrics_dict)
+            print("[DEBUG] Finished calling metrics_tracker.log_training_metrics")
 
         # Save model if performance improved
         if metrics_tracker.should_save_best(val_metrics[args.main_metric], metric_name=args.main_metric):
@@ -324,3 +382,8 @@ def train(audio_model, train_loader, test_loader, args):
         print(f"AUC: {stats['auc']:.6f}")
         print(f"Accuracy: {stats['acc']:.6f}")
         np.savetxt(args.exp_dir + '/wa_result.csv', [stats['mAP'], stats['auc'], stats['acc']])
+        
+    # Finish wandb run if enabled and initialized in this function
+    if args.use_wandb and hasattr(args, 'wandb_initialized') and args.wandb_initialized:
+        finish_run()
+        args.wandb_initialized = False

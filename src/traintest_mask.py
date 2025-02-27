@@ -50,8 +50,8 @@ def trainmask(audio_model, train_loader, test_loader, args):
     
     # Check if we need to resume from a checkpoint
     if hasattr(args, 'resume') and args.resume:
-        # Find the latest checkpoint
-        last_epoch, checkpoint_path = find_latest_checkpoint(args.exp_dir)
+        # Find the latest checkpoint for the current task
+        last_epoch, checkpoint_path = find_latest_checkpoint(args.exp_dir, task=args.task)
         
         if checkpoint_path and os.path.isfile(checkpoint_path):
             # Load checkpoint
@@ -98,7 +98,16 @@ def trainmask(audio_model, train_loader, test_loader, args):
         audio_model.train()
         print(datetime.datetime.now())
 
-        for i, (audio_input, _) in enumerate(train_loader):
+        for i, batch_data in enumerate(train_loader):
+            # Handle different return formats from different dataset classes
+            if len(batch_data) == 3:  # Dataset returns (input, labels, sources)
+                audio_input, _, sources = batch_data
+            elif len(batch_data) == 2:  # Dataset returns (input, labels)
+                audio_input, _ = batch_data
+                sources = None
+            else:
+                raise ValueError(f"Unexpected batch data format with {len(batch_data)} elements")
+                
             B = audio_input.size(0)
             audio_input = audio_input.to(device, non_blocking=True)
 
@@ -176,12 +185,44 @@ def trainmask(audio_model, train_loader, test_loader, args):
                 audio_model.eval()
                 val_collector.reset()
                 
+                print("\n[DEBUG] Starting validation...")
+                
+                # Check if dataset returns sources directly or has sources attribute
+                # We'll let the validation loop handle this instead of creating dummy sources
+                has_sources = hasattr(test_loader.dataset, 'sources') or hasattr(test_loader.dataset, 'sample_info')
+                if not has_sources:
+                    print("[DEBUG] Dataset doesn't have sources attribute or sample_info. Hydrophone metrics may not be available.")
+                    print("[DEBUG] Make sure your dataset's __getitem__ method returns sources or has a sources attribute.")
+                
                 with torch.no_grad():
-                    for val_batch, (val_input, _) in enumerate(test_loader):
-                        val_input = val_input.to(device)
-                        sources = None
-                        if hasattr(test_loader.dataset, 'sources'):
-                            sources = test_loader.dataset.sources[test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size]]
+                    for val_batch, batch_data in enumerate(test_loader):
+                        # Handle different return formats from different dataset classes
+                        if len(batch_data) == 3:  # Dataset returns (input, labels, sources)
+                            val_input, _, sources = batch_data
+                            val_input = val_input.to(device)
+                            if val_batch == 0:  # Only print for first batch to avoid too much output
+                                print(f"[DEBUG] Batch {val_batch}: Found sources with length {len(sources)}")
+                                print(f"[DEBUG] First few sources: {sources[:5]}")
+                        elif len(batch_data) == 2:  # Dataset returns (input, labels)
+                            val_input, _ = batch_data
+                            val_input = val_input.to(device)
+                            sources = None
+                            if val_batch == 0:
+                                print(f"[DEBUG] Batch {val_batch}: No sources found in batch data")
+                                
+                                # Try to get sources from dataset if available
+                                if hasattr(test_loader.dataset, 'sample_info'):
+                                    # For ONCSpectrogramDataset
+                                    batch_indices = list(range(val_batch*test_loader.batch_size, 
+                                                              min((val_batch+1)*test_loader.batch_size, 
+                                                                  len(test_loader.dataset))))
+                                    sources = [test_loader.dataset.sample_info[i]['source'] for i in batch_indices]
+                                    print(f"[DEBUG] Retrieved sources from ONCSpectrogramDataset sample_info: {len(sources)}")
+                                elif hasattr(test_loader.dataset, 'sources'):
+                                    # For other dataset types
+                                    batch_indices = test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size] if hasattr(test_loader.dataset, 'indices') else list(range(val_batch*test_loader.batch_size, min((val_batch+1)*test_loader.batch_size, len(test_loader.dataset))))
+                                    sources = [test_loader.dataset.sources[i] for i in batch_indices]
+                                    print(f"[DEBUG] Retrieved sources from dataset.sources: {len(sources)}")
                         
                         # Get model output based on task
                         if args.task == 'pretrain_mpc':
@@ -196,7 +237,10 @@ def trainmask(audio_model, train_loader, test_loader, args):
                         val_collector.update(output, val_input, sources)
                 
                 # Compute and log validation metrics
+                print("[DEBUG] Computing validation metrics...")
                 val_metrics = val_collector.compute_metrics()
+                print("[DEBUG] Logging validation metrics...")
+                
                 val_collector.log_metrics(val_metrics, epoch=equ_epoch, prefix="pt_", use_wandb=args.use_wandb)
                 
                 # Print training metrics
@@ -211,7 +255,9 @@ def trainmask(audio_model, train_loader, test_loader, args):
                     val_metrics['nce'],
                     optimizer.param_groups[0]['lr']
                 ]
-                np.savetxt(f"{args.exp_dir}/result.csv", result, delimiter=',')
+                # Include task in the result filename
+                task_prefix = args.task.replace('_', '-')
+                np.savetxt(f"{args.exp_dir}/{task_prefix}_result.csv", result, delimiter=',')
 
                 # Log metrics to wandb at the end of each epoch
                 if args.use_wandb:
@@ -222,16 +268,29 @@ def trainmask(audio_model, train_loader, test_loader, args):
                         "pt_train_accuracy": train_meters.get_value('acc'),
                         "pt_val_loss": val_metrics['nce'],
                         "pt_val_accuracy": val_metrics['acc'],
-                        "pt_learning_rate": optimizer.param_groups[0]['lr'],
-                        "pt_step": global_step
+                        "pt_learning_rate": optimizer.param_groups[0]['lr']
                     }
                     
                     # Include hydrophone metrics if available
-                    if 'hydrophone_metrics' in val_metrics and val_metrics['hydrophone_metrics']:
-                        metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
-                        
+                    print("\n[DEBUG] Checking for hydrophone_metrics in val_metrics...")
+                    if 'hydrophone_metrics' in val_metrics:
+                        print(f"[DEBUG] hydrophone_metrics found in val_metrics: {bool(val_metrics['hydrophone_metrics'])}")
+                        if val_metrics['hydrophone_metrics']:
+                            print(f"[DEBUG] Number of hydrophones: {len(val_metrics['hydrophone_metrics'])}")
+                            print(f"[DEBUG] Hydrophones: {list(val_metrics['hydrophone_metrics'].keys())}")
+                            for hydrophone, metrics in val_metrics['hydrophone_metrics'].items():
+                                print(f"[DEBUG] {hydrophone} metrics: {metrics}")
+                            metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
+                        else:
+                            print("[DEBUG] hydrophone_metrics is empty")
+                    else:
+                        print("[DEBUG] No hydrophone_metrics key in val_metrics")
+                        print(f"[DEBUG] val_metrics keys: {val_metrics.keys()}")
+                    
                     # Log all metrics
+                    print("[DEBUG] Calling metrics_tracker.log_training_metrics...")
                     metrics_tracker.log_training_metrics(metrics_dict)
+                    print("[DEBUG] Finished calling metrics_tracker.log_training_metrics")
 
                 # Save model if validation accuracy improved
                 if metrics_tracker.should_save_best(val_metrics['acc']):
@@ -312,13 +371,50 @@ def validatemask(audio_model, val_loader, args, epoch):
     A_sources = []
 
     with torch.no_grad():
-        for i, (audio_input, _) in enumerate(val_loader):
-            audio_input = audio_input.to(device)
+        for i, batch_data in enumerate(val_loader):
+            # Handle different return formats from different dataset classes
+            if len(batch_data) == 3:  # Dataset returns (input, labels, sources)
+                audio_input, _, sources = batch_data
+                audio_input = audio_input.to(device)
+                
+                # Process sources to extract hydrophone names
+                processed_sources = []
+                for source in sources:
+                    if isinstance(source, bytes):
+                        source = source.decode('utf-8')
+                    
+                    # Extract just the hydrophone name if not already processed
+                    if '_' in source:
+                        hydrophone_name = source.split('_')[0]
+                        processed_sources.append(hydrophone_name)
+                    else:
+                        processed_sources.append(source)
+                
+                A_sources.extend(processed_sources)
+                
+            elif len(batch_data) == 2:  # Dataset returns (input, labels)
+                audio_input, _ = batch_data
+                audio_input = audio_input.to(device)
 
-            # Get sources from the dataloader if available
-            if hasattr(val_loader.dataset, 'sources'):
-                batch_sources = val_loader.dataset.sources[val_loader.dataset.indices[i*val_loader.batch_size:(i+1)*val_loader.batch_size]]
-                A_sources.extend(batch_sources)
+                # Get sources from the dataloader if available
+                if hasattr(val_loader.dataset, 'sources'):
+                    batch_indices = val_loader.dataset.indices[i*val_loader.batch_size:(i+1)*val_loader.batch_size] if hasattr(val_loader.dataset, 'indices') else list(range(i*val_loader.batch_size, min((i+1)*val_loader.batch_size, len(val_loader.dataset))))
+                    batch_sources = [val_loader.dataset.sources[idx] for idx in batch_indices]
+                    
+                    # Process sources to extract hydrophone names
+                    processed_sources = []
+                    for source in batch_sources:
+                        if isinstance(source, bytes):
+                            source = source.decode('utf-8')
+                        
+                        # Extract just the hydrophone name if not already processed
+                        if '_' in source:
+                            hydrophone_name = source.split('_')[0]
+                            processed_sources.append(hydrophone_name)
+                        else:
+                            processed_sources.append(source)
+                    
+                    A_sources.extend(processed_sources)
 
             # use cluster masking only when masking patches, not frames
             cluster = (args.num_mel_bins != args.fshape)
@@ -343,6 +439,12 @@ def validatemask(audio_model, val_loader, args, epoch):
                 A_acc.append(torch.mean(acc).cpu())
                 # A_nce then tracks the mse loss
                 A_nce.append(torch.mean(mse).cpu())
+                
+                # Store predictions and targets for hydrophone metrics (using MPC part)
+                predictions = torch.sigmoid(acc).cpu().detach()
+                targets = torch.ones_like(predictions)  # In MPC, we're predicting masked tokens
+                A_predictions.append(predictions)
+                A_targets.append(targets)
 
         acc = np.mean(A_acc)
         nce = np.mean(A_nce)

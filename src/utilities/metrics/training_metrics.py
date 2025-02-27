@@ -37,8 +37,26 @@ class MetricsTracker:
     
     def _load_previous_progress(self):
         """Load previous training progress and best metrics."""
-        progress_path = f"{self.exp_dir}/progress.pkl"
-        best_metric_path = f"{self.exp_dir}/models/best_metric.pth"
+        # Check for task-specific progress file first
+        task_progress_path = None
+        if hasattr(self.args, 'task'):
+            task_prefix = self.args.task.replace('_', '-')
+            task_progress_path = f"{self.exp_dir}/{task_prefix}_progress.pkl"
+        
+        # Default progress path as fallback
+        default_progress_path = f"{self.exp_dir}/progress.pkl"
+        
+        # Check for task-specific best metric file
+        task_best_metric_path = None
+        if hasattr(self.args, 'task'):
+            task_prefix = self.args.task.replace('_', '-')
+            task_best_metric_path = f"{self.exp_dir}/models/{task_prefix}_best_metric.pth"
+        
+        # Default best metric path as fallback
+        default_best_metric_path = f"{self.exp_dir}/models/best_metric.pth"
+        
+        # Try to load task-specific best metric first, then fall back to default
+        best_metric_path = task_best_metric_path if task_best_metric_path and os.path.exists(task_best_metric_path) else default_best_metric_path
         
         # Load best metric
         if os.path.exists(best_metric_path):
@@ -72,13 +90,16 @@ class MetricsTracker:
                 self.best_metrics['acc'] = -np.inf
                 print("Using default best accuracy value")
         
+        # Try to load task-specific progress first, then fall back to default
+        progress_path = task_progress_path if task_progress_path and os.path.exists(task_progress_path) else default_progress_path
+        
         # Load progress
         if os.path.exists(progress_path):
             try:
                 with open(progress_path, "rb") as f:
                     self.progress = pickle.load(f)
                 if self.progress:
-                    print(f"Restored previous progress with {len(self.progress)} entries")
+                    print(f"Restored previous progress with {len(self.progress)} entries from {progress_path}")
             except Exception as e:
                 print(f"Could not load previous progress: {str(e)}")
                 self.progress = []
@@ -92,8 +113,16 @@ class MetricsTracker:
             self.best_metrics['acc'],
             self._get_elapsed_time()
         ])
+        
+        # Save to the main progress file
         with open(f"{self.exp_dir}/progress.pkl", "wb") as f:
             pickle.dump(self.progress, f)
+            
+        # If task is available, also save to a task-specific progress file
+        if hasattr(self.args, 'task'):
+            task_prefix = self.args.task.replace('_', '-')
+            with open(f"{self.exp_dir}/{task_prefix}_progress.pkl", "wb") as f:
+                pickle.dump(self.progress, f)
     
     def _get_elapsed_time(self):
         """Get elapsed time since training started."""
@@ -104,9 +133,14 @@ class MetricsTracker:
     def save_model(self, model, optimizer, metric_value, metric_name='acc', is_best=False):
         """Save model checkpoint."""
         if is_best:
+            # Get task prefix if available
+            task_prefix = ""
+            if hasattr(self.args, 'task'):
+                task_prefix = f"{self.args.task.replace('_', '-')}_"
+            
             # Save best model state
             model_state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
-            torch.save(model_state, f"{self.exp_dir}/models/best_audio_model.pth")
+            torch.save(model_state, f"{self.exp_dir}/models/{task_prefix}best_audio_model.pth")
             
             # Save complete checkpoint
             checkpoint = {
@@ -125,37 +159,51 @@ class MetricsTracker:
                     'loss': self.args.loss if hasattr(self.args, 'loss') else None
                 }
             }
-            torch.save(checkpoint, f"{self.exp_dir}/models/best_checkpoint.pth")
+            torch.save(checkpoint, f"{self.exp_dir}/models/{task_prefix}best_checkpoint.pth")
             
             # Save optimizer state for backward compatibility
-            torch.save(optimizer.state_dict(), f"{self.exp_dir}/models/best_optim_state.pth")
+            torch.save(optimizer.state_dict(), f"{self.exp_dir}/models/{task_prefix}best_optim_state.pth")
             
             # Save metric value separately for backward compatibility
             torch.save(
                 metric_value,
-                f"{self.exp_dir}/models/best_metric.pth",
+                f"{self.exp_dir}/models/{task_prefix}best_metric.pth",
                 _use_new_zipfile_serialization=False,  # Use old format for better compatibility
             )
             self.best_metrics[metric_name] = metric_value
-            print(f"Saved new best model with {metric_name}: {metric_value:.6f}")
+            print(f"Saved new best {task_prefix.rstrip('_')} model with {metric_name}: {metric_value:.6f}")
     
     def save_predictions(self, predictions, epoch, is_cumulative=False):
         """Save model predictions."""
-        filename = 'cum_predictions.csv' if is_cumulative else f'predictions_{epoch}.csv'
+        # Get task prefix if available
+        task_prefix = ""
+        if hasattr(self.args, 'task'):
+            task_prefix = f"{self.args.task.replace('_', '-')}_"
+            
+        filename = f'{task_prefix}cum_predictions.csv' if is_cumulative else f'{task_prefix}predictions_{epoch}.csv'
         np.savetxt(f"{self.exp_dir}/predictions/{filename}", predictions, delimiter=',')
     
     def log_training_metrics(self, metrics_dict, step=None):
         """Log training metrics to wandb."""
         if self.use_wandb:
-            log_training_metrics(metrics_dict, step=step, use_wandb=self.use_wandb)
+            print("[DEBUG] Inside MetricsTracker.log_training_metrics")
+            # Don't pass step parameter, we'll use epoch from metrics_dict
+            log_training_metrics(metrics_dict, use_wandb=self.use_wandb)
             
             # If hydrophone metrics are present, update the table
+            print(f"[DEBUG] Checking for hydrophone_metrics in metrics_dict: {'hydrophone_metrics' in metrics_dict}")
             if 'hydrophone_metrics' in metrics_dict:
                 epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', 0))
+                print(f"[DEBUG] Found hydrophone_metrics for epoch {epoch}")
                 hydrophone_metrics = metrics_dict['hydrophone_metrics']
+                print(f"[DEBUG] Number of hydrophones in metrics: {len(hydrophone_metrics)}")
                 
                 for hydrophone, metrics in hydrophone_metrics.items():
+                    print(f"[DEBUG] Processing hydrophone {hydrophone} with metrics: {metrics}")
+                    print(f"[DEBUG] Task: {self.args.task}")
+                    
                     if self.args.task == 'pretrain_mpc':
+                        print(f"[DEBUG] Adding data to hydrophone_table for {hydrophone} in pretrain_mpc task")
                         self.hydrophone_table.add_data(
                             epoch,
                             hydrophone,
@@ -170,12 +218,31 @@ class MetricsTracker:
                             metrics.get('mse', 0.0)
                         )
                     elif self.args.task == 'pretrain_joint':
+                        # For joint training, we'll use the accuracy metric we calculated
+                        # We don't have separate mpc_accuracy and mpg_mse for each hydrophone
+                        # since we're only storing MPC predictions
+                        print(f"[DEBUG] Adding data to hydrophone_table for {hydrophone} in pretrain_joint task")
+                        
+                        # Check which metrics are available
+                        if 'accuracy' in metrics:
+                            mpc_accuracy = metrics.get('accuracy', 0.0)
+                            print(f"[DEBUG] Using accuracy: {mpc_accuracy}")
+                        elif 'mpc_accuracy' in metrics:
+                            mpc_accuracy = metrics.get('mpc_accuracy', 0.0)
+                            print(f"[DEBUG] Using mpc_accuracy: {mpc_accuracy}")
+                        else:
+                            mpc_accuracy = 0.0
+                            print(f"[DEBUG] No accuracy metrics found, using 0.0")
+                        
+                        # Use a placeholder for MPG MSE since we don't have it
+                        mpg_mse = metrics.get('mpg_mse', 0.0)
+                        
                         self.hydrophone_table.add_data(
                             epoch,
                             hydrophone,
                             metrics.get('count', 0),
-                            metrics.get('mpc_accuracy', 0.0),
-                            metrics.get('mpg_mse', 0.0)
+                            mpc_accuracy,
+                            mpg_mse
                         )
                     else:
                         self.hydrophone_table.add_data(
@@ -189,10 +256,12 @@ class MetricsTracker:
                         )
                 
                 # Log the updated table
+                print("[DEBUG] Logging hydrophone_table to wandb")
                 log_training_metrics({
                     "pt_Sample_Distribution": self.hydrophone_table,
                     f"pt_epoch": epoch
                 }, use_wandb=self.use_wandb)
+                print("[DEBUG] Finished logging hydrophone_table to wandb")
     
     def should_save_best(self, current_value, metric_name='acc'):
         """Check if current metric value is better than best so far."""

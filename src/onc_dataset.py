@@ -55,6 +55,18 @@ class ONCSpectrogramDataset(Dataset):
             all_indices = np.arange(len(hf['labels']))
             labels = hf['labels'][:]
             
+            # Check if sources dataset exists
+            if 'sources' in hf:
+                print(f"[DEBUG] Found 'sources' dataset in HDF5 file with shape {hf['sources'].shape}")
+                # Check the first few sources
+                sample_sources = hf['sources'][:5]
+                print(f"[DEBUG] First few sources: {sample_sources}")
+                if isinstance(sample_sources[0], bytes):
+                    print(f"[DEBUG] Sources are stored as bytes, will decode to utf-8")
+            else:
+                print(f"[DEBUG] WARNING: No 'sources' dataset found in HDF5 file.")
+                print(f"[DEBUG] Hydrophone metrics will not be available.")
+            
             # Separate normal and anomalous samples
             normal_indices = all_indices[~np.any(labels, axis=1)]
             anomalous_indices = all_indices[np.any(labels, axis=1)]
@@ -106,7 +118,26 @@ class ONCSpectrogramDataset(Dataset):
             self.sample_info = []
             for idx in self.indices:
                 labels = hf['labels'][idx]
-                source = hf['sources'][idx].decode('utf-8')
+                
+                # Get source from HDF5 file or use None
+                if 'sources' in hf:
+                    try:
+                        source = hf['sources'][idx]
+                        if isinstance(source, bytes):
+                            source = source.decode('utf-8')
+                        
+                        # Extract just the hydrophone name (e.g., ICLISTENHF1951)
+                        # Assuming format is HYDROPHONENAME_timestamp_timestamp-suffix.mat
+                        if '_' in source:
+                            hydrophone_name = source.split('_')[0]
+                            source = hydrophone_name
+                            
+                    except Exception as e:
+                        print(f"[DEBUG] Error getting source for index {idx}: {e}")
+                        source = None
+                else:
+                    source = None
+                
                 label_string = hf['label_strings'][idx].decode('utf-8')
                 
                 # Skip samples that only contain the OOD class (if specified)
@@ -124,6 +155,9 @@ class ONCSpectrogramDataset(Dataset):
                     'label_string': label_string,
                     'is_anomalous': is_anomalous
                 })
+            
+            print(f"[DEBUG] Created sample_info with {len(self.sample_info)} samples")
+            print(f"[DEBUG] First few sources in sample_info: {[s['source'] for s in self.sample_info[:5]]}")
             
             if self.subsample_test and self.split == 'test':
                 self.subsample()

@@ -6,20 +6,16 @@ import datetime
 sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
 from utilities import *
 from utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet
-from utilities.metrics.validation_metrics import (
-    ValidationMetricsCollector, validate_ensemble, validate_wa, validate
+from utilities.metrics.validation_metrics import ValidationMetricsCollector
+from utilities.checkpoint_utils import save_checkpoint
+from utilities.training_utils import (
+    create_model, setup_training, training_loop, validation_loop
 )
-from utilities.metrics.hydrophone_metrics import (
-    calculate_hydrophone_metrics, print_hydrophone_metrics, 
-    extract_hydrophone, calculate_binary_metrics
-)
+from utilities.wandb_utils import init_wandb, finish_run
 import time
 import torch
 from torch import nn
 import numpy as np
-import pickle
-from torch.cuda.amp import autocast,GradScaler
-from utilities.wandb_utils import log_training_metrics, init_wandb, finish_run
 
 def train(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,243 +32,98 @@ def train(audio_model, train_loader, test_loader, args):
     train_meters = AverageMeterSet()
     val_collector = ValidationMetricsCollector(task=args.task)
     
-    # Initialize training state
-    global_step = args.start_epoch * len(train_loader) if hasattr(args, 'start_epoch') else 0
-    epoch = args.start_epoch if hasattr(args, 'start_epoch') else 1
-    start_time = time.time()
-
-    if not isinstance(audio_model, nn.DataParallel):
-        audio_model = nn.DataParallel(audio_model)
-
-    audio_model = audio_model.to(device)
-    
-    # Set up the optimizer
-    trainables = [p for p in audio_model.parameters() if p.requires_grad]
-    print('Total parameter number is : {:.3f} million'.format(sum(p.numel() for p in audio_model.parameters()) / 1e6))
-    print('Total trainable parameter number is : {:.3f} million'.format(sum(p.numel() for p in trainables) / 1e6))
-
-    # diff lr optimizer
-    mlp_list = ['mlp_head.0.weight', 'mlp_head.0.bias', 'mlp_head.1.weight', 'mlp_head.1.bias']
-    mlp_params = list(filter(lambda kv: kv[0] in mlp_list, audio_model.module.named_parameters()))
-    base_params = list(filter(lambda kv: kv[0] not in mlp_list, audio_model.module.named_parameters()))
-    mlp_params = [i[1] for i in mlp_params]
-    base_params = [i[1] for i in base_params]
-    
-    # Set up optimizer with different learning rates for mlp head and base
-    print('The mlp header uses {:d} x larger lr'.format(args.head_lr))
-    optimizer = torch.optim.Adam(
-        [
-            {'params': base_params, 'lr': args.lr}, 
-            {'params': mlp_params, 'lr': args.lr * args.head_lr}
-        ], 
-        weight_decay=5e-7, betas=(0.95, 0.999)
-    )
-    mlp_lr = optimizer.param_groups[1]['lr']
-    lr_list = [args.lr, mlp_lr]
-
-    print('Total mlp parameter number is : {:.3f} million'.format(sum(p.numel() for p in mlp_params) / 1e6))
-    print('Total base parameter number is : {:.3f} million'.format(sum(p.numel() for p in base_params) / 1e6))
-
-    # Set up learning rate scheduler
-    if args.adaptschedule:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True
-        )
-        print('Using adaptive learning rate scheduler')
+    # Create model if not provided
+    if audio_model is None:
+        audio_model = create_model(args)
+        if audio_model is None:
+            raise RuntimeError("Failed to create model")
+        
+        # Move model to device before wrapping in DataParallel
+        audio_model = audio_model.to(device)
+        
+        # Wrap in DataParallel if multiple GPUs available and not already wrapped
+        if torch.cuda.device_count() > 1 and not isinstance(audio_model, nn.DataParallel):
+            print(f"Using {torch.cuda.device_count()} GPUs for training")
+            audio_model = nn.DataParallel(audio_model)
     else:
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer, 
-            list(range(args.lrscheduler_start, 1000, args.lrscheduler_step)),
-            gamma=args.lrscheduler_decay
-        )
-        # Update scheduler state if resuming
-        if hasattr(args, 'start_epoch') and not args.adaptschedule:
-            for _ in range(args.start_epoch):
-                scheduler.step()
+        # If model is provided, ensure it's on the right device
+        audio_model = audio_model.to(device)
+        
+        # Wrap in DataParallel if multiple GPUs available and not already wrapped
+        if torch.cuda.device_count() > 1 and not isinstance(audio_model, nn.DataParallel):
+            print(f"Using {torch.cuda.device_count()} GPUs for training")
+            audio_model = nn.DataParallel(audio_model)
     
+    # Set up model, optimizer, scheduler and get starting epoch
+    audio_model, optimizer, scheduler, epoch = setup_training(audio_model, args)
+
     # Set up loss function
     loss_fn = nn.BCEWithLogitsLoss() if args.loss == 'BCE' else nn.CrossEntropyLoss()
     args.loss_fn = loss_fn
 
-    print('Training setup:')
-    print(f'Dataset: {args.dataset}')
-    print(f'Main metric: {args.metrics}')
-    print(f'Loss function: {loss_fn}')
-    print(f'Learning rate scheduler: {scheduler}')
-    print('Learning rate schedule: start at epoch {}, decay rate {} every {} epochs'.format(
-        args.lrscheduler_start, args.lrscheduler_decay, args.lrscheduler_step
-    ))
-
+    # Initialize training state
+    global_step = epoch * len(train_loader)
+    
+    # Reset wandb step counter if starting finetuning from pretrained model
+    if args.use_wandb and hasattr(args, 'resume') and not args.resume:
+        # Check if we're starting finetuning from a pretrained model
+        if os.path.exists(os.path.join(args.exp_dir, 'wandb_run_id.txt')):
+            with open(os.path.join(args.exp_dir, 'wandb_run_id.txt'), 'r') as f:
+                run_id = f.read().strip()
+            # If this is a new finetuning run (not resuming), reset the step counter
+            import wandb
+            if wandb.run is not None:
+                wandb.run.step = 0
+                print("Reset wandb step counter for new finetuning run")
+    
+    start_time = time.time()
+    
     print("Current progress: steps=%s, epochs=%s" % (global_step, epoch))
     print("Starting training...")
     
-    result = np.zeros([args.n_epochs, 10])
-    audio_model.train()
     while epoch < args.n_epochs + 1:
         begin_time = time.time()
-        end_time = time.time()
-        audio_model.train()
-        print('---------------')
-        print(datetime.datetime.now())
-        print("Current epoch=%s, steps=%s" % (epoch, global_step))
-
-        for i, batch_data in enumerate(train_loader):
-            # Handle different return formats from different dataset classes
-            if isinstance(batch_data, tuple) and len(batch_data) == 3:  # Dataset returns (input, labels, sources)
-                audio_input, labels, sources = batch_data
-            elif isinstance(batch_data, tuple) and len(batch_data) == 2:  # Dataset returns (input, labels)
-                audio_input, labels = batch_data
-                sources = None
-            else:
-                raise ValueError(f"Unexpected batch data format with {len(batch_data)} elements")
-                
-            B = audio_input.size(0)
-            audio_input = audio_input.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-
-            # Update timing metrics
-            train_meters.update('data_time', time.time() - end_time)
-            train_meters.update('per_sample_data_time', (time.time() - end_time) / B)
-            dnn_start_time = time.time()
-
-            # Warm-up learning rate
-            if global_step <= 1000 and global_step % 50 == 0 and args.warmup:
-                for group_id, param_group in enumerate(optimizer.param_groups):
-                    warm_lr = (global_step / 1000) * lr_list[group_id]
-                    param_group['lr'] = warm_lr
-                    print('Warm-up learning rate is {:f}'.format(param_group['lr']))
-
-            # Forward pass
-            audio_output = audio_model(audio_input, args.task)
-            if isinstance(loss_fn, torch.nn.CrossEntropyLoss):
-                loss = loss_fn(audio_output, torch.argmax(labels.long(), axis=1))
-            else:
-                loss = loss_fn(audio_output, labels)
-
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            # Update metrics
-            train_meters.update('loss', loss.item(), B)
-            train_meters.update('batch_time', time.time() - end_time)
-            train_meters.update('per_sample_time', (time.time() - end_time) / B)
-            train_meters.update('per_sample_dnn_time', (time.time() - dnn_start_time) / B)
-
-            # Print progress
-            print_step = global_step % args.n_print_steps == 0
-            early_print_step = epoch == 0 and global_step % (args.n_print_steps/10) == 0
-            print_step = print_step or early_print_step
-
-            if print_step and global_step != 0:
-                print('Epoch: [{0}][{1}/{2}]\t'
-                      'Per Sample Total Time {:.5f}\t'
-                      'Per Sample Data Time {:.5f}\t'
-                      'Per Sample DNN Time {:.5f}\t'
-                      'Train Loss {:.4f}\t'.format(
-                       epoch, i, len(train_loader),
-                       train_meters.get_value('per_sample_time'),
-                       train_meters.get_value('per_sample_data_time'),
-                       train_meters.get_value('per_sample_dnn_time'),
-                       train_meters.get_value('loss')), flush=True)
-
-                if np.isnan(train_meters.get_value('loss')):
-                    print("Training diverged...")
-                    # Save debug information
-                    torch.save(audio_model.state_dict(), f"{args.exp_dir}/models/nan_audio_model.pth")
-                    torch.save(optimizer.state_dict(), f"{args.exp_dir}/models/nan_optim_state.pth")
-                    with open(args.exp_dir + '/audio_input.npy', 'wb') as f:
-                        np.save(f, audio_input.cpu().detach().numpy())
-                    np.savetxt(args.exp_dir + '/audio_output.csv', audio_output.cpu().detach().numpy(), delimiter=',')
-                    np.savetxt(args.exp_dir + '/labels.csv', labels.cpu().detach().numpy(), delimiter=',')
-                    print('Debug information saved.')
-                    return
-
-            end_time = time.time()
-            global_step += 1
-
-        # Run validation at the end of each epoch
+        
+        # Training loop
+        global_step, train_metrics = training_loop(
+            model=audio_model,
+            train_loader=train_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            metrics_tracker=metrics_tracker,
+            train_meters=train_meters,
+            args=args,
+            global_step=global_step,
+            epoch=epoch
+        )
+        
+        # Validation loop
         print('Starting validation...')
-        val_collector.reset()
+        val_metrics = validation_loop(
+            model=audio_model,
+            val_loader=test_loader,
+            val_collector=val_collector,
+            args=args
+        )
         
-        print("\n[DEBUG] Starting validation...")
-
-        # Check if dataset returns sources directly or has sources attribute
-        has_sources = hasattr(test_loader.dataset, 'sources') or hasattr(test_loader.dataset, 'sample_info')
-        if not has_sources:
-            print("[DEBUG] Dataset doesn't have sources attribute or sample_info. Hydrophone metrics may not be available.")
-            print("[DEBUG] Make sure your dataset's __getitem__ method returns sources or has a sources attribute.")
-
-        with torch.no_grad():
-            for val_batch, batch_data in enumerate(test_loader):
-                # Handle different return formats from different dataset classes
-                if isinstance(batch_data, tuple) and len(batch_data) == 3:  # Dataset returns (input, labels, sources)
-                    val_input, val_labels, sources = batch_data
-                    val_input = val_input.to(device)
-                    val_labels = val_labels.to(device)
-                    if val_batch == 0:  # Only print for first batch to avoid too much output
-                        print(f"[DEBUG] Batch {val_batch}: Found sources with length {len(sources)}")
-                        print(f"[DEBUG] First few sources: {sources[:5] if len(sources) >= 5 else sources}")
-                elif isinstance(batch_data, tuple) and len(batch_data) == 2:  # Dataset returns (input, labels)
-                    val_input, val_labels = batch_data
-                    val_input = val_input.to(device)
-                    val_labels = val_labels.to(device)
-                    sources = None
-                    if val_batch == 0:
-                        print(f"[DEBUG] Batch {val_batch}: No sources found in batch data")
-                        
-                        # Try to get sources from dataset if available
-                        if hasattr(test_loader.dataset, 'sample_info'):
-                            # For ONCSpectrogramDataset
-                            batch_indices = list(range(val_batch*test_loader.batch_size, 
-                                                  min((val_batch+1)*test_loader.batch_size, 
-                                                      len(test_loader.dataset))))
-                            sources = [test_loader.dataset.sample_info[i]['source'] for i in batch_indices]
-                            print(f"[DEBUG] Retrieved sources from ONCSpectrogramDataset sample_info: {len(sources)}")
-                        elif hasattr(test_loader.dataset, 'sources'):
-                            # For other dataset types
-                            batch_indices = test_loader.dataset.indices[val_batch*test_loader.batch_size:(val_batch+1)*test_loader.batch_size] if hasattr(test_loader.dataset, 'indices') else list(range(val_batch*test_loader.batch_size, min((val_batch+1)*test_loader.batch_size, len(test_loader.dataset))))
-                            sources = [test_loader.dataset.sources[i] for i in batch_indices]
-                            print(f"[DEBUG] Retrieved sources from dataset.sources: {len(sources)}")
-                
-                # Get model output
-                val_output = audio_model(val_input, args.task)
-                
-                # Calculate loss
-                if isinstance(loss_fn, torch.nn.CrossEntropyLoss):
-                    val_loss = loss_fn(val_output, torch.argmax(val_labels.long(), axis=1))
-                else:
-                    val_loss = loss_fn(val_output, val_labels)
-                
-                val_collector.update((val_output, val_loss), val_labels, sources)
-        
-        # Compute validation metrics
-        print("[DEBUG] Computing validation metrics...")
-        val_metrics = val_collector.compute_metrics()
-        print("[DEBUG] Logging validation metrics...")
+        # Log metrics
         val_collector.log_metrics(val_metrics, epoch=epoch, prefix="ft_", use_wandb=args.use_wandb)
         
-        # Calculate ensemble metrics
-        cum_metrics = validate_ensemble(metrics_tracker, val_metrics['predictions'], val_metrics['targets'], epoch)
-        
-        # Save results
+        # Save results to CSV
         result_dict = {
             'epoch': epoch,
             'accuracy': val_metrics['acc'],
             'auc': val_metrics['auc'],
-            'global_precision': val_metrics['global_precision'],
-            'global_recall': val_metrics['global_recall'],
-            'global_f2': val_metrics['global_f2'],
-            'train_loss': train_meters.get_value('loss'),
+            'precision': val_metrics['precision'],
+            'recall': val_metrics['recall'],
+            'f2': val_metrics['f2'],
+            'train_loss': train_metrics['loss'],
             'valid_loss': val_metrics['loss'],
-            'cum_acc': cum_metrics['acc'],
-            'cum_auc': cum_metrics['auc'],
             'learning_rate': optimizer.param_groups[0]['lr']
         }
         
-        # Add per-hydrophone metrics
-        if val_metrics['hydrophone_metrics']:
+        # Add per-hydrophone metrics if available
+        if val_metrics.get('hydrophone_metrics'):
             for hydrophone, metrics in val_metrics['hydrophone_metrics'].items():
                 for metric_name, value in metrics.items():
                     result_dict[f'{hydrophone}_{metric_name}'] = value
@@ -286,76 +137,53 @@ def train(audio_model, train_loader, test_loader, args):
             values = ','.join(map(str, result_dict.values()))
             f.write(values + '\n')
 
-        # Log metrics to wandb at the end of each epoch
+        # Log metrics to wandb
         if args.use_wandb:
-            # Create metrics dictionary with training and validation metrics
             metrics_dict = {
                 "ft_epoch": epoch,
-                "ft_train_loss": train_meters.get_value('loss'),
+                "ft_train_loss": train_metrics['loss'],
                 "ft_val_loss": val_metrics['loss'],
                 "ft_val_accuracy": val_metrics['acc'],
                 "ft_val_auc": val_metrics['auc'],
-                "ft_val_precision": val_metrics['global_precision'],
-                "ft_val_recall": val_metrics['global_recall'],
-                "ft_val_f2": val_metrics['global_f2'],
-                "ft_cum_accuracy": cum_metrics['acc'],
-                "ft_cum_auc": cum_metrics['auc'],
+                "ft_val_precision": val_metrics['precision'],
+                "ft_val_recall": val_metrics['recall'],
+                "ft_val_f2": val_metrics['f2'],
                 "learning_rate": optimizer.param_groups[0]['lr']
             }
             
-            # Include hydrophone metrics if available
-            print("\n[DEBUG] Checking for hydrophone_metrics in val_metrics...")
-            if 'hydrophone_metrics' in val_metrics:
-                print(f"[DEBUG] hydrophone_metrics found in val_metrics: {bool(val_metrics['hydrophone_metrics'])}")
-                if val_metrics['hydrophone_metrics']:
-                    print(f"[DEBUG] Number of hydrophones: {len(val_metrics['hydrophone_metrics'])}")
-                    print(f"[DEBUG] Hydrophones: {list(val_metrics['hydrophone_metrics'].keys())}")
-                    for hydrophone, metrics in val_metrics['hydrophone_metrics'].items():
-                        print(f"[DEBUG] {hydrophone} metrics: {metrics}")
-                    metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
-                else:
-                    print("[DEBUG] hydrophone_metrics is empty")
-            else:
-                print("[DEBUG] No hydrophone_metrics key in val_metrics")
-                print(f"[DEBUG] val_metrics keys: {val_metrics.keys()}")
+            if val_metrics.get('hydrophone_metrics'):
+                metrics_dict["hydrophone_metrics"] = val_metrics['hydrophone_metrics']
             
-            # Log all metrics
-            print("[DEBUG] Calling metrics_tracker.log_training_metrics...")
             metrics_tracker.log_training_metrics(metrics_dict)
-            print("[DEBUG] Finished calling metrics_tracker.log_training_metrics")
 
         # Save model if performance improved
         if metrics_tracker.should_save_best(val_metrics[args.main_metric], metric_name=args.main_metric):
-            metrics_tracker.save_model(
-                audio_model, optimizer, val_metrics[args.main_metric],
-                metric_name=args.main_metric, is_best=True
+            save_checkpoint(
+                model=audio_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                metrics_tracker=metrics_tracker,
+                args=args,
+                exp_dir=args.exp_dir,
+                epoch=epoch,
+                global_step=global_step,
+                val_metrics=val_metrics,
+                is_best=True
             )
 
-        # Save periodic checkpoint with all states
-        checkpoint = {
-            'epoch': epoch,
-            'global_step': global_step,
-            'model_state_dict': audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'best_metrics': metrics_tracker.best_metrics,
-            # Save only necessary args as a dict
-            'args': {
-                'task': args.task,
-                'lr': args.lr,
-                'head_lr': args.head_lr,
-                'n_epochs': args.n_epochs,
-                'adaptschedule': args.adaptschedule,
-                'main_metric': args.main_metric,
-                'loss': args.loss
-            }
-        }
-        torch.save(checkpoint, f"{args.exp_dir}/models/checkpoint.{epoch}.pth")
-
-        # Save individual states for backward compatibility
-        model_state = audio_model.module.state_dict() if isinstance(audio_model, nn.DataParallel) else audio_model.state_dict()
-        torch.save(model_state, f"{args.exp_dir}/models/audio_model.{epoch}.pth")
-        torch.save(optimizer.state_dict(), f"{args.exp_dir}/models/optim_state.{epoch}.pth")
+        # Save periodic checkpoint
+        save_checkpoint(
+            model=audio_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            metrics_tracker=metrics_tracker,
+            args=args,
+            exp_dir=args.exp_dir,
+            epoch=epoch,
+            global_step=global_step,
+            val_metrics=val_metrics,
+            is_best=False
+        )
 
         # Update learning rate
         if args.adaptschedule:
@@ -373,17 +201,7 @@ def train(audio_model, train_loader, test_loader, args):
         
         epoch += 1
 
-    # Run weighted average validation if requested
-    if args.wa:
-        print('Running weighted average validation...')
-        stats = validate_wa(audio_model, test_loader, args, args.wa_start, args.wa_end)
-        print('Weighted average results:')
-        print(f"mAP: {stats['mAP']:.6f}")
-        print(f"AUC: {stats['auc']:.6f}")
-        print(f"Accuracy: {stats['acc']:.6f}")
-        np.savetxt(args.exp_dir + '/wa_result.csv', [stats['mAP'], stats['auc'], stats['acc']])
-        
-    # Finish wandb run if enabled and initialized in this function
+    # Finish wandb run if enabled
     if args.use_wandb and hasattr(args, 'wandb_initialized') and args.wandb_initialized:
         finish_run()
         args.wandb_initialized = False

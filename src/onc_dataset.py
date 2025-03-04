@@ -168,7 +168,10 @@ class ONCSpectrogramDataset(Dataset):
         
         with h5py.File(self.data_path, 'r') as hf:
             data = hf['spectrograms'][sample['index']]
-            labels = torch.from_numpy(sample['labels']).float()
+            # Convert multi-class labels to binary (normal vs anomalous)
+            is_anomalous = float(np.any(sample['labels']))
+            # Return single binary label instead of one-hot encoding
+            labels = torch.tensor(is_anomalous).float()  # 1.0 for anomaly, 0.0 for normal
         
         # Apply normalization
         data = self.normalise(data)
@@ -180,16 +183,17 @@ class ONCSpectrogramDataset(Dataset):
             mix_sample = self.sample_info[mix_idx]
             with h5py.File(self.data_path, 'r') as hf:
                 mix_data = hf['spectrograms'][mix_sample['index']]
-                mix_labels = torch.from_numpy(mix_sample['labels']).float()
+                # Convert mix sample labels to binary
+                mix_is_anomalous = float(np.any(mix_sample['labels']))
+                mix_labels = torch.tensor(mix_is_anomalous).float()
             
             mix_data = self.normalise(mix_data)
             mix_data = torch.from_numpy(mix_data).permute(2, 0, 1)
             
-            # Sample lambda from beta distribution
-            mix_lambda = np.random.beta(10, 10)
-            
-            data = mix_lambda * data + (1 - mix_lambda) * mix_data
-            labels = mix_lambda * labels + (1 - mix_lambda) * mix_labels
+            # Apply mixup
+            lam = np.random.beta(0.4, 0.4)
+            data = lam * data + (1 - lam) * mix_data
+            labels = lam * labels + (1 - lam) * mix_labels
         
         return data, labels, sample['source']
 

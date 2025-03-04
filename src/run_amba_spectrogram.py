@@ -8,9 +8,11 @@ import time
 import torch
 from torch.utils.data import WeightedRandomSampler
 import dataloader
-from models import AMBAModel
+from utilities import *
+from utilities.training_utils import create_model
+from utilities.metrics.validation_metrics import validate
 import numpy as np
-from traintest import train, validate
+from traintest import train
 from traintest_mask import trainmask
 import datetime
 from utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
@@ -36,8 +38,10 @@ parser.add_argument("--num_mel_bins", type=int, default=512, help="number of inp
 
 parser.add_argument("--exp-dir", type=str, default="", help="directory to dump experiments")
 parser.add_argument('--lr', '--learning-rate', default=1e-4, type=float, metavar='LR', help='initial learning rate')
+parser.add_argument('--head_lr', type=int, default=10, help='multiplier for learning rate of mlp head during finetuning')
 parser.add_argument('--warmup', help='if use warmup learning rate scheduler', type=ast.literal_eval, default='True')
 parser.add_argument("--optim", type=str, default="adam", help="training optimizer", choices=["sgd", "adam"])
+parser.add_argument("--loss", type=str, default="BCE", help="loss function to use", choices=["BCE", "CE"])
 parser.add_argument('-b', '--batch-size', default=64, type=int, metavar='N', help='mini-batch size')
 parser.add_argument('-w', '--num-workers', default=8, type=int, metavar='NW', help='# of workers for dataloading')
 parser.add_argument("--n-epochs", type=int, default=10, help="number of maximum training epochs")
@@ -90,6 +94,8 @@ parser.add_argument("--task", type=str, default='ft_cls', help="pretraining or f
 parser.add_argument("--mask_patch", type=int, default=300, help="number of patches to mask")
 parser.add_argument("--epoch_iter", type=float, default=0.5, 
                     help="fraction of training set to process before saving (e.g., 0.25 = 25% of dataset)")
+parser.add_argument("--main_metric", type=str, default='f2', help="metric to track for model selection",
+                    choices=['auc', 'acc', 'f2', 'precision', 'recall'])
 
 # Wandb logging
 parser.add_argument('--use_wandb', action='store_true', help='Enable logging to Weights & Biases')
@@ -274,67 +280,6 @@ print(f'Supervised Train (balanced): {len(train_dataset)} samples')
 print(f'Supervised Val (balanced): {len(val_dataset)} samples')
 print(f'Test: {len(test_dataset)} samples')
 
-# Vision Mamba configuration
-vision_mamba_config = {
-    'img_size': (args.num_mel_bins, args.target_length),
-    'patch_size': args.patch_size,
-    'stride': args.stride,
-    'embed_dim': args.embed_dim,
-    'depth': args.depth,
-    'channels': args.channels,
-    'num_classes': args.num_classes,
-    'drop_rate': args.drop_rate,
-    'drop_path_rate': args.drop_path_rate,
-    'norm_epsilon': args.norm_epsilon,
-    'rms_norm': args.rms_norm,
-    'residual_in_fp32': args.residual_in_fp32,
-    'fused_add_norm': args.fused_add_norm,
-    'if_rope': args.if_rope,
-    'if_rope_residual': args.if_rope_residual,
-    'if_bidirectional': args.if_bidirectional,
-    'final_pool_type': args.final_pool_type,
-    'if_abs_pos_embed': args.if_abs_pos_embed,
-    'if_bimamba': args.if_bimamba,
-    'if_cls_token': args.if_cls_token,
-    'if_devide_out': args.if_devide_out,
-    'use_double_cls_token': args.use_double_cls_token,
-    'use_middle_cls_token': args.use_middle_cls_token,
-}
-
-# Initialize model
-if 'pretrain' in args.task:
-    cluster = (args.num_mel_bins != args.fshape)
-    if cluster:
-        print('The num_mel_bins {:d} and fshape {:d} are different, not masking a typical time frame, using cluster masking.'.format(
-            args.num_mel_bins, args.fshape))
-    else:
-        print('The num_mel_bins {:d} and fshape {:d} are same, masking a typical time frame, not using cluster masking.'.format(
-            args.num_mel_bins, args.fshape))
-    
-    audio_model = AMBAModel(
-        fshape=args.fshape, tshape=args.tshape,
-        fstride=args.fshape, tstride=args.tshape,
-        input_fdim=args.num_mel_bins,
-        input_tdim=args.target_length,
-        model_size=args.model_size,
-        pretrain_stage=True,
-        vision_mamba_config=vision_mamba_config
-    )
-else:
-    audio_model = AMBAModel(
-        label_dim=args.n_class,
-        fshape=args.fshape, tshape=args.tshape,
-        fstride=args.fstride, tstride=args.tstride,
-        input_fdim=args.num_mel_bins,
-        input_tdim=args.target_length,
-        model_size=args.model_size,
-        pretrain_stage=False,
-        vision_mamba_config=vision_mamba_config
-    )
-
-if not isinstance(audio_model, torch.nn.DataParallel):
-    audio_model = torch.nn.DataParallel(audio_model)
-
 # Create experiment directory if it doesn't exist
 os.makedirs(args.exp_dir, exist_ok=True)
 os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
@@ -351,14 +296,15 @@ print(f"Saving model every {args.epoch_iter} steps ({args.epoch_iter/steps_per_e
 # Start training
 if 'pretrain' not in args.task:
     print('Now starting fine-tuning for {:d} epochs'.format(args.n_epochs))
-    train(audio_model, train_loader, val_loader, args)
+    train(None, train_loader, val_loader, args)
 else:
     print('Now starting self-supervised pretraining for {:d} epochs'.format(args.n_epochs))
-    trainmask(audio_model, train_loader, val_loader, args)
+    trainmask(None, train_loader, val_loader, args)
 
 # Evaluate on test set if provided
 if args.data_eval is not None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    audio_model = create_model(args)
     sd = torch.load(args.exp_dir + '/models/best_audio_model.pth', map_location=device)
     audio_model.load_state_dict(sd, strict=False)
 

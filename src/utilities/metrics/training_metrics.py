@@ -17,9 +17,24 @@ class MetricsTracker:
         self.exp_dir = exp_dir
         self.args = args
         self.use_wandb = use_wandb
-        self.best_metrics = {'acc': -float('inf')}
         self.progress = []
         self.start_time = None
+        
+        # Initialize best metrics with worst possible values
+        self.best_metrics = {
+            'acc': 0.0,
+            'auc': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f2': 0.0,
+            'loss': float('inf')
+        }
+        
+        # Load previous progress if resuming
+        self._load_previous_progress()
+        
+        # Create predictions directory
+        os.makedirs(os.path.join(exp_dir, 'predictions'), exist_ok=True)
         
         # Initialize wandb table for hydrophone metrics
         if self.use_wandb:
@@ -30,7 +45,6 @@ class MetricsTracker:
         
         # Create necessary directories
         os.makedirs(f"{exp_dir}/models", exist_ok=True)
-        os.makedirs(f"{exp_dir}/predictions", exist_ok=True)
         
         # Load previous progress if exists
         self._load_previous_progress()

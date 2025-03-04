@@ -6,6 +6,8 @@ import torch
 import numpy as np
 import os
 from torch import nn
+import sklearn.metrics
+from collections import defaultdict
 from .hydrophone_metrics import calculate_hydrophone_metrics, print_hydrophone_metrics
 from ..wandb_utils import log_validation_metrics
 
@@ -25,380 +27,331 @@ def calculate_binary_metrics(predictions, targets, threshold=0.5):
     binary_preds = (predictions >= threshold).astype(np.int32)
     binary_targets = (targets >= threshold).astype(np.int32)
     
-    # Calculate true positives, false positives, false negatives
-    tp = np.sum((binary_preds == 1) & (binary_targets == 1))
-    fp = np.sum((binary_preds == 1) & (binary_targets == 0))
-    fn = np.sum((binary_preds == 0) & (binary_targets == 1))
-    
-    # Calculate precision, recall, F2
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    
-    # F2 score gives more weight to recall than precision
-    beta = 2
-    f2 = (1 + beta**2) * (precision * recall) / ((beta**2 * precision) + recall) if (precision + recall) > 0 else 0.0
+    # Calculate metrics using sklearn
+    precision = sklearn.metrics.precision_score(binary_targets, binary_preds)
+    recall = sklearn.metrics.recall_score(binary_targets, binary_preds)
+    f2 = sklearn.metrics.fbeta_score(binary_targets, binary_preds, beta=2)
     
     return precision, recall, f2
 
 class ValidationMetricsCollector:
     """Class to collect and process validation metrics."""
-    def __init__(self, task='pretrain_mpc'):
-        self.task = task
+    
+    def __init__(self, task=None):
+        """Initialize metrics collector."""
         self.reset()
+        self.task = task
     
     def reset(self):
-        """Reset all collected metrics."""
-        self.acc_list = []
-        self.nce_list = []
+        """Reset all metrics."""
         self.predictions = []
         self.targets = []
         self.sources = []
-    
-    def update(self, model_output, audio_input=None, sources=None):
-        """Update metrics with new batch results."""
-        if sources is not None and len(sources) > 0:
-            print(f"[DEBUG] ValidationMetricsCollector.update: Received {len(sources)} sources")
-            if len(sources) > 0:
-                print(f"[DEBUG] First source: {sources[0]}")
-                print(f"[DEBUG] Source types: {type(sources[0])}")
-                
-                # Process sources to extract hydrophone names
-                string_sources = []
-                for s in sources:
-                    if s is None:
-                        continue
-                        
-                    if isinstance(s, bytes):
-                        s = s.decode('utf-8')
-                    
-                    # Extract just the hydrophone name if not already processed
-                    if '_' in s:
-                        hydrophone_name = s.split('_')[0]
-                        string_sources.append(hydrophone_name)
-                    else:
-                        string_sources.append(s)
-                
-                self.sources.extend(string_sources)
-                print(f"[DEBUG] Total sources collected so far: {len(self.sources)}")
-        else:
-            print("[DEBUG] ValidationMetricsCollector.update: No sources received")
+        self.acc_list = []
+        self.nce_list = []
+        self.loss_list = []  # Add loss list for finetuning
         
-        # Debug the model_output structure
-        print(f"[DEBUG] model_output type: {type(model_output)}")
-        if isinstance(model_output, tuple):
-            print(f"[DEBUG] model_output is a tuple of length {len(model_output)}")
-            for i, item in enumerate(model_output):
-                print(f"[DEBUG] model_output[{i}] type: {type(item)}, shape: {item.shape if hasattr(item, 'shape') else 'no shape'}")
-                if isinstance(item, tuple):
-                    print(f"[DEBUG] model_output[{i}] is a nested tuple of length {len(item)}")
-                    for j, subitem in enumerate(item):
-                        print(f"[DEBUG] model_output[{i}][{j}] type: {type(subitem)}, shape: {subitem.shape if hasattr(subitem, 'shape') else 'no shape'}")
-        elif isinstance(model_output, torch.Tensor):
-            print(f"[DEBUG] model_output is a tensor with shape: {model_output.shape}, dim: {model_output.dim()}")
-        
-        if self.task == 'pretrain_mpc':
-            acc, nce = model_output
-            self.acc_list.append(torch.mean(acc).cpu())
-            self.nce_list.append(torch.mean(nce).cpu())
+    def update(self, output, labels, sources=None):
+        """Update metrics with a new batch of outputs."""
+        print("[DEBUG] Processing batch in ValidationMetricsCollector.update")
+        print(f"[DEBUG] Task: {self.task}")
+        print(f"[DEBUG] Output type: {type(output)}")
+        if isinstance(output, tuple):
+            print(f"[DEBUG] Output tuple length: {len(output)}")
             
-            # Store predictions and targets for hydrophone metrics
-            predictions = torch.sigmoid(acc).cpu().detach()
-            targets = torch.ones_like(predictions)  # In MPC, we're predicting masked tokens
+        if self.task == 'pretrain_joint':
+            print("[DEBUG] Processing pretrain_joint task")
+            mpc_output, mpg_output = output
             
-            # Ensure predictions is not a scalar tensor
-            if predictions.dim() > 0:
-                self.predictions.append(predictions)
-                self.targets.append(targets)
+            # Handle MPC output (acc, nce)
+            if isinstance(mpc_output, tuple):
+                mpc_acc, mpc_nce = mpc_output
+                print(f"[DEBUG] MPC accuracy: {mpc_acc}")
+                print(f"[DEBUG] MPC NCE loss: {mpc_nce}")
+                
+                # Store accuracy
+                if isinstance(mpc_acc, torch.Tensor):
+                    acc_val = mpc_acc.mean().item()
+                    self.acc_list.append(acc_val)
+                    # Store raw accuracy tensor for per-hydrophone metrics
+                    self.predictions.append(mpc_acc.detach().cpu())
+                else:
+                    acc_val = float(mpc_acc)
+                    self.acc_list.append(acc_val)
+                    self.predictions.append(torch.tensor([acc_val]))
+                
+                # Store NCE loss
+                if isinstance(mpc_nce, torch.Tensor):
+                    nce_val = mpc_nce.mean().item()
+                    self.nce_list.append(nce_val)
+                    # Store raw NCE tensor for per-hydrophone metrics
+                    self.targets.append(mpc_nce.detach().cpu())
+                else:
+                    nce_val = float(mpc_nce)
+                    self.nce_list.append(nce_val)
+                    self.targets.append(torch.tensor([nce_val]))
+            
+            # Handle MPG output (mse)
+            if isinstance(mpg_output, torch.Tensor):
+                mpg_mse = mpg_output.mean().item()
             else:
-                print(f"[DEBUG] Skipping scalar prediction tensor with shape: {predictions.shape}")
-            
+                mpg_mse = float(mpg_output)
+            print(f"[DEBUG] MPG MSE loss: {mpg_mse}")
+                
+        elif self.task == 'pretrain_mpc':
+            if isinstance(output, tuple):
+                acc, nce = output
+                print(f"[DEBUG] MPC accuracy: {acc}")
+                print(f"[DEBUG] MPC NCE loss: {nce}")
+                
+                # Store accuracy
+                if isinstance(acc, torch.Tensor):
+                    acc_val = acc.mean().item()
+                    self.acc_list.append(acc_val)
+                    # Store raw accuracy tensor for per-hydrophone metrics
+                    self.predictions.append(acc.detach().cpu())
+                else:
+                    acc_val = float(acc)
+                    self.acc_list.append(acc_val)
+                    self.predictions.append(torch.tensor([acc_val]))
+                
+                # Store NCE loss
+                if isinstance(nce, torch.Tensor):
+                    nce_val = nce.mean().item()
+                    self.nce_list.append(nce_val)
+                    # Store raw NCE tensor for per-hydrophone metrics
+                    self.targets.append(nce.detach().cpu())
+                else:
+                    nce_val = float(nce)
+                    self.nce_list.append(nce_val)
+                    self.targets.append(torch.tensor([nce_val]))
+                    
         elif self.task == 'pretrain_mpg':
-            mse = model_output
-            self.acc_list.append(torch.mean(mse).cpu())
-            self.nce_list.append(torch.mean(mse).cpu())
+            mse = output
+            print(f"[DEBUG] MPG MSE loss: {mse}")
             
-        elif self.task == 'pretrain_joint':
-            # For joint training, we need to handle both MPC and MPG outputs
-            try:
-                # First try to unpack as (mpc_output, mpg_output)
-                print(f"[DEBUG] Trying to unpack model_output for pretrain_joint task")
-                mpc_output, mpg_output = model_output
+            # Store MSE loss
+            if isinstance(mse, torch.Tensor):
+                mse_val = mse.mean().item()
+                self.nce_list.append(mse_val)
+                # Store raw MSE tensor for per-hydrophone metrics
+                self.predictions.append(mse.detach().cpu())
+                self.targets.append(torch.ones_like(mse.detach().cpu()))  # For consistency
+            else:
+                mse_val = float(mse)
+                self.nce_list.append(mse_val)
+                self.predictions.append(torch.tensor([mse_val]))
+                self.targets.append(torch.tensor([1.0]))  # For consistency
                 
-                print(f"[DEBUG] mpc_output type: {type(mpc_output)}")
-                if isinstance(mpc_output, tuple):
-                    print(f"[DEBUG] mpc_output is a tuple of length {len(mpc_output)}")
-                    # mpc_output is already (acc, nce)
-                    acc, nce = mpc_output
-                    print(f"[DEBUG] Unpacked mpc_output as (acc, nce)")
-                    print(f"[DEBUG] acc shape: {acc.shape if hasattr(acc, 'shape') else 'no shape'}, type: {type(acc)}")
-                    print(f"[DEBUG] nce shape: {nce.shape if hasattr(nce, 'shape') else 'no shape'}, type: {type(nce)}")
+        else:
+            # For finetuning tasks
+            if isinstance(output, tuple):
+                predictions, loss = output  # Unpack predictions and loss
+                if isinstance(loss, torch.Tensor):
+                    self.loss_list.append(loss.item())
                 else:
-                    # If mpc_output is not a tuple, it might be the acc tensor directly
-                    print(f"[DEBUG] mpc_output is not a tuple, treating as acc directly")
-                    acc = mpc_output
-                    print(f"[DEBUG] acc shape: {acc.shape if hasattr(acc, 'shape') else 'no shape'}, type: {type(acc)}")
-                
-                print(f"[DEBUG] mpg_output type: {type(mpg_output)}")
-                if isinstance(mpg_output, torch.Tensor):
-                    print(f"[DEBUG] mpg_output is a tensor with shape: {mpg_output.shape if hasattr(mpg_output, 'shape') else 'no shape'}")
-                
-                # Add to metrics
-                self.acc_list.append(torch.mean(acc).cpu())
-                self.nce_list.append(torch.mean(mpg_output).cpu())
-                
-                # Store predictions and targets for hydrophone metrics (using MPC part)
-                if hasattr(acc, 'dim') and acc.dim() > 0:
-                    print(f"[DEBUG] Creating predictions from acc with shape: {acc.shape}")
-                    predictions = torch.sigmoid(acc).cpu().detach()
-                    
-                    # Debug the shape of predictions
-                    print(f"[DEBUG] Predictions shape: {predictions.shape}, dim: {predictions.dim()}")
-                    
-                    # Ensure predictions is not a scalar tensor
-                    if predictions.dim() > 0:
-                        targets = torch.ones_like(predictions)  # In MPC, we're predicting masked tokens
-                        self.predictions.append(predictions)
-                        self.targets.append(targets)
-                        print(f"[DEBUG] Successfully added predictions with shape {predictions.shape}")
-                    else:
-                        print(f"[DEBUG] Skipping scalar prediction tensor with shape: {predictions.shape}")
-                else:
-                    print(f"[DEBUG] acc is a scalar or doesn't have a dim attribute, cannot create predictions")
-                    
-                    # Instead of creating dummy predictions, track actual metrics per hydrophone
-                    if sources is not None and len(sources) > 0:
-                        print(f"[DEBUG] Tracking actual metrics for {len(sources)} sources")
-                        
-                        # Store the scalar acc and nce values for each source
-                        for source in sources:
-                            if isinstance(source, bytes):
-                                source = source.decode('utf-8')
-                            
-                            # Extract just the hydrophone name if not already processed
-                            if '_' in source:
-                                hydrophone_name = source.split('_')[0]
-                            else:
-                                hydrophone_name = source
-                            
-                            # Store the source along with the current acc and nce values
-                            # We'll use these to calculate per-hydrophone metrics later
-                            self.sources.append(hydrophone_name)
-                            self.predictions.append((hydrophone_name, torch.mean(acc).cpu().item()))
-                            self.targets.append((hydrophone_name, torch.mean(mpg_output).cpu().item()))
-                        
-                        print(f"[DEBUG] Added metrics for {len(sources)} sources")
-            except (ValueError, TypeError) as e:
-                # If unpacking fails, model_output might be structured differently
-                print(f"[DEBUG] Error unpacking model_output for pretrain_joint: {e}")
-                print(f"[DEBUG] model_output type: {type(model_output)}")
-                
-                # Try to handle it as a scalar or other format
-                if isinstance(model_output, torch.Tensor):
-                    self.acc_list.append(torch.mean(model_output).cpu())
-                    self.nce_list.append(torch.mean(model_output).cpu())
-                    print(f"[DEBUG] Handled model_output as a single tensor with shape: {model_output.shape}")
-                else:
-                    print(f"[DEBUG] Unable to process model_output for pretrain_joint task: {model_output}")
+                    self.loss_list.append(float(loss))
+            else:
+                predictions = output  # Raw logits
+            
+            print(f"\n[DEBUG] Model output shape: {predictions.shape}")
+            print(f"Labels shape: {labels.shape}")
+            print(f"Model output stats (raw logits):")
+            print(f"min/max/mean: {predictions.min():.4f}/{predictions.max():.4f}/{predictions.mean():.4f}")
+            
+            # Convert logits to probabilities for accuracy calculation
+            probabilities = torch.sigmoid(predictions)
+            print(f"Probabilities stats:")
+            print(f"min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+            
+            # Calculate accuracy using thresholded probabilities
+            predicted_labels = (probabilities >= 0.5).float()
+            accuracy = (predicted_labels == labels).float().mean()
+            self.acc_list.append(accuracy.item())
+            
+            # Store raw predictions and labels for later metric computation
+            self.predictions.append(predictions.detach().cpu())
+            self.targets.append(labels.detach().cpu())
+            
+            print(f"Batch accuracy: {accuracy.item():.4f}")
+            print(f"Predicted anomalies: {predicted_labels.sum().item()}/{len(predicted_labels)}")
+            print(f"Actual anomalies: {labels.sum().item()}/{len(predicted_labels)}")
+        
+        # Store sources if provided
+        if sources is not None:
+            print(f"[DEBUG] Adding sources to list: {sources[:5]}")
+            self.sources.extend(sources)
     
     def compute_metrics(self):
-        """Compute metrics from collected data."""
-        print(f"[DEBUG] ValidationMetricsCollector.compute_metrics: Starting with acc={np.mean(self.acc_list):.6f}, nce={np.mean(self.nce_list):.6f}")
-        
-        # Basic metrics
-        metrics = {
-            'acc': np.mean(self.acc_list),
-            'nce': np.mean(self.nce_list)
-        }
-        
+        """Compute metrics from collected predictions and targets."""
+        print("\n[DEBUG] Computing validation metrics:")
         print(f"[DEBUG] Task: {self.task}")
-        print(f"[DEBUG] Have sources: {bool(self.sources)}, Have predictions: {bool(self.predictions)}")
+        print(f"[DEBUG] Number of predictions: {len(self.predictions)}")
+        print(f"[DEBUG] Number of targets: {len(self.targets)}")
+        print(f"[DEBUG] Number of sources: {len(self.sources)}")
+        print(f"[DEBUG] Number of accuracy values: {len(self.acc_list)}")
+        print(f"[DEBUG] Number of NCE values: {len(self.nce_list)}")
+        print(f"[DEBUG] Number of loss values: {len(self.loss_list)}")
         
-        # Calculate hydrophone metrics if we have sources and predictions
-        if self.sources and self.predictions and self.task in ['pretrain_mpc', 'pretrain_joint', 'pretrain_mpg']:
+        metrics = {}
+        
+        # Calculate mean accuracy if available
+        if len(self.acc_list) > 0:
+            metrics['acc'] = float(np.mean(self.acc_list))
+            print(f"[DEBUG] Mean accuracy: {metrics['acc']:.4f}")
+        
+        # Calculate mean loss/nce if available
+        if len(self.nce_list) > 0:
+            metrics['loss'] = float(np.mean(self.nce_list))
+            if self.task in ['pretrain_mpc', 'pretrain_joint']:
+                metrics['nce'] = metrics['loss']  # For MPC tasks, loss is NCE
+            print(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
+        elif len(self.loss_list) > 0:  # For finetuning tasks
+            metrics['loss'] = float(np.mean(self.loss_list))
+            print(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
+        
+        # Calculate per-hydrophone metrics if sources are available
+        if len(self.sources) > 0 and len(self.predictions) > 0:
+            print("\n[DEBUG] Computing per-hydrophone metrics")
+            hydrophone_metrics = defaultdict(lambda: {'count': 0, 'values': []})
+            
+            # Group predictions by hydrophone
+            for pred, target, source in zip(self.predictions, self.targets, self.sources):
+                # Extract hydrophone name from source
+                hydrophone = source.split('_')[0] if isinstance(source, str) else source.decode('utf-8').split('_')[0]
+                
+                # Store values based on task type
+                if self.task == 'pretrain_mpc':
+                    hydrophone_metrics[hydrophone]['values'].append({
+                        'accuracy': pred.mean().item(),
+                        'nce': target.mean().item()
+                    })
+                elif self.task == 'pretrain_mpg':
+                    hydrophone_metrics[hydrophone]['values'].append({
+                        'mse': pred.mean().item()
+                    })
+                elif self.task == 'pretrain_joint':
+                    hydrophone_metrics[hydrophone]['values'].append({
+                        'mpc_accuracy': pred.mean().item(),
+                        'nce': target.mean().item()
+                    })
+                hydrophone_metrics[hydrophone]['count'] += 1
+            
+            # Calculate average metrics for each hydrophone
+            for hydrophone, hyd_metrics in hydrophone_metrics.items():
+                values = hyd_metrics['values']
+                if self.task == 'pretrain_mpc':
+                    hyd_metrics['accuracy'] = np.mean([v['accuracy'] for v in values])
+                    hyd_metrics['nce'] = np.mean([v['nce'] for v in values])
+                    print(f"\n[DEBUG] {hydrophone}:")
+                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    print(f"[DEBUG]   Accuracy: {hyd_metrics['accuracy']:.4f}")
+                    print(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
+                elif self.task == 'pretrain_mpg':
+                    hyd_metrics['mse'] = np.mean([v['mse'] for v in values])
+                    print(f"\n[DEBUG] {hydrophone}:")
+                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    print(f"[DEBUG]   MSE: {hyd_metrics['mse']:.4f}")
+                elif self.task == 'pretrain_joint':
+                    hyd_metrics['mpc_accuracy'] = np.mean([v['mpc_accuracy'] for v in values])
+                    hyd_metrics['nce'] = np.mean([v['nce'] for v in values])
+                    print(f"\n[DEBUG] {hydrophone}:")
+                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    print(f"[DEBUG]   MPC Accuracy: {hyd_metrics['mpc_accuracy']:.4f}")
+                    print(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
+                
+                # Remove the values list to save memory
+                del hyd_metrics['values']
+            
+            metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
+        
+        # For pretraining tasks, we're done here
+        if self.task.startswith('pretrain_'):
+            return metrics
+            
+        # For finetuning tasks, compute binary classification metrics
+        if len(self.predictions) > 0 and len(self.targets) > 0:
             try:
-                # For pretrain_joint task with scalar outputs, we've stored (hydrophone, value) tuples
-                if self.task == 'pretrain_joint' and isinstance(self.predictions[0], tuple):
-                    print("[DEBUG] Processing per-hydrophone metrics from scalar values")
+                # Concatenate all predictions and targets
+                all_predictions = torch.cat(self.predictions, dim=0).numpy()  # Raw logits
+                all_targets = torch.cat(self.targets, dim=0).numpy()
+                print(f"[DEBUG] Total samples: {len(all_predictions)}")
+                print(f"[DEBUG] Predictions shape: {all_predictions.shape}")
+                print(f"[DEBUG] Targets shape: {all_targets.shape}")
+                
+                # Convert logits to probabilities
+                probabilities = 1 / (1 + np.exp(-all_predictions))  # sigmoid
+                print(f"\n[DEBUG] Probabilities stats:")
+                print(f"[DEBUG] min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                
+                # Calculate AUC using probabilities
+                try:
+                    metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities))
+                    print(f"[DEBUG] AUC score: {metrics['auc']:.4f}")
+                except Exception as e:
+                    print(f"[DEBUG] Warning: Failed to calculate AUC: {str(e)}")
+                    metrics['auc'] = 0.0
+                
+                # Calculate precision, recall, and F2 using thresholded probabilities
+                predicted_labels = (probabilities >= 0.5).astype(int)
+                metrics['precision'] = float(sklearn.metrics.precision_score(all_targets, predicted_labels))
+                metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_labels))
+                metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_labels, beta=2))
+                
+                print(f"[DEBUG] Precision: {metrics['precision']:.4f}")
+                print(f"[DEBUG] Recall: {metrics['recall']:.4f}")
+                print(f"[DEBUG] F2 score: {metrics['f2']:.4f}")
+                
+                # Print confusion matrix
+                cm = sklearn.metrics.confusion_matrix(all_targets, predicted_labels)
+                print("\n[DEBUG] Confusion Matrix:")
+                print("[DEBUG] TN FP")
+                print("[DEBUG] FN TP")
+                print(f"[DEBUG] {cm}")
+                
+                # Calculate per-hydrophone metrics if sources are available
+                if len(self.sources) > 0:
+                    print("\n[DEBUG] Computing per-hydrophone metrics")
+                    hydrophone_metrics = defaultdict(lambda: {'count': 0, 'predictions': [], 'targets': []})
                     
-                    # Group metrics by hydrophone
-                    hydrophone_metrics = {}
-                    hydrophone_acc_values = {}
-                    hydrophone_nce_values = {}
-                    hydrophone_counts = {}
+                    # Group predictions by hydrophone
+                    for pred, target, source in zip(probabilities, all_targets, self.sources):
+                        hydrophone_metrics[source]['predictions'].append(pred)
+                        hydrophone_metrics[source]['targets'].append(target)
+                        hydrophone_metrics[source]['count'] += 1
                     
-                    # Collect all values per hydrophone
-                    for i in range(len(self.predictions)):
-                        hydrophone, acc_value = self.predictions[i]
-                        _, nce_value = self.targets[i]  # We stored nce in targets
+                    # Calculate metrics for each hydrophone
+                    for hydrophone, hyd_metrics in hydrophone_metrics.items():
+                        hyd_preds = np.array(hyd_metrics['predictions'])
+                        hyd_targets = np.array(hyd_metrics['targets'])
+                        hyd_pred_labels = (hyd_preds >= 0.5).astype(int)
                         
-                        if hydrophone not in hydrophone_acc_values:
-                            hydrophone_acc_values[hydrophone] = []
-                            hydrophone_nce_values[hydrophone] = []
-                            hydrophone_counts[hydrophone] = 0
+                        try:
+                            hyd_metrics['precision'] = float(sklearn.metrics.precision_score(hyd_targets, hyd_pred_labels))
+                            hyd_metrics['recall'] = float(sklearn.metrics.recall_score(hyd_targets, hyd_pred_labels))
+                            hyd_metrics['f2'] = float(sklearn.metrics.fbeta_score(hyd_targets, hyd_pred_labels, beta=2))
+                            hyd_metrics['auc'] = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_preds))
+                        except Exception as e:
+                            print(f"[DEBUG] Warning: Failed to calculate metrics for hydrophone {hydrophone}: {str(e)}")
+                            hyd_metrics.update({'precision': 0.0, 'recall': 0.0, 'f2': 0.0, 'auc': 0.0})
                         
-                        hydrophone_acc_values[hydrophone].append(acc_value)
-                        hydrophone_nce_values[hydrophone].append(nce_value)
-                        hydrophone_counts[hydrophone] += 1
+                        # Convert predictions and targets lists to counts for memory efficiency
+                        hyd_metrics['predictions'] = len(hyd_metrics['predictions'])
+                        hyd_metrics['targets'] = sum(hyd_metrics['targets'])
                     
-                    # Calculate mean values for each hydrophone
-                    for hydrophone in hydrophone_acc_values:
-                        metrics_dict = {
-                            'count': hydrophone_counts[hydrophone],
-                            'accuracy': np.mean(hydrophone_acc_values[hydrophone]),
-                            'mpc_accuracy': np.mean(hydrophone_acc_values[hydrophone]),
-                            'mpg_mse': np.mean(hydrophone_nce_values[hydrophone])
-                        }
-                        hydrophone_metrics[hydrophone] = metrics_dict
+                    metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
                     
-                    # Add hydrophone metrics to the metrics dictionary
-                    metrics.update({
-                        'hydrophone_metrics': hydrophone_metrics
-                    })
-                    
-                    print(f"[DEBUG] Computed hydrophone metrics for {len(hydrophone_metrics)} unique hydrophones")
-                    return metrics
-                
-                # For tensor predictions (non-scalar case), use the original approach
-                # Check if we have valid predictions to concatenate
-                if len(self.predictions) == 0:
-                    print("[DEBUG] No predictions collected, skipping hydrophone metrics")
-                    return metrics
-                
-                # Debug the shapes of predictions
-                print(f"[DEBUG] Number of prediction tensors: {len(self.predictions)}")
-                for i, p in enumerate(self.predictions[:3]):  # Show first 3 for debugging
-                    if not isinstance(p, tuple):  # Skip tuples which we handle separately
-                        print(f"[DEBUG] Prediction tensor {i} shape: {p.shape}, dim: {p.dim()}")
-                
-                # Filter out any scalar tensors and tuples
-                valid_predictions = [p for p in self.predictions if not isinstance(p, tuple) and p.dim() > 0]
-                valid_targets = [t for t in self.targets if not isinstance(t, tuple) and t.dim() > 0]
-                valid_sources = [s for i, s in enumerate(self.sources) if not isinstance(self.predictions[i], tuple)]
-                
-                if not valid_predictions:
-                    print("[DEBUG] No valid prediction tensors found, skipping hydrophone metrics")
-                    return metrics
-                
-                print(f"[DEBUG] Valid predictions: {len(valid_predictions)}/{len(self.predictions)}")
-                
-                # Concatenate valid tensors
-                predictions = torch.cat(valid_predictions).numpy()
-                targets = torch.cat(valid_targets).numpy()
-                
-                print(f"[DEBUG] Concatenated predictions shape: {predictions.shape}")
-                print(f"[DEBUG] Concatenated targets shape: {targets.shape}")
-                print(f"[DEBUG] Number of valid sources: {len(valid_sources)}")
-                
-                # Ensure we have the same number of predictions and sources
-                if len(predictions) != len(valid_sources):
-                    print(f"[WARNING] Number of predictions ({len(predictions)}) doesn't match number of sources ({len(valid_sources)})")
-                    # Use the minimum length
-                    min_len = min(len(predictions), len(valid_sources))
-                    predictions = predictions[:min_len]
-                    targets = targets[:min_len]
-                    sources = valid_sources[:min_len]
-                else:
-                    sources = valid_sources
-                
-                # For pretraining tasks, we only want to track accuracy and loss per hydrophone
-                if self.task.startswith('pretrain_'):
-                    # Group by hydrophone
-                    hydrophone_metrics = {}
-                    unique_sources = list(set(sources))
-                    print(f"[DEBUG] Unique sources: {unique_sources}")
-                    
-                    for source in unique_sources:
-                        source_mask = [s == source for s in sources]
-                        source_preds = predictions[source_mask]
-                        source_targets = targets[source_mask]
-                        
-                        metrics_dict = {'count': len(source_preds)}
-                        
-                        if len(source_preds) > 0:
-                            # For pretraining, calculate mean accuracy (how close predictions are to targets)
-                            if self.task in ['pretrain_mpc', 'pretrain_joint']:
-                                # For MPC, accuracy is how close predictions are to 1.0
-                                accuracy = np.mean(source_preds)
-                                metrics_dict['accuracy'] = accuracy
-                                
-                                if self.task == 'pretrain_joint':
-                                    # For joint training, also store as mpc_accuracy for clarity
-                                    metrics_dict['mpc_accuracy'] = accuracy
-                            
-                            if self.task in ['pretrain_mpg', 'pretrain_joint']:
-                                # For MPG, we're tracking MSE
-                                # Since we don't have actual MSE values per sample, use a placeholder
-                                # This would ideally be replaced with actual per-hydrophone MSE
-                                if self.task == 'pretrain_joint':
-                                    metrics_dict['mpg_mse'] = metrics['nce']  # Use global MSE as placeholder
-                                else:
-                                    metrics_dict['mse'] = metrics['nce']  # Use global MSE as placeholder
-                        else:
-                            if self.task in ['pretrain_mpc', 'pretrain_joint']:
-                                metrics_dict['accuracy'] = 0.0
-                                if self.task == 'pretrain_joint':
-                                    metrics_dict['mpc_accuracy'] = 0.0
-                            
-                            if self.task in ['pretrain_mpg', 'pretrain_joint']:
-                                if self.task == 'pretrain_joint':
-                                    metrics_dict['mpg_mse'] = 0.0
-                                else:
-                                    metrics_dict['mse'] = 0.0
-                        
-                        hydrophone_metrics[source] = metrics_dict
-                    
-                    # Add hydrophone metrics to the metrics dictionary
-                    metrics.update({
-                        'hydrophone_metrics': hydrophone_metrics
-                    })
-                    
-                    print(f"[DEBUG] Computed hydrophone metrics for {len(hydrophone_metrics)} unique hydrophones")
-                else:
-                    # For non-pretraining tasks, keep the original binary metrics
-                    global_precision, global_recall, global_f2 = calculate_binary_metrics(predictions, targets)
-                    
-                    # Group by hydrophone
-                    hydrophone_metrics = {}
-                    unique_sources = list(set(sources))
-                    print(f"[DEBUG] Unique sources: {unique_sources}")
-                    
-                    for source in unique_sources:
-                        source_mask = [s == source for s in sources]
-                        source_preds = predictions[source_mask]
-                        source_targets = targets[source_mask]
-                        
-                        metrics_dict = {'count': len(source_preds)}
-                        
-                        if len(source_preds) > 0:
-                            precision, recall, f2 = calculate_binary_metrics(source_preds, source_targets)
-                            metrics_dict.update({
-                                'precision': precision,
-                                'recall': recall,
-                                'f2': f2
-                            })
-                        else:
-                            metrics_dict.update({
-                                'precision': 0.0,
-                                'recall': 0.0,
-                                'f2': 0.0
-                            })
-                        
-                        hydrophone_metrics[source] = metrics_dict
-                    
-                    # Add hydrophone metrics to the metrics dictionary
-                    metrics.update({
-                        'global_precision': global_precision,
-                        'global_recall': global_recall,
-                        'global_f2': global_f2,
-                        'hydrophone_metrics': hydrophone_metrics
-                    })
-                    
-                    print(f"[DEBUG] Computed hydrophone metrics for {len(hydrophone_metrics)} unique hydrophones")
-                
             except Exception as e:
-                print(f"[ERROR] Failed to compute hydrophone metrics: {str(e)}")
+                print(f"[DEBUG] Error computing metrics: {str(e)}")
+                print("[DEBUG] Exception details:", e.__class__.__name__)
                 import traceback
-                traceback.print_exc()
+                print("[DEBUG] Traceback:", traceback.format_exc())
+                metrics.update({
+                    'auc': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'f2': 0.0
+                })
         
         return metrics
     
@@ -407,44 +360,12 @@ class ValidationMetricsCollector:
         # Log global metrics based on task type
         print(f"\nValidation metrics for epoch {epoch}:")
         
-        if self.task.startswith('pretrain_'):
-            # Pretraining metrics
-            print(f"Accuracy: {metrics['acc']:.6f}")
-            print(f"NCE/Loss: {metrics['nce']:.6f}")
-            
-            # Log per-hydrophone metrics for pretraining
-            if 'hydrophone_metrics' in metrics and metrics['hydrophone_metrics']:
-                print("\nPer-hydrophone metrics:")
-                for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
-                    print(f"\n{hydrophone}:")
-                    print(f"  Sample count: {hyd_metrics['count']}")
-                    
-                    if self.task in ['pretrain_mpc', 'pretrain_joint']:
-                        if 'accuracy' in hyd_metrics:
-                            print(f"  Accuracy: {hyd_metrics['accuracy']:.6f}")
-                        if 'mpc_accuracy' in hyd_metrics:
-                            print(f"  MPC Accuracy: {hyd_metrics['mpc_accuracy']:.6f}")
-                    
-                    if self.task in ['pretrain_mpg', 'pretrain_joint']:
-                        if 'mse' in hyd_metrics:
-                            print(f"  MSE: {hyd_metrics['mse']:.6f}")
-                        if 'mpg_mse' in hyd_metrics:
-                            print(f"  MPG MSE: {hyd_metrics['mpg_mse']:.6f}")
-            
-            # Log to wandb if enabled
-            if use_wandb:
-                log_validation_metrics(metrics, self.task, epoch, prefix, use_wandb)
-        else:
-            # Fine-tuning metrics
-            print(f"Global accuracy: {metrics['acc']:.6f}")
-            print(f"Global AUC: {metrics['auc']:.6f}")
-            print(f"Global precision: {metrics['global_precision']:.6f}")
-            print(f"Global recall: {metrics['global_recall']:.6f}")
-            print(f"Global F2: {metrics['global_f2']:.6f}")
-            print(f"Loss: {metrics['loss']:.6f}")
+        if len(self.acc_list) > 0:
+            print(f"Accuracy: {metrics.get('acc', 0.0):.6f}")
+            print(f"Loss: {metrics.get('loss', 0.0):.6f}")
             
             # Log per-hydrophone metrics for fine-tuning
-            if 'hydrophone_metrics' in metrics and metrics['hydrophone_metrics']:
+            if len(self.sources) > 0 and 'hydrophone_metrics' in metrics:
                 print("\nPer-hydrophone metrics:")
                 for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
                     print(f"\n{hydrophone}:")
@@ -457,6 +378,8 @@ class ValidationMetricsCollector:
             # Log to wandb if enabled
             if use_wandb:
                 log_validation_metrics(metrics, self.task, epoch, prefix, use_wandb)
+        else:
+            print("Warning: No accuracy values collected")
 
 def validate(audio_model, val_loader, args, epoch):
     """Run validation and compute metrics."""
@@ -466,7 +389,7 @@ def validate(audio_model, val_loader, args, epoch):
     audio_model = audio_model.to(device)
     audio_model.eval()
 
-    val_collector = ValidationMetricsCollector(task=args.task)
+    val_collector = ValidationMetricsCollector()
     
     with torch.no_grad():
         for i, (audio_input, labels) in enumerate(val_loader):

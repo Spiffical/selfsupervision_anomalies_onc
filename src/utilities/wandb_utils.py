@@ -8,6 +8,8 @@ import wandb
 import numpy as np
 import torch
 from collections import defaultdict
+import pandas as pd
+import json
 
 def init_wandb(args, project_name="ssamba", entity=None, group=None, run_id=None):
     """
@@ -61,10 +63,66 @@ def init_wandb(args, project_name="ssamba", entity=None, group=None, run_id=None
         id=run_id  # Use the same run ID if resuming
     )
     
+    # Setup custom report sections
+    if run is not None:
+        # Create custom sections in the dashboard
+        setup_custom_sections(run, args.task if hasattr(args, 'task') else None)
+    
     # Mark as initialized
     args.wandb_initialized = True
     
     return run
+
+def setup_custom_sections(run, task=None):
+    """
+    Set up custom sections in the wandb dashboard
+    
+    Args:
+        run: wandb run object
+        task: Current task (e.g. 'pretrain_mpc', 'finetune_classification')
+    """
+    # Define the sections we want to create
+    sections = [
+        "Global Metrics",
+    ]
+    
+    # Add per-hydrophone sections for each metric type
+    per_hydrophone_sections = []
+    
+    if task and task.startswith('pretrain'):
+        sections.extend([
+            "Pretraining Accuracy",
+            "Pretraining Loss",
+            "Pretraining Other Metrics"
+        ])
+        per_hydrophone_sections.extend([
+            "Per_Hydrophone_PT_Accuracy",
+            "Per_Hydrophone_PT_Loss",
+            "Per_Hydrophone_PT_NCE"
+        ])
+    else:
+        sections.extend([
+            "Finetuning Accuracy",
+            "Finetuning Loss",
+            "Finetuning Precision",
+            "Finetuning Recall",
+            "Finetuning F2"
+        ])
+        per_hydrophone_sections.extend([
+            "Per_Hydrophone_FT_Accuracy",
+            "Per_Hydrophone_FT_Loss",
+            "Per_Hydrophone_FT_Precision",
+            "Per_Hydrophone_FT_Recall",
+            "Per_Hydrophone_FT_F2"
+        ])
+    
+    # Add per-hydrophone sections to the main sections list
+    sections.extend(per_hydrophone_sections)
+        
+    # Create an empty dashboard visualization for each section
+    for section in sections:
+        # This creates a custom section if it doesn't exist yet
+        run.log({f"{section}/initialized": True})
 
 def create_hydrophone_table(task):
     """
@@ -85,233 +143,215 @@ def create_hydrophone_table(task):
     else:
         return wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Accuracy", "Precision", "Recall", "F2"])
 
-def log_training_metrics(metrics_dict, step=None, use_wandb=True):
-    """
-    Log training metrics to wandb.
-    
-    Args:
-        metrics_dict: Dictionary of metrics to log
-        step: Optional step number for logging
-        use_wandb: Whether to use wandb for logging
-    """
+def log_training_metrics(metrics_dict, use_wandb=True):
+    """Log training metrics to wandb with organized categories."""
     if not use_wandb:
-        print("[DEBUG] wandb_utils.log_training_metrics: use_wandb is False, returning")
         return
-    
+        
+    import wandb
+    if wandb.run is None:
+        print("[DEBUG] Warning: wandb.run is None, skipping metric logging")
+        return
+        
     print("[DEBUG] wandb_utils.log_training_metrics: Starting")
     
-    # Extract hydrophone metrics if present
-    hydrophone_metrics = None
-    if 'hydrophone_metrics' in metrics_dict:
-        print(f"[DEBUG] wandb_utils.log_training_metrics: Found hydrophone_metrics in metrics_dict")
-        hydrophone_metrics = metrics_dict.pop('hydrophone_metrics')
-        print(f"[DEBUG] wandb_utils.log_training_metrics: Extracted hydrophone_metrics with {len(hydrophone_metrics)} hydrophones")
+    # Organize metrics by category
+    pt_metrics = {}  # Pretraining metrics
+    ft_metrics = {}  # Finetuning metrics
+    global_metrics = {}  # Global metrics
     
-    # Get epoch from metrics_dict if available
-    epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', None))
+    # Group metrics by type
+    for key, value in metrics_dict.items():
+        if key.startswith('pt_'):
+            clean_key = key[3:]  # Remove 'pt_' prefix
+            pt_metrics[clean_key] = value
+        elif key.startswith('ft_'):
+            clean_key = key[3:]  # Remove 'ft_' prefix
+            ft_metrics[clean_key] = value
+        else:
+            # Global metrics
+            global_metrics[key] = value
     
-    # Log regular metrics using epoch instead of step for x-axis
-    print(f"[DEBUG] wandb_utils.log_training_metrics: Logging regular metrics: {list(metrics_dict.keys())}")
-    wandb.log(metrics_dict, step=epoch)
-    
-    # Log hydrophone metrics separately if present
-    if hydrophone_metrics:
-        epoch = metrics_dict.get('pt_epoch', metrics_dict.get('ft_epoch', epoch))
-        prefix = "pt_" if 'pt_epoch' in metrics_dict else "ft_"
-        print(f"[DEBUG] wandb_utils.log_training_metrics: Calling log_hydrophone_metrics for epoch {epoch} with prefix {prefix}")
+    try:
+        # Log global metrics
+        if global_metrics:
+            wandb.log({"Global Metrics/training": global_metrics})
         
-        # Log per-hydrophone metrics
-        log_hydrophone_metrics(hydrophone_metrics, epoch=epoch, prefix=prefix)
-    else:
-        print("[DEBUG] wandb_utils.log_training_metrics: No hydrophone_metrics to log")
+        # Log pretraining metrics to appropriate sections
+        for key, value in pt_metrics.items():
+            if 'acc' in key or 'accuracy' in key:
+                wandb.log({"Pretraining Accuracy/training": {key: value}})
+            elif 'loss' in key:
+                wandb.log({"Pretraining Loss/training": {key: value}})
+            else:
+                wandb.log({"Pretraining Other Metrics/training": {key: value}})
+        
+        # Log finetuning metrics to appropriate sections
+        for key, value in ft_metrics.items():
+            if 'acc' in key or 'accuracy' in key:
+                wandb.log({"Finetuning Accuracy/training": {key: value}})
+            elif 'loss' in key:
+                wandb.log({"Finetuning Loss/training": {key: value}})
+            elif 'precision' in key:
+                wandb.log({"Finetuning Precision/training": {key: value}})
+            elif 'recall' in key:
+                wandb.log({"Finetuning Recall/training": {key: value}})
+            elif 'f2' in key or 'f1' in key:
+                wandb.log({"Finetuning F2/training": {key: value}})
+            else:
+                wandb.log({"Global Metrics/training": {key: value}})
+    
+    except Exception as e:
+        print(f"[DEBUG] Error logging training metrics: {str(e)}")
     
     print("[DEBUG] wandb_utils.log_training_metrics: Finished")
 
-def log_hydrophone_metrics(hydrophone_metrics, epoch=None, prefix=""):
-    """
-    Log hydrophone-specific metrics to wandb.
-    
-    Args:
-        hydrophone_metrics: Dictionary of hydrophone metrics
-        epoch: Current epoch number
-        prefix: Prefix for metric names (e.g., 'pt_' for pretraining)
-    """
-    print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Starting with {len(hydrophone_metrics)} hydrophones, epoch {epoch}, prefix {prefix}")
-    
-    # Log per-hydrophone metrics
-    for hydrophone, metrics in hydrophone_metrics.items():
-        metric_dict = {}
-        
-        for metric_name, value in metrics.items():
-            if metric_name != 'count':  # Handle count separately
-                metric_dict[f"{prefix}{metric_name.capitalize()}/{hydrophone}"] = value
-        
-        # Always log sample count
-        if 'count' in metrics:
-            metric_dict[f"{prefix}Sample_Count/{hydrophone}"] = metrics['count']
-        
-        # Add epoch to ensure metrics are tracked as a function of epoch
-        if epoch is not None:
-            metric_dict[f"{prefix}epoch"] = epoch
-        
-        print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Logging metrics for {hydrophone}: {metric_dict}")
-        wandb.log(metric_dict, step=epoch)  # Use epoch for x-axis
-    
-    # Create custom wandb.Table for sample distribution periodically
-    if isinstance(epoch, int) and (epoch == 1 or epoch % 10 == 0):
-        print(f"[DEBUG] wandb_utils.log_hydrophone_metrics: Creating sample distribution table for epoch {epoch}")
-        # Create table for sample distribution
-        table_data = [[hydrophone, metrics['count']] for hydrophone, metrics in hydrophone_metrics.items()]
-        wandb.log({
-            f"{prefix}Sample_Distribution": wandb.Table(
-                data=table_data,
-                columns=["Hydrophone", "Sample Count"]
-            )
-        }, step=epoch)  # Use epoch for x-axis
-        
-        # Create tables for each metric type
-        metric_types = set()
-        for metrics in hydrophone_metrics.values():
-            metric_types.update([k for k in metrics.keys() if k != 'count'])
-            
-        for metric_type in metric_types:
-            table_data = [[hydrophone, metrics.get(metric_type, 0), metrics['count']] 
-                          for hydrophone, metrics in hydrophone_metrics.items() 
-                          if metric_type in metrics]
-            
-            if table_data:  # Only create table if we have data
-                wandb.log({
-                    f"{prefix}{metric_type.capitalize()}_by_Hydrophone": wandb.Table(
-                        data=table_data,
-                        columns=["Hydrophone", metric_type.capitalize(), "Sample Count"]
-                    )
-                }, step=epoch)  # Use epoch for x-axis
-        
-        # Create interactive plots for metrics over time
-        create_hydrophone_plots(hydrophone_metrics, epoch, prefix, metric_types)
-
-def create_hydrophone_plots(hydrophone_metrics, epoch, prefix, metric_types):
-    """
-    Create interactive plots for hydrophone metrics over time.
-    
-    Args:
-        hydrophone_metrics: Dictionary of hydrophone metrics
-        epoch: Current epoch number
-        prefix: Prefix for metric names
-        metric_types: Set of metric types to plot
-    """
-    import wandb
-    
-    # Only create plots periodically to avoid cluttering the UI
-    if not isinstance(epoch, int) or (epoch != 1 and epoch % 10 != 0):
-        return
-        
-    # Get list of hydrophones
-    hydrophones = list(hydrophone_metrics.keys())
-    
-    # Create a plot for each metric type
-    for metric_type in metric_types:
-        # Skip if this metric type isn't present
-        if not any(metric_type in metrics for metrics in hydrophone_metrics.values()):
-            continue
-            
-        # Create data for the plot
-        data = []
-        for hydrophone in hydrophones:
-            if metric_type in hydrophone_metrics[hydrophone]:
-                data.append([hydrophone, hydrophone_metrics[hydrophone][metric_type]])
-        
-        if not data:
-            continue
-            
-        # Sort by metric value for better visualization
-        data.sort(key=lambda x: x[1], reverse=True)
-        
-        # Create a bar chart
-        hydrophone_names = [item[0] for item in data]
-        metric_values = [item[1] for item in data]
-        
-        wandb.log({
-            f"{prefix}{metric_type.capitalize()}_Plot": wandb.plot.bar(
-                wandb.Table(data=[[h, v] for h, v in zip(hydrophone_names, metric_values)],
-                           columns=["Hydrophone", metric_type.capitalize()]),
-                "Hydrophone", 
-                metric_type.capitalize(),
-                title=f"{metric_type.capitalize()} by Hydrophone (Epoch {epoch})"
-            )
-        }, step=epoch)  # Use epoch for x-axis
-
-def log_validation_metrics(metrics, task, epoch=None, prefix="", use_wandb=True):
-    """
-    Log validation metrics to wandb.
-    
-    Args:
-        metrics: Dictionary of validation metrics
-        task: The training task
-        epoch: Current epoch number
-        prefix: Prefix for metric names
-        use_wandb: Whether to use wandb for logging
-    """
+def log_validation_metrics(metrics, task, epoch, prefix="", use_wandb=True):
+    """Log validation metrics to wandb with organized categories."""
     if not use_wandb:
         return
-    
-    wandb_metrics = {}
-    
-    if task.startswith('pretrain_'):
-        # Pretraining metrics
-        wandb_metrics.update({
-            f"{prefix}val_accuracy": metrics['acc'],
-            f"{prefix}val_loss": metrics['nce'],
-            f"{prefix}epoch": epoch if epoch is not None else 0
-        })
         
-        # Add per-hydrophone metrics for pretraining if available
-        if 'hydrophone_metrics' in metrics and metrics['hydrophone_metrics']:
-            # Log hydrophone metrics separately to ensure they're tracked by epoch
-            log_hydrophone_metrics(metrics['hydrophone_metrics'], epoch=epoch, prefix=f"{prefix}val_")
-            
-            # Also include in the main metrics dict for completeness
-            for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
-                for metric_name, value in hyd_metrics.items():
-                    if task == 'pretrain_mpc':
-                        if metric_name in ['accuracy']:
-                            wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                    elif task == 'pretrain_mpg':
-                        if metric_name in ['mse']:
-                            wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                    elif task == 'pretrain_joint':
-                        if metric_name in ['accuracy', 'mpc_accuracy', 'mpg_mse']:
-                            wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                    
-                    if metric_name == 'count':
-                        wandb_metrics[f"{prefix}hydrophone/{hydrophone}/sample_count"] = value
-    else:
-        # Fine-tuning metrics
-        wandb_metrics.update({
-            f"{prefix}val_loss": metrics.get('loss', 0),
-            f"{prefix}val_accuracy": metrics.get('acc', 0),
-            f"{prefix}val_auc": metrics.get('auc', 0),
-            f"{prefix}val_precision": metrics.get('global_precision', 0),
-            f"{prefix}val_recall": metrics.get('global_recall', 0),
-            f"{prefix}val_f2": metrics.get('global_f2', 0),
-            f"{prefix}epoch": epoch if epoch is not None else 0
-        })
-        
-        # Add per-hydrophone metrics
-        if 'hydrophone_metrics' in metrics and metrics['hydrophone_metrics']:
-            # Log hydrophone metrics separately to ensure they're tracked by epoch
-            log_hydrophone_metrics(metrics['hydrophone_metrics'], epoch=epoch, prefix=f"{prefix}val_")
-            
-            # Also include in the main metrics dict for completeness
-            for hydrophone, hyd_metrics in metrics['hydrophone_metrics'].items():
-                for metric_name, value in hyd_metrics.items():
-                    if metric_name in ['accuracy', 'precision', 'recall', 'f2']:
-                        wandb_metrics[f"{prefix}hydrophone/{hydrophone}/val_{metric_name}"] = value
-                    elif metric_name == 'count':
-                        wandb_metrics[f"{prefix}hydrophone/{hydrophone}/sample_count"] = value
+    import wandb
+    if wandb.run is None:
+        print("[DEBUG] Warning: wandb.run is None, skipping validation metric logging")
+        return
     
-    # Always use epoch for x-axis
-    wandb.log(wandb_metrics, step=epoch)
+    print("[DEBUG] wandb_utils.log_validation_metrics: Starting")
+    
+    # Determine if we're in pretraining or finetuning phase
+    is_pretraining = task.startswith('pretrain')
+    section_prefix = "Pretraining" if is_pretraining else "Finetuning"
+    
+    # Process each metric
+    for k, v in metrics.items():
+        if k == 'hydrophone_metrics':
+            continue
+            
+        # Clean the key name
+        clean_key = k[len(prefix):] if prefix and k.startswith(prefix) else k
+        
+        # Determine which section to log to
+        if 'acc' in clean_key or 'accuracy' in clean_key:
+            section = f"{section_prefix} Accuracy"
+        elif 'loss' in clean_key:
+            section = f"{section_prefix} Loss"
+        elif 'precision' in clean_key:
+            section = f"{section_prefix} Precision"
+        elif 'recall' in clean_key:
+            section = f"{section_prefix} Recall"
+        elif 'f2' in clean_key or 'f1' in clean_key:
+            section = f"{section_prefix} F2"
+        else:
+            section = "Global Metrics"
+        
+        # Log to the appropriate section
+        wandb.log({f"{section}/validation": {clean_key: v, "epoch": epoch}})
+    
+    # Log per-hydrophone metrics if available
+    if 'hydrophone_metrics' in metrics:
+        print("[DEBUG] Found hydrophone metrics, logging them separately")
+        log_hydrophone_metrics(metrics, epoch, prefix, use_wandb)
+    
+    print("[DEBUG] wandb_utils.log_validation_metrics: Finished")
+
+def log_hydrophone_metrics(metrics, epoch, prefix="", use_wandb=True):
+    """Log per-hydrophone metrics to wandb with organized categories."""
+    if not use_wandb or 'hydrophone_metrics' not in metrics:
+        return
+        
+    import wandb
+    if wandb.run is None:
+        print("[DEBUG] Warning: wandb.run is None, skipping hydrophone metric logging")
+        return
+    
+    print("[DEBUG] wandb_utils.log_hydrophone_metrics: Starting")
+    
+    hydrophone_metrics = metrics['hydrophone_metrics']
+    
+    # Determine if we're in pretraining or finetuning phase
+    is_pretraining = prefix.startswith('pt')
+    phase_prefix = "PT" if is_pretraining else "FT"
+    
+    # Group metrics by type
+    metric_groups = defaultdict(dict)
+    
+    # Process each hydrophone's metrics
+    for hydrophone, hyd_metrics in hydrophone_metrics.items():
+        # Process pretraining metrics
+        if 'mpc_accuracy' in hyd_metrics:
+            metric_groups["accuracy"][hydrophone] = hyd_metrics['mpc_accuracy']
+        
+        if 'mpg_mse' in hyd_metrics:
+            metric_groups["mse"][hydrophone] = hyd_metrics['mpg_mse']
+            
+        if 'nce' in hyd_metrics:
+            metric_groups["nce"][hydrophone] = hyd_metrics['nce']
+        
+        # Process finetuning metrics
+        if 'accuracy' in hyd_metrics:
+            metric_groups["accuracy"][hydrophone] = hyd_metrics['accuracy']
+            
+        if 'precision' in hyd_metrics:
+            metric_groups["precision"][hydrophone] = hyd_metrics['precision']
+            
+        if 'recall' in hyd_metrics:
+            metric_groups["recall"][hydrophone] = hyd_metrics['recall']
+            
+        if 'f2' in hyd_metrics:
+            metric_groups["f2"][hydrophone] = hyd_metrics['f2']
+            
+        if 'auc' in hyd_metrics:
+            metric_groups["auc"][hydrophone] = hyd_metrics['auc']
+    
+    try:
+        # We no longer log global averages to Global Metrics
+        # This was previously causing per-hydrophone metrics to appear in Global Metrics
+        
+        # Log per-hydrophone metrics to their dedicated sections
+        for metric_type, values in metric_groups.items():
+            if not values:
+                continue
+                
+            # Determine the appropriate section name for per-hydrophone metrics
+            if metric_type == "accuracy":
+                section = f"Per_Hydrophone_{phase_prefix}_Accuracy"
+            elif metric_type in ["loss", "mse"]:
+                section = f"Per_Hydrophone_{phase_prefix}_Loss"
+            elif metric_type == "precision":
+                section = f"Per_Hydrophone_{phase_prefix}_Precision"
+            elif metric_type == "recall":
+                section = f"Per_Hydrophone_{phase_prefix}_Recall"
+            elif metric_type in ["f2", "f1"]:
+                section = f"Per_Hydrophone_{phase_prefix}_F2"
+            elif metric_type == "nce":
+                section = f"Per_Hydrophone_{phase_prefix}_NCE"
+            else:
+                section = f"Per_Hydrophone_{phase_prefix}_Other"
+            
+            # Create the data dictionary with all hydrophone values
+            hydrophone_data = {**values, "epoch": epoch}
+            
+            # Log the raw data to the section
+            wandb.log({f"{section}/data": hydrophone_data})
+            
+            # Create and log a bar chart
+            data = [[h, v] for h, v in values.items()]
+            table = wandb.Table(data=data, columns=["Hydrophone", metric_type.capitalize()])
+            chart = wandb.plot.bar(table, "Hydrophone", metric_type.capitalize(), 
+                                  title=f"{metric_type.capitalize()} by Hydrophone")
+            
+            # Log the chart to the appropriate section
+            wandb.log({f"{section}/bar_chart": chart})
+            
+    except Exception as e:
+        print(f"[DEBUG] Error logging hydrophone metrics: {str(e)}")
+        print(f"Exception details: {str(e)}")
+    
+    print("[DEBUG] wandb_utils.log_hydrophone_metrics: Finished")
+
+def create_hydrophone_plots(hydrophone_metrics, epoch, prefix, metric_types):
+    """This function is now handled by the reorganized log_hydrophone_metrics"""
+    pass
 
 def log_model_artifact(model, model_path, name, type="model", metadata=None):
     """

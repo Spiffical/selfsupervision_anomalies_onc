@@ -32,6 +32,7 @@ except ImportError:
     print("Failed to import RMSNorm")
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
     
+from utilities.checkpoint_utils import load_checkpoint, setup_model_from_checkpoint
     
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -178,15 +179,51 @@ class AMBAModel(nn.Module):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if load_pretrained_mdl_path == None:
                 raise ValueError('Please set load_pretrained_mdl_path to load a pretrained models.')
-            sd = torch.load(load_pretrained_mdl_path, map_location=device)
-            # get the fshape and tshape, input_fdim and input_tdim in the pretraining stage
-            try:
-                p_fshape, p_tshape = sd['module.v.patch_embed.proj.weight'].shape[2], sd['module.v.patch_embed.proj.weight'].shape[3]
-                p_input_fdim, p_input_tdim = sd['module.p_input_fdim'].item(), sd['module.p_input_tdim'].item()
-            except:
-                raise  ValueError('The model loaded is not from a torch.nn.Dataparallel object. Wrap it with torch.nn.Dataparallel and try again.')
+            print("Loading pretrained model from:", load_pretrained_mdl_path)
 
-            print('now load a SSL pretrained models from ' + load_pretrained_mdl_path)
+            sd = torch.load(load_pretrained_mdl_path, map_location=device, weights_only=False)
+            print("Loaded state dict keys:", sd.keys())
+            
+            # Try to get shapes with and without DataParallel prefix
+            try:
+                if 'module.v.patch_embed.proj.weight' in sd:
+                    p_fshape = sd['module.v.patch_embed.proj.weight'].shape[2]
+                    p_tshape = sd['module.v.patch_embed.proj.weight'].shape[3]
+                    p_input_fdim = sd['module.p_input_fdim'].item()
+                    p_input_tdim = sd['module.p_input_tdim'].item()
+                elif 'v.patch_embed.proj.weight' in sd:
+                    p_fshape = sd['v.patch_embed.proj.weight'].shape[2]
+                    p_tshape = sd['v.patch_embed.proj.weight'].shape[3]
+                    p_input_fdim = sd['p_input_fdim'].item()
+                    p_input_tdim = sd['p_input_tdim'].item()
+                else:
+                    # If loading from a checkpoint dictionary
+                    if 'model_state_dict' in sd:
+                        state_dict = sd['model_state_dict']
+                        if 'module.v.patch_embed.proj.weight' in state_dict:
+                            p_fshape = state_dict['module.v.patch_embed.proj.weight'].shape[2]
+                            p_tshape = state_dict['module.v.patch_embed.proj.weight'].shape[3]
+                            p_input_fdim = state_dict['module.p_input_fdim'].item()
+                            p_input_tdim = state_dict['module.p_input_tdim'].item()
+                        elif 'v.patch_embed.proj.weight' in state_dict:
+                            p_fshape = state_dict['v.patch_embed.proj.weight'].shape[2]
+                            p_tshape = state_dict['v.patch_embed.proj.weight'].shape[3]
+                            p_input_fdim = state_dict['p_input_fdim'].item()
+                            p_input_tdim = state_dict['p_input_tdim'].item()
+                        else:
+                            raise KeyError("Could not find patch_embed weights in checkpoint")
+                    else:
+                        raise KeyError("Could not find expected weights in checkpoint")
+            except Exception as e:
+                print(f"Error loading checkpoint: {str(e)}")
+                print("Available keys in checkpoint:", sd.keys())
+                if 'model_state_dict' in sd:
+                    print("Available keys in model_state_dict:", sd['model_state_dict'].keys())
+                raise ValueError('Failed to load checkpoint weights. Please check the checkpoint structure.')
+            
+            print('Now loading SSL pretrained model from ' + load_pretrained_mdl_path)
+            print(f'Patch shapes from checkpoint - fshape: {p_fshape}, tshape: {p_tshape}')
+            print(f'Input dimensions from checkpoint - fdim: {p_input_fdim}, tdim: {p_input_tdim}')
             # during pretraining, fstride=fshape and tstride=tshape because no patch overlapping is used
             # here, input_fdim and input_tdim should be that used in pretraining, not that in the fine-tuning.
             # we need to know input_fdim and input_tdim to do positional embedding cut/interpolation.
@@ -221,16 +258,74 @@ class AMBAModel(nn.Module):
             audio_model = AMBAModel(fstride=p_fshape, tstride=p_tshape, fshape=p_fshape, tshape=p_tshape,
                                    input_fdim=p_input_fdim, input_tdim=p_input_tdim, pretrain_stage=True, model_size=model_size, vision_mamba_config=combined_vision_mamba_config)
             
-            audio_model = torch.nn.DataParallel(audio_model)
-            audio_model.load_state_dict(sd, strict=False)
+            # Handle both DataParallel and non-DataParallel state dicts
+            if 'model_state_dict' in sd:
+                state_dict = sd['model_state_dict']
+            else:
+                state_dict = sd
+                
+            # Convert state dict keys if needed
+            if not isinstance(audio_model, nn.DataParallel) and any(k.startswith('module.') for k in state_dict.keys()):
+                # Remove 'module.' prefix if model is not wrapped but state dict is
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            elif isinstance(audio_model, nn.DataParallel) and not any(k.startswith('module.') for k in state_dict.keys()):
+                # Add 'module.' prefix if model is wrapped but state dict isn't
+                state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+            
+            # Handle positional embedding resizing before loading state dict
+            pos_embed_key = 'module.v.pos_embed' if isinstance(audio_model, nn.DataParallel) else 'v.pos_embed'
+            if pos_embed_key in state_dict:
+                pos_embed_checkpoint = state_dict[pos_embed_key]
+                embedding_size = pos_embed_checkpoint.shape[-1]
+                num_patches = (audio_model.module.v.patch_embed.num_patches if isinstance(audio_model, nn.DataParallel) 
+                             else audio_model.v.patch_embed.num_patches)
+                num_extra_tokens = 1  # cls token
+                
+                # height (== width) for the checkpoint position embedding
+                orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+                # height (== width) for the new position embedding
+                new_size = int(num_patches ** 0.5)
+                
+                if orig_size != new_size:
+                    print(f'Position embedding grid-size from {orig_size}x{orig_size} to {new_size}x{new_size}')
+                    # exclude cls token
+                    pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+                    pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size)
+                    pos_tokens = torch.nn.functional.interpolate(
+                        pos_tokens.permute(0, 3, 1, 2),
+                        size=(new_size, new_size),
+                        mode='bicubic',
+                        align_corners=False)
+                    pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+                    new_pos_embed = torch.cat((pos_embed_checkpoint[:, :num_extra_tokens], pos_tokens), dim=1)
+                    state_dict[pos_embed_key] = new_pos_embed
+                    
+                    print(f'Resized position embedding from {pos_embed_checkpoint.shape} to {new_pos_embed.shape}')
+            
+            # Wrap in DataParallel if not already wrapped
+            if not isinstance(audio_model, nn.DataParallel):
+                audio_model = torch.nn.DataParallel(audio_model)
+            
+            # Load the state dict
+            try:
+                audio_model.load_state_dict(state_dict, strict=False)
+                print("Model state loaded successfully")
+            except Exception as e:
+                print(f"Error loading model state: {str(e)}")
+                print("Available keys in state_dict:", state_dict.keys())
+                print("Model's state_dict keys:", audio_model.state_dict().keys())
+                raise ValueError('Failed to load model state. Keys may not match.')
+            
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.v = audio_model.module.v
             self.original_embedding_dim = self.v.pos_embed.shape[2]
             self.cls_token_num = audio_model.module.cls_token_num
 
             # mlp head for fine-tuning
-            self.mlp_head = nn.Sequential(nn.LayerNorm(self.original_embedding_dim),
-                                          nn.Linear(self.original_embedding_dim, label_dim))
+            self.mlp_head = nn.Sequential(
+                nn.LayerNorm(self.original_embedding_dim),
+                nn.Linear(self.original_embedding_dim, 1)  # Output single value for binary classification
+            )
 
             f_dim, t_dim = self.get_shape(fstride, tstride, input_fdim, input_tdim, fshape, tshape)
             # patch array dimension during pretraining
@@ -859,15 +954,49 @@ class ASTModel(nn.Module):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if load_pretrained_mdl_path == None:
                 raise ValueError('Please set load_pretrained_mdl_path to load a pretrained models.')
-            sd = torch.load(load_pretrained_mdl_path, map_location=device)
-            # get the fshape and tshape, input_fdim and input_tdim in the pretraining stage
+            sd = torch.load(load_pretrained_mdl_path, map_location=device, weights_only=False)
+            print("Loaded state dict keys:", sd.keys())
+            
+            # Try to get shapes with and without DataParallel prefix
             try:
-                p_fshape, p_tshape = sd['module.v.patch_embed.proj.weight'].shape[2], sd['module.v.patch_embed.proj.weight'].shape[3]
-                p_input_fdim, p_input_tdim = sd['module.p_input_fdim'].item(), sd['module.p_input_tdim'].item()
-            except:
-                raise  ValueError('The model loaded is not from a torch.nn.Dataparallel object. Wrap it with torch.nn.Dataparallel and try again.')
-
-            print('now load a SSL pretrained models from ' + load_pretrained_mdl_path)
+                if 'module.v.patch_embed.proj.weight' in sd:
+                    p_fshape = sd['module.v.patch_embed.proj.weight'].shape[2]
+                    p_tshape = sd['module.v.patch_embed.proj.weight'].shape[3]
+                    p_input_fdim = sd['module.p_input_fdim'].item()
+                    p_input_tdim = sd['module.p_input_tdim'].item()
+                elif 'v.patch_embed.proj.weight' in sd:
+                    p_fshape = sd['v.patch_embed.proj.weight'].shape[2]
+                    p_tshape = sd['v.patch_embed.proj.weight'].shape[3]
+                    p_input_fdim = sd['p_input_fdim'].item()
+                    p_input_tdim = sd['p_input_tdim'].item()
+                else:
+                    # If loading from a checkpoint dictionary
+                    if 'model_state_dict' in sd:
+                        state_dict = sd['model_state_dict']
+                        if 'module.v.patch_embed.proj.weight' in state_dict:
+                            p_fshape = state_dict['module.v.patch_embed.proj.weight'].shape[2]
+                            p_tshape = state_dict['module.v.patch_embed.proj.weight'].shape[3]
+                            p_input_fdim = state_dict['module.p_input_fdim'].item()
+                            p_input_tdim = state_dict['module.p_input_tdim'].item()
+                        elif 'v.patch_embed.proj.weight' in state_dict:
+                            p_fshape = state_dict['v.patch_embed.proj.weight'].shape[2]
+                            p_tshape = state_dict['v.patch_embed.proj.weight'].shape[3]
+                            p_input_fdim = state_dict['p_input_fdim'].item()
+                            p_input_tdim = state_dict['p_input_tdim'].item()
+                        else:
+                            raise KeyError("Could not find patch_embed weights in checkpoint")
+                    else:
+                        raise KeyError("Could not find expected weights in checkpoint")
+            except Exception as e:
+                print(f"Error loading checkpoint: {str(e)}")
+                print("Available keys in checkpoint:", sd.keys())
+                if 'model_state_dict' in sd:
+                    print("Available keys in model_state_dict:", sd['model_state_dict'].keys())
+                raise ValueError('Failed to load checkpoint weights. Please check the checkpoint structure.')
+            
+            print('Now loading SSL pretrained model from ' + load_pretrained_mdl_path)
+            print(f'Patch shapes from checkpoint - fshape: {p_fshape}, tshape: {p_tshape}')
+            print(f'Input dimensions from checkpoint - fdim: {p_input_fdim}, tdim: {p_input_tdim}')
             # during pretraining, fstride=fshape and tstride=tshape because no patch overlapping is used
             # here, input_fdim and input_tdim should be that used in pretraining, not that in the fine-tuning.
             # we need to know input_fdim and input_tdim to do positional embedding cut/interpolation.
@@ -882,8 +1011,10 @@ class ASTModel(nn.Module):
             self.cls_token_num = audio_model.module.cls_token_num
 
             # mlp head for fine-tuning
-            self.mlp_head = nn.Sequential(nn.LayerNorm(self.original_embedding_dim),
-                                          nn.Linear(self.original_embedding_dim, label_dim))
+            self.mlp_head = nn.Sequential(
+                nn.LayerNorm(self.original_embedding_dim),
+                nn.Linear(self.original_embedding_dim, 1)  # Output single value for binary classification
+            )
 
             f_dim, t_dim = self.get_shape(fstride, tstride, input_fdim, input_tdim, fshape, tshape)
             # patch array dimension during pretraining
@@ -1018,10 +1149,53 @@ class ASTModel(nn.Module):
             x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.v.pos_embed
         x = self.v.pos_drop(x)
+        
+        
+        # mamba impl
+        residual = None
+        hidden_states = x
+        token_position = 0
+        if not self.v.if_bidirectional:
+            for layer in self.v.layers:
+                
+                hidden_states, residual = layer(
+                    hidden_states, residual
+                )
+        else:
+            # get two layers in a single for-loop
+            for i in range(len(self.v.layers) // 2):
 
-        for blk_id, blk in enumerate(self.v.blocks):
-            x = blk(x)
-        x = self.v.norm(x)
+                hidden_states_f, residual_f = self.v.layers[i * 2](
+                    hidden_states, residual
+                )
+                hidden_states_b, residual_b = self.v.layers[i * 2 + 1](
+                    hidden_states.flip([1]), None if residual == None else residual.flip([1])
+                )
+                hidden_states = hidden_states_f + hidden_states_b.flip([1])
+                residual = residual_f + residual_b.flip([1])
+
+        if not self.v.fused_add_norm:
+            if residual is None:
+                residual = hidden_states
+            else:
+                residual = residual + self.v.drop_path(hidden_states)
+            hidden_states = self.v.norm_f(residual.to(dtype=self.v.norm_f.weight.dtype))
+        else:
+            # Set prenorm=False here since we don't need the residual
+            fused_add_norm_fn = rms_norm_fn if isinstance(self.v.norm_f, RMSNorm) else layer_norm_fn
+            hidden_states = fused_add_norm_fn(
+                self.v.drop_path(hidden_states),
+                self.v.norm_f.weight,
+                self.v.norm_f.bias,
+                eps=self.v.norm_f.eps,
+                residual=residual,
+                prenorm=False,
+                residual_in_fp32=self.v.residual_in_fp32,
+            )
+
+       
+        x = self.v.norm_f(hidden_states)
+
 
         # if models has two cls tokens (DEIT), average as the clip-level representation
         if self.cls_token_num == 2:

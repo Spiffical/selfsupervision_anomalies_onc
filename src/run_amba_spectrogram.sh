@@ -17,7 +17,43 @@ WANDB_PROJECT=${3:-"amba_spectrogram"}
 WANDB_GROUP=${4:-"default_experiment"}  # Default group if not provided
 RESUME=${5:-"true"}  # Default to true - will automatically resume if checkpoint exists
 EXP_DIR=${6:-"/exp"}
-TASK=${7:-"pretrain_joint"}
+TASK=${7:-"pretrain_joint"}  # Default to pretraining task
+
+# Set fixed parameters for experiment folder name (always use pretraining values)
+folder_mask_patch=20
+folder_batch_size=5
+folder_lr=1e-4
+folder_fstride=16
+folder_tstride=16
+
+# Set task-specific parameters for actual training
+if [[ $TASK == *"pretrain"* ]]; then
+    # Pretraining parameters
+    mask_patch=20  # Number of patches to mask during pretraining
+    batch_size=5
+    lr=1e-4
+    lr_patience=2
+    epoch=40
+    freqm=0
+    timem=0
+    mixup=0
+    bal=none
+    fstride=16  # No overlap in pretraining
+    tstride=16  # No overlap in pretraining
+else
+    # Finetuning parameters
+    mask_patch=0  # No masking in finetuning
+    batch_size=5
+    lr=5e-5
+    lr_patience=3
+    epoch=20
+    freqm=48
+    timem=192
+    mixup=0.5
+    bal=balanced
+    fstride=10  # Use overlap in finetuning
+    tstride=10  # Use overlap in finetuning
+fi
 
 set -x
 export TORCH_HOME=../../pretrained_models
@@ -40,21 +76,15 @@ train_ratio=$TRAIN_RATIO
 val_ratio=0.1
 split_seed=42
 
-# Training parameters
-task=${TASK}  # or ft_cls for fine-tuning
-mask_patch=20  # Number of patches to mask during pretraining
-
 # Model architecture
 model_size=small
 patch_size=16
 embed_dim=16
 depth=6
 
-# Patch parameters - no overlap in pretraining
+# Patch parameters
 fshape=16
 tshape=16
-fstride=${fshape}
-tstride=${tshape}
 
 # Model configuration
 rms_norm='false'
@@ -66,7 +96,7 @@ bimamba_type="v2"
 drop_path_rate=0.1
 stride=16
 channels=1
-num_classes=10
+num_classes=2
 drop_rate=0.
 norm_epsilon=1e-5
 if_bidirectional='true'
@@ -78,18 +108,8 @@ if_devide_out='true'
 use_double_cls_token='false'
 use_middle_cls_token='false'
 
-# Training hyperparameters
-bal=none
-batch_size=5
-lr=1e-4
-lr_patience=2
-epoch=40
-freqm=0
-timem=0
-mixup=0
-
-# Experiment directory
-exp_folder=amba-${model_size}-f${fshape}-t${tshape}-b$batch_size-lr${lr}-m${mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
+# Experiment directory - use pretraining parameters for consistent naming
+exp_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
 exp_dir=${EXP_DIR}/${exp_folder}
 
 # Run the training script
@@ -110,7 +130,7 @@ python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer
 --tstride $tstride --fstride $fstride --fshape ${fshape} --tshape ${tshape} \
 --target_length ${target_length} --num_mel_bins ${num_mel_bins} \
 --model_size ${model_size} --mask_patch ${mask_patch} --n-print-steps 100 \
---task ${task} --lr_patience ${lr_patience} --epoch_iter 1 \
+--task ${TASK} --lr_patience ${lr_patience} --epoch_iter 1 \
 --patch_size ${patch_size} --embed_dim ${embed_dim} --depth ${depth} \
 --rms_norm ${rms_norm} --residual_in_fp32 ${residual_in_fp32} \
 --fused_add_norm ${fused_add_norm} --if_rope ${if_rope} --if_rope_residual ${if_rope_residual} \

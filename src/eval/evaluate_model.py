@@ -111,6 +111,14 @@ def evaluate_by_hydrophone(
 ) -> pd.DataFrame:
     """
     Calculate metrics broken down by hydrophone
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        sources: List of hydrophone sources
+        
+    Returns:
+        DataFrame containing metrics for each hydrophone
     """
     results = []
     unique_sources = np.unique(sources)
@@ -123,15 +131,54 @@ def evaluate_by_hydrophone(
         source_true = y_true[mask]
         source_pred = y_pred[mask]
         
-        results.append({
-            'hydrophone': source,
-            'samples': mask.sum(),
-            'anomaly_rate': source_true.mean(),
-            'precision': precision_score(source_true, source_pred),
-            'recall': recall_score(source_true, source_pred),
-            'f1': f1_score(source_true, source_pred),
-            'f2': calculate_f2_score(source_true, source_pred)
-        })
+        # Check if we have any samples
+        if len(source_true) == 0:
+            continue
+            
+        # Calculate metrics safely
+        try:
+            # Handle case where all predictions are the same class
+            if len(np.unique(source_pred)) == 1:
+                pred_class = source_pred[0]
+                if pred_class == 0:  # All normal predictions
+                    precision = 0.0 if np.any(source_true == 1) else 1.0
+                    recall = 0.0
+                else:  # All anomaly predictions
+                    precision = 1.0 if np.any(source_true == 1) else 0.0
+                    recall = 1.0 if np.any(source_true == 1) else 0.0
+            else:
+                precision = precision_score(source_true, source_pred, zero_division=0)
+                recall = recall_score(source_true, source_pred, zero_division=0)
+            
+            # Calculate F1 and F2 scores
+            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+            f2 = 5 * (precision * recall) / (4 * precision + recall) if (precision + recall) > 0 else 0.0
+            
+            results.append({
+                'hydrophone': source,
+                'samples': mask.sum(),
+                'anomaly_rate': float(np.mean(source_true == 1)),
+                'precision': float(precision),
+                'recall': float(recall),
+                'f1': float(f1),
+                'f2': float(f2),
+                'num_normal': int(np.sum(source_true == 0)),
+                'num_anomaly': int(np.sum(source_true == 1)),
+                'pred_normal': int(np.sum(source_pred == 0)),
+                'pred_anomaly': int(np.sum(source_pred == 1))
+            })
+        except Exception as e:
+            print(f"Warning: Error calculating metrics for hydrophone {source}: {str(e)}")
+            print(f"Number of samples: {len(source_true)}")
+            print(f"True label distribution: {np.unique(source_true, return_counts=True)}")
+            print(f"Predicted label distribution: {np.unique(source_pred, return_counts=True)}")
+            continue
+    
+    if not results:
+        return pd.DataFrame(columns=[
+            'hydrophone', 'samples', 'anomaly_rate', 'precision', 'recall', 
+            'f1', 'f2', 'num_normal', 'num_anomaly', 'pred_normal', 'pred_anomaly'
+        ])
     
     return pd.DataFrame(results)
 
@@ -186,21 +233,7 @@ def plot_confusion_matrix(
     # Create confusion matrix
     cm = np.array([[tn, fp], [fn, tp]])
     
-    # Debug prints
-    print("\nDebug: plot_confusion_matrix")
-    print(f"Manual confusion matrix calculation:")
-    print(f"TN: {tn}, FP: {fp}")
-    print(f"FN: {fn}, TP: {tp}")
-    print(f"Total: {tn + fp + fn + tp}")
-    print(f"Dataset size: {len(y_true)}")
     
-    # Verify with sklearn's confusion_matrix
-    cm_sklearn = confusion_matrix(y_true, y_pred)
-    print("\nSklearn confusion matrix:")
-    print(cm_sklearn)
-    
-    if not np.array_equal(cm, cm_sklearn):
-        print("WARNING: Manual calculation differs from sklearn!")
     
     # Create category labels
     category_labels = np.array([

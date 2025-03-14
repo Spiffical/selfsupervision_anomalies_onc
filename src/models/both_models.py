@@ -31,8 +31,7 @@ try:
 except ImportError:
     print("Failed to import RMSNorm")
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
-    
-from utilities.checkpoint_utils import load_checkpoint, setup_model_from_checkpoint
+
     
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding

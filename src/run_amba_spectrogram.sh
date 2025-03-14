@@ -10,18 +10,18 @@ if [ -f ~/ssamba/.env ]; then
     export $(grep -v '^#' ~/ssamba/.env | xargs)
 fi
 
-# Get the training data path from arguments (default if not provided)
+# Get arguments with defaults
 DATA_TRAIN_PATH=${1:-$SCRATCH/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
-TRAIN_RATIO=${2:-0.8}  # Default to 0.8 if not provided
-WANDB_PROJECT=${3:-"amba_spectrogram"}
-WANDB_GROUP=${4:-"default_experiment"}  # Default group if not provided
+WANDB_PROJECT=${2:-"amba_spectrogram"}
+WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
+TRAIN_RATIO=${4:-0.8}  # Default to 0.8 if not provided
 RESUME=${5:-"true"}  # Default to true - will automatically resume if checkpoint exists
-EXP_DIR=${6:-"/exp"}
+EXP_DIR=${6:-"/exp"}  # Default to /exp if not provided
 TASK=${7:-"pretrain_joint"}  # Default to pretraining task
 
 # Set fixed parameters for experiment folder name (always use pretraining values)
-folder_mask_patch=20
-folder_batch_size=5
+folder_mask_patch=300
+folder_batch_size=16
 folder_lr=1e-4
 folder_fstride=16
 folder_tstride=16
@@ -29,11 +29,11 @@ folder_tstride=16
 # Set task-specific parameters for actual training
 if [[ $TASK == *"pretrain"* ]]; then
     # Pretraining parameters
-    mask_patch=20  # Number of patches to mask during pretraining
-    batch_size=5
+    mask_patch=300  # Number of patches to mask during pretraining
+    batch_size=16
     lr=1e-4
     lr_patience=2
-    epoch=40
+    epoch=200
     freqm=0
     timem=0
     mixup=0
@@ -43,10 +43,10 @@ if [[ $TASK == *"pretrain"* ]]; then
 else
     # Finetuning parameters
     mask_patch=0  # No masking in finetuning
-    batch_size=5
+    batch_size=16
     lr=5e-5
     lr_patience=3
-    epoch=20
+    epoch=200
     freqm=48
     timem=192
     mixup=0.5
@@ -58,8 +58,8 @@ fi
 set -x
 export TORCH_HOME=../../pretrained_models
 export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
-export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project
-export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project
+export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
+export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
 
 # Create experiment directory in scratch
 mkdir -p $EXP_DIR
@@ -77,10 +77,10 @@ val_ratio=0.1
 split_seed=42
 
 # Model architecture
-model_size=small
+model_size=base
 patch_size=16
-embed_dim=16
-depth=6
+embed_dim=768
+depth=24
 
 # Patch parameters
 fshape=16

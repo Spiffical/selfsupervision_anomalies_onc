@@ -15,6 +15,8 @@ WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
 TRAIN_RATIO=${4:-0.8}  # Default to 0.8 if not provided
 PROJECT_PATH=${5:-$HOME/ssamba}
 RESUME=${6:-"true"}  # Default to true - will automatically resume if checkpoint exists
+TASK=${7:-"pretrain_joint"}  # Default to pretrain_joint if not provided
+EXP_DIR=${8:-"/exp"}  # Default to /exp if not provided
 
 # Extract the filename from the training data path
 TRAINING_DATA_FILENAME=$(basename "$TRAINING_DATA_PATH")
@@ -42,4 +44,4 @@ cp -ru "$PROJECT_PATH" "$SLURM_TMPDIR/ssamba_project"
 cd "$SLURM_TMPDIR/ssamba_project"
 
 # Run the training script, passing the temporary data path with original filename
-bash src/run_amba_spectrogram.sh "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME" "$TRAIN_RATIO" "$WANDB_PROJECT" "$WANDB_GROUP" "$RESUME"
+bash src/run_amba_spectrogram.sh "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME" "$WANDB_PROJECT" "$WANDB_GROUP" "$TRAIN_RATIO" "$RESUME" "$EXP_DIR" "$TASK"

@@ -6,7 +6,7 @@ import os
 import torch
 from torch import nn
 from .checkpoint_utils import load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint
-from models import AMBAModel
+from src.models import AMBAModel
 import numpy as np
 
 def create_model(args):

@@ -5,6 +5,10 @@
 # @Email   : yuangong@mit.edu
 # @File    : __init__.py
 
+"""
+Package initialization file for utilities.
+"""
+
 from .util import *
 from .stats import *
 from .wandb_utils import *

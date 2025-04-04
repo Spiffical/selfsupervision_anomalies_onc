@@ -324,9 +324,9 @@ def plot_example_spectrograms(
         for i in range(min(num_examples, len(indices))):
             idx = np.random.choice(indices)
             spec, label, source = test_dataset[idx]
-            label_string = test_dataset.sample_info[idx]['label_string']
-            is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
             raw_labels = test_dataset.sample_info[idx]['labels']
+            label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
+            is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
             
             plt.subplot(n_rows, samples_per_row, i + 1)
             plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')
@@ -499,9 +499,9 @@ def plot_all_false_positives(
     
     for i, idx in enumerate(indices):
         spec, label, source = test_dataset[idx]
-        label_string = test_dataset.sample_info[idx]['label_string']
-        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
         raw_labels = test_dataset.sample_info[idx]['labels']
+        label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
+        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
         
         plt.subplot(n_rows, samples_per_row, i + 1)
         plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')
@@ -572,9 +572,9 @@ def plot_all_false_negatives(
     
     for i, idx in enumerate(indices):
         spec, label, source = test_dataset[idx]
-        label_string = test_dataset.sample_info[idx]['label_string']
-        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
         raw_labels = test_dataset.sample_info[idx]['labels']
+        label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
+        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
         
         plt.subplot(n_rows, samples_per_row, i + 1)
         plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')

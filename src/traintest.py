@@ -62,21 +62,10 @@ def train(audio_model, train_loader, test_loader, args):
     args.loss_fn = loss_fn
 
     # Initialize training state
-    global_step = epoch * len(train_loader)
-    
-    # Reset wandb step counter if starting finetuning from pretrained model
-    if args.use_wandb and hasattr(args, 'resume') and not args.resume:
-        # Check if we're starting finetuning from a pretrained model
-        if os.path.exists(os.path.join(args.exp_dir, 'wandb_run_id.txt')):
-            with open(os.path.join(args.exp_dir, 'wandb_run_id.txt'), 'r') as f:
-                run_id = f.read().strip()
-            # If this is a new finetuning run (not resuming), reset the step counter
-            import wandb
-            if wandb.run is not None:
-                wandb.run.step = 0
-                print("Reset wandb step counter for new finetuning run")
-    
+    global_step = epoch * args.epoch_iter
     start_time = time.time()
+    
+    # Note: Step counting for wandb will start from 0 automatically for new runs
     
     print("Current progress: steps=%s, epochs=%s" % (global_step, epoch))
     print("Starting training...")

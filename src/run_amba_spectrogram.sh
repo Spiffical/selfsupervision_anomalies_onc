@@ -10,14 +10,90 @@ if [ -f ~/ssamba/.env ]; then
     export $(grep -v '^#' ~/ssamba/.env | xargs)
 fi
 
-# Get arguments with defaults
-DATA_TRAIN_PATH=${1:-$SCRATCH/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
-WANDB_PROJECT=${2:-"amba_spectrogram"}
-WANDB_GROUP=${3:-"default_experiment"}  # Default group if not provided
-TRAIN_RATIO=${4:-0.8}  # Default to 0.8 if not provided
-RESUME=${5:-"true"}  # Default to true - will automatically resume if checkpoint exists
-EXP_DIR=${6:-"/exp"}  # Default to /exp if not provided
-TASK=${7:-"pretrain_joint"}  # Default to pretraining task
+# Initialize variables with defaults
+PYTHON_SCRIPT=""
+DATA_TRAIN_PATH=""
+WANDB_PROJECT="amba_spectrogram"
+WANDB_GROUP="default_experiment"
+TRAIN_RATIO=0.8
+RESUME="true"  # Default is to resume training if a checkpoint exists
+EXP_DIR="/exp"
+TASK="pretrain_joint"
+WANDB_ENTITY=""
+declare -a EXCLUDE_LABELS=()
+PRETRAINED_PATH=""
+DRY_RUN="false"
+
+# Parse named arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --python-script)
+            PYTHON_SCRIPT="$2"
+            shift 2
+            ;;
+        --dataset)
+            DATA_TRAIN_PATH="$2"
+            shift 2
+            ;;
+        --wandb-project)
+            WANDB_PROJECT="$2"
+            shift 2
+            ;;
+        --wandb-group)
+            WANDB_GROUP="$2"
+            shift 2
+            ;;
+        --train-ratio)
+            TRAIN_RATIO="$2"
+            shift 2
+            ;;
+        --resume)
+            # Only set RESUME to false if explicitly specified as false/False/FALSE
+            if [[ "${2,,}" == "false" ]]; then
+                RESUME="false"
+            fi
+            shift 2
+            ;;
+        --exp-dir)
+            EXP_DIR="$2"
+            shift 2
+            ;;
+        --task)
+            TASK="$2"
+            shift 2
+            ;;
+        --wandb-entity)
+            WANDB_ENTITY="$2"
+            shift 2
+            ;;
+        --exclude-label)
+            EXCLUDE_LABELS+=("$2")
+            shift 2
+            ;;
+        --pretrained-path)
+            PRETRAINED_PATH="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN="true"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$PYTHON_SCRIPT" ]; then
+    echo "Error: --python-script is required"
+    exit 1
+fi
+if [ -z "$DATA_TRAIN_PATH" ]; then
+    echo "Error: --dataset is required"
+    exit 1
+fi
 
 # Set fixed parameters for experiment folder name (always use pretraining values)
 folder_mask_patch=300
@@ -25,6 +101,9 @@ folder_batch_size=16
 folder_lr=1e-4
 folder_fstride=16
 folder_tstride=16
+
+# Print out the excluded labels
+echo "Excluded labels: ${EXCLUDE_LABELS[*]}"
 
 # Set task-specific parameters for actual training
 if [[ $TASK == *"pretrain"* ]]; then
@@ -54,15 +133,6 @@ else
     fstride=10  # Use overlap in finetuning
     tstride=10  # Use overlap in finetuning
 fi
-
-set -x
-export TORCH_HOME=../../pretrained_models
-export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
-export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
-export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
-
-# Create experiment directory in scratch
-mkdir -p $EXP_DIR
 
 # Dataset parameters
 dataset=custom
@@ -108,17 +178,46 @@ if_devide_out='true'
 use_double_cls_token='false'
 use_middle_cls_token='false'
 
-# Experiment directory - use pretraining parameters for consistent naming
-exp_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}
-exp_dir=${EXP_DIR}/${exp_folder}
+# Modify experiment directory name to include excluded labels if any
+exclude_labels_str=""
+if (( ${#EXCLUDE_LABELS[@]} > 0 )); then
+    # Join array elements with underscores, replacing spaces with underscores
+    labels_joined=""
+    for label in "${EXCLUDE_LABELS[@]}"; do
+        if [ -z "$labels_joined" ]; then
+            labels_joined="${label// /_}"
+        else
+            labels_joined="${labels_joined}_${label// /_}"
+        fi
+    done
+    exclude_labels_str="-excl${labels_joined}"
+fi
 
-# Run the training script
-python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer-bialek" \
+# Base experiment folder name - use pretraining parameters for consistent naming
+base_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}${exclude_labels_str}
+
+echo "Base folder: $base_folder"
+
+# Create separate directories for pretraining and finetuning
+if [[ $TASK == *"pretrain"* ]]; then
+    # For pretraining, save in pretrain directory
+    exp_dir=${EXP_DIR}/pretrain/${base_folder}
+else
+    # For finetuning, save in finetune directory
+    exp_dir=${EXP_DIR}/finetune/${base_folder}
+fi
+
+# Create directories
+mkdir -p ${exp_dir}/models
+
+# Construct the Python command that would be executed
+PYTHON_CMD="python -W ignore $PYTHON_SCRIPT --use_wandb --wandb_entity \"${WANDB_ENTITY:-spencer-bialek}\" \
 --wandb_project ${WANDB_PROJECT} \
 --wandb_group ${WANDB_GROUP} \
 --dataset ${dataset} \
---data-train "$DATA_TRAIN_PATH" \
+--data-train \"$DATA_TRAIN_PATH\" \
 --exp-dir $exp_dir \
+$([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
 --dataset_mean ${dataset_mean} \
 --dataset_std ${dataset_std} \
 --n_class 2 \
@@ -140,5 +239,38 @@ python -W ignore src/run_amba_spectrogram.py --use_wandb --wandb_entity "spencer
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
---use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
-$([ "$RESUME" = "true" ] && echo "--resume") 
+--use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token}"
+
+# Add exclude labels as a single argument with multiple values
+if [ ${#EXCLUDE_LABELS[@]} -gt 0 ]; then
+    PYTHON_CMD+=" --exclude_labels"
+    for label in "${EXCLUDE_LABELS[@]}"; do
+        PYTHON_CMD+=" \"$label\""
+    done
+fi
+
+# Add resume flag if needed (default behavior is to resume)
+if [ "$RESUME" != "false" ]; then
+    PYTHON_CMD+=" --resume"
+fi
+
+# Print the command that would be executed
+echo "Python command that will be executed:"
+echo "$PYTHON_CMD"
+echo
+
+# If this is a dry run, exit here
+if [ "$DRY_RUN" = "true" ]; then
+    echo "Dry run completed. Exiting without executing."
+    exit 0
+fi
+
+# Set up environment variables
+set -x
+export TORCH_HOME=../../pretrained_models
+export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
+export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
+export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
+
+# Execute the Python command
+eval "$PYTHON_CMD" 

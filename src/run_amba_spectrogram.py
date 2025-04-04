@@ -17,6 +17,7 @@ from traintest_mask import trainmask
 import datetime
 from utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
 from onc_dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
+from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
 
@@ -29,6 +30,7 @@ parser.add_argument("--n_class", type=int, default=None, help="number of classes
 parser.add_argument("--train_ratio", type=float, default=0.8, help="ratio of data to use for training")
 parser.add_argument("--val_ratio", type=float, default=0.1, help="ratio of data to use for validation")
 parser.add_argument("--split_seed", type=int, default=42, help="random seed for dataset splitting")
+parser.add_argument("--exclude_labels", nargs="+", type=str, default=None, help="list of labels to exclude from training")
 
 parser.add_argument("--dataset", type=str, default="custom", help="dataset name")
 parser.add_argument("--dataset_mean", type=float, help="the dataset mean, used for input normalization")
@@ -103,14 +105,22 @@ parser.add_argument('--wandb_entity', type=str, default=None, help='WandB entity
 parser.add_argument('--wandb_group', type=str, default=None, help='WandB group name for organizing runs')
 parser.add_argument('--wandb_project', type=str, default='amba_spectrogram', help='WandB project name')
 
-# Resume training
+# Resume training and model loading
 parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint if available')
+parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pretrained model for finetuning')
 
 args = parser.parse_args()
 
 # Ensure experiment directory exists
 os.makedirs(args.exp_dir, exist_ok=True)
 os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
+
+# Update wandb project name based on task type
+if args.use_wandb:
+    if 'pretrain' in args.task:
+        args.wandb_project = f"{args.wandb_project}_pretrain"
+    else:
+        args.wandb_project = f"{args.wandb_project}_finetune"
 
 run_id_file = os.path.join(args.exp_dir, 'wandb_run_id.txt')
 
@@ -202,6 +212,10 @@ val_audio_conf = {
 print('Creating train/val/test splits from ONC dataset')
 
 # Get datasets using the helper function from onc_dataset.py
+exclude_labels = args.exclude_labels if args.exclude_labels else None
+
+print(f"Excluding labels: {exclude_labels}")
+
 ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = get_onc_spectrogram_data(
     data_path=args.data_train,
     seed=args.split_seed,
@@ -216,7 +230,8 @@ ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = g
     mixup=args.mixup,
     ood=-1,  # No OOD filtering
     amount=1.0,
-    subsample_test=True
+    subsample_test=True,
+    exclude_labels=exclude_labels
 )
 
 # Use the appropriate datasets based on the task
@@ -296,7 +311,15 @@ print(f"Saving model every {args.epoch_iter} steps ({args.epoch_iter/steps_per_e
 # Start training
 if 'pretrain' not in args.task:
     print('Now starting fine-tuning for {:d} epochs'.format(args.n_epochs))
-    train(None, train_loader, val_loader, args)
+    # Load pretrained model if path is provided
+    pretrained_model = None
+    if args.pretrained_path and os.path.exists(args.pretrained_path):
+        print(f'Loading pretrained model from {args.pretrained_path}')
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pretrained_model = create_model(args)
+        sd = torch.load(args.pretrained_path, map_location=device)
+        pretrained_model.load_state_dict(sd, strict=False)
+    train(pretrained_model, train_loader, val_loader, args)
 else:
     print('Now starting self-supervised pretraining for {:d} epochs'.format(args.n_epochs))
     trainmask(None, train_loader, val_loader, args)
@@ -336,4 +359,70 @@ if args.data_eval is not None:
 
 # Finish wandb run if it was started
 if args.use_wandb:
-    finish_run() 
+    finish_run()
+
+def evaluate(model, test_loader, device, args):
+    """Evaluate model on test set"""
+    model.eval()
+    all_preds = []
+    all_labels = []
+    all_sources = []
+    
+    with torch.no_grad():
+        for batch in test_loader:
+            data, labels, sources = batch
+            data = data.to(device)
+            
+            # Forward pass
+            outputs = model(data)
+            predictions = torch.sigmoid(outputs)
+            
+            all_preds.extend(predictions.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_sources.extend(sources)
+    
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    
+    # Separate normal, anomalous, and excluded samples
+    normal_mask = all_labels == 0
+    anomalous_mask = all_labels == 1
+    excluded_mask = all_labels == 2
+    
+    # Calculate metrics only on non-excluded samples
+    valid_mask = ~excluded_mask
+    valid_preds = all_preds[valid_mask]
+    valid_labels = all_labels[valid_mask]
+    
+    # Calculate metrics
+    auroc = roc_auc_score(valid_labels, valid_preds)
+    
+    # Get optimal threshold
+    fpr, tpr, thresholds = roc_curve(valid_labels, valid_preds)
+    optimal_idx = np.argmax(tpr - fpr)
+    optimal_threshold = thresholds[optimal_idx]
+    
+    # Calculate accuracy at optimal threshold
+    predictions_at_threshold = (valid_preds >= optimal_threshold).astype(int)
+    accuracy = accuracy_score(valid_labels, predictions_at_threshold)
+    
+    # Print detailed results
+    print("\nTest Set Results:")
+    print(f"AUROC: {auroc:.4f}")
+    print(f"Accuracy at optimal threshold: {accuracy:.4f}")
+    print(f"Optimal threshold: {optimal_threshold:.4f}")
+    
+    print("\nDataset Composition:")
+    print(f"Normal samples: {np.sum(normal_mask)}")
+    print(f"Anomalous samples: {np.sum(anomalous_mask)}")
+    print(f"Excluded samples: {np.sum(excluded_mask)}")
+    
+    # Return metrics
+    return {
+        'auroc': auroc,
+        'accuracy': accuracy,
+        'optimal_threshold': optimal_threshold,
+        'predictions': all_preds,
+        'labels': all_labels,
+        'sources': all_sources
+    } 

@@ -51,8 +51,8 @@ def create_model(args):
     
     # For finetuning, try to find pretrained weights
     if 'pretrain' not in args.task:
-        if hasattr(args, 'pretrained_mdl_path') and args.pretrained_mdl_path:
-            pretrained_path = args.pretrained_mdl_path
+        if hasattr(args, 'pretrained_path') and args.pretrained_path:
+            pretrained_path = args.pretrained_path
         else:
             # Look for any pretrained checkpoint in models directory
             models_dir = os.path.join(args.exp_dir, 'models')
@@ -64,9 +64,9 @@ def create_model(args):
                     pretrained_path = os.path.join(models_dir, pretrain_checkpoints[0])
                     print(f"Found pretrained checkpoint: {pretrain_checkpoints[0]}")
                 else:
-                    raise ValueError('No pretrained checkpoint found in models directory. Please run pretraining first or specify pretrained_mdl_path.')
+                    raise ValueError('No pretrained checkpoint found in models directory. Please run pretraining first or specify pretrained_path.')
             else:
-                raise ValueError('Models directory not found. Please run pretraining first or specify pretrained_mdl_path.')
+                raise ValueError('Models directory not found. Please run pretraining first or specify pretrained_path.')
 
     if 'pretrain' in args.task:
         cluster = (args.num_mel_bins != args.fshape)
@@ -215,8 +215,8 @@ def setup_training(model, args):
             else:
                 # No finetuning checkpoint, try to load pretrained checkpoint
                 print("No finetuning checkpoint found. Looking for pretrained checkpoint...")
-                if hasattr(args, 'pretrained_mdl_path') and args.pretrained_mdl_path:
-                    pt_checkpoint_path = args.pretrained_mdl_path
+                if hasattr(args, 'pretrained_path') and args.pretrained_path:
+                    pt_checkpoint_path = args.pretrained_path
                 else:
                     # Look for any pretrained checkpoint in models directory
                     models_dir = os.path.join(args.exp_dir, 'models')
@@ -306,9 +306,9 @@ def setup_training(model, args):
                 start_epoch = 1
     else:
         # Not resuming, but check if we're finetuning from a pretrained model
-        if 'pretrain' not in args.task and hasattr(args, 'pretrained_mdl_path') and args.pretrained_mdl_path:
-            print(f"Loading pretrained model from {args.pretrained_mdl_path}")
-            checkpoint = load_checkpoint(args.pretrained_mdl_path, device)
+        if 'pretrain' not in args.task and hasattr(args, 'pretrained_path') and args.pretrained_path:
+            print(f"Loading pretrained model from {args.pretrained_path}")
+            checkpoint = load_checkpoint(args.pretrained_path, device)
             # Handle both DataParallel and non-DataParallel state dicts
             state_dict = checkpoint['model_state_dict']
             if not isinstance(model, nn.DataParallel) and list(state_dict.keys())[0].startswith('module.'):

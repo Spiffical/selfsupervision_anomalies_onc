@@ -216,23 +216,43 @@ exclude_labels = args.exclude_labels if args.exclude_labels else None
 
 print(f"Excluding labels: {exclude_labels}")
 
-ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = get_onc_spectrogram_data(
-    data_path=args.data_train,
-    seed=args.split_seed,
-    train_ratio=args.train_ratio,
-    val_ratio=args.val_ratio,
-    target_length=args.target_length,
-    num_mel_bins=args.num_mel_bins,
-    freqm=args.freqm,
-    timem=args.timem,
-    dataset_mean=args.dataset_mean,
-    dataset_std=args.dataset_std,
-    mixup=args.mixup,
-    ood=-1,  # No OOD filtering
-    amount=1.0,
-    subsample_test=True,
-    exclude_labels=exclude_labels
-)
+if exclude_labels:
+    ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset, excluded_test_dataset = get_onc_spectrogram_data(
+        data_path=args.data_train,
+        seed=args.split_seed,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        target_length=args.target_length,
+        num_mel_bins=args.num_mel_bins,
+        freqm=args.freqm,
+        timem=args.timem,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        mixup=args.mixup,
+        ood=-1,  # No OOD filtering
+        amount=1.0,
+        subsample_test=True,
+        exclude_labels=exclude_labels
+    )
+else:
+    ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = get_onc_spectrogram_data(
+        data_path=args.data_train,
+        seed=args.split_seed,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        target_length=args.target_length,
+        num_mel_bins=args.num_mel_bins,
+        freqm=args.freqm,
+        timem=args.timem,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        mixup=args.mixup,
+        ood=-1,  # No OOD filtering
+        amount=1.0,
+        subsample_test=True,
+        exclude_labels=exclude_labels
+    )
+    excluded_test_dataset = None
 
 # Use the appropriate datasets based on the task
 if 'pretrain' in args.task:
@@ -261,6 +281,24 @@ if 'pretrain' in args.task:
         num_workers=args.num_workers, 
         pin_memory=True
     )
+
+    if excluded_test_dataset is not None:
+        excluded_eval_loader = torch.utils.data.DataLoader(
+            excluded_test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True
+        )
+        # Create combined test loader for full evaluation
+        full_test_dataset = torch.utils.data.ConcatDataset([test_dataset, excluded_test_dataset])
+        full_eval_loader = torch.utils.data.DataLoader(
+            full_test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True
+        )
 else:
     # For fine-tuning, use the supervised datasets (balanced normal/anomalous)
     train_loader = torch.utils.data.DataLoader(
@@ -288,12 +326,33 @@ else:
         pin_memory=True
     )
 
+    if excluded_test_dataset is not None:
+        excluded_eval_loader = torch.utils.data.DataLoader(
+            excluded_test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True
+        )
+        # Create combined test loader for full evaluation
+        full_test_dataset = torch.utils.data.ConcatDataset([test_dataset, excluded_test_dataset])
+        full_eval_loader = torch.utils.data.DataLoader(
+            full_test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True
+        )
+
 print('Dataset splits:')
 print(f'SSL Train (normal only): {len(ssl_train_dataset)} samples')
 print(f'SSL Val (normal only): {len(ssl_val_dataset)} samples')
 print(f'Supervised Train (balanced): {len(train_dataset)} samples')
 print(f'Supervised Val (balanced): {len(val_dataset)} samples')
 print(f'Test: {len(test_dataset)} samples')
+if excluded_test_dataset is not None:
+    print(f'Excluded Test: {len(excluded_test_dataset)} samples')
+    print(f'Total Test (Combined): {len(test_dataset) + len(excluded_test_dataset)} samples')
 
 # Create experiment directory if it doesn't exist
 os.makedirs(args.exp_dir, exist_ok=True)
@@ -339,29 +398,55 @@ if args.data_eval is not None:
     print("Accuracy: {:.6f}".format(val_acc))
     print("AUC: {:.6f}".format(val_mAUC))
 
-    eval_loader = torch.utils.data.DataLoader(
-        dataloader.HDF5Dataset(args.data_eval, audio_conf=val_audio_conf),
-        batch_size=args.batch_size*2, shuffle=False, num_workers=args.num_workers, pin_memory=True)
-    stats, _ = validate(audio_model, eval_loader, args, 'eval_set')
-    eval_acc = stats[0]['acc']
-    eval_mAUC = np.mean([stat['auc'] for stat in stats])
-    print('---------------evaluate on the test set---------------')
-    print("Accuracy: {:.6f}".format(eval_acc))
-    print("AUC: {:.6f}".format(eval_mAUC))
+    # Evaluate on original test set
+    test_metrics = evaluate(audio_model, eval_loader, device, args, "Original Test Set")
+    
+    metrics_to_log = {
+        'val_accuracy': val_acc,
+        'val_mAUC': val_mAUC,
+        'test_auroc': test_metrics['auroc'],
+        'test_accuracy': test_metrics['accuracy'],
+        'test_optimal_threshold': test_metrics['optimal_threshold']
+    }
+    
+    # If we have excluded data, evaluate that too
+    if excluded_test_dataset is not None:
+        # Evaluate excluded test set
+        excluded_metrics = evaluate(audio_model, excluded_eval_loader, device, args, "Excluded Test Set")
+        
+        # Evaluate combined test set
+        full_metrics = evaluate(audio_model, full_eval_loader, device, args, "Combined Test Set")
+        
+        # Add excluded and full metrics to logging
+        metrics_to_log.update({
+            'excluded_test_auroc': excluded_metrics['auroc'],
+            'excluded_test_accuracy': excluded_metrics['accuracy'],
+            'excluded_test_optimal_threshold': excluded_metrics['optimal_threshold'],
+            'full_test_auroc': full_metrics['auroc'],
+            'full_test_accuracy': full_metrics['accuracy'],
+            'full_test_optimal_threshold': full_metrics['optimal_threshold']
+        })
+    
     if args.use_wandb:
-        log_training_metrics({
-            "val_accuracy": val_acc, 
-            "val_mAUC": val_mAUC,
-            "eval_accuracy": eval_acc, 
-            "eval_mAUC": eval_mAUC
-        }, use_wandb=args.use_wandb)
-    np.savetxt(args.exp_dir + '/eval_result.csv', [val_acc, val_mAUC, eval_acc, eval_mAUC])
+        log_training_metrics(metrics_to_log, use_wandb=args.use_wandb)
+    
+    # Save all metrics to CSV
+    metrics_list = [
+        val_acc, val_mAUC,
+        test_metrics['accuracy'], test_metrics['auroc']
+    ]
+    if excluded_test_dataset is not None:
+        metrics_list.extend([
+            excluded_metrics['accuracy'], excluded_metrics['auroc'],
+            full_metrics['accuracy'], full_metrics['auroc']
+        ])
+    np.savetxt(args.exp_dir + '/eval_result.csv', metrics_list)
 
 # Finish wandb run if it was started
 if args.use_wandb:
     finish_run()
 
-def evaluate(model, test_loader, device, args):
+def evaluate(model, test_loader, device, args, name=""):
     """Evaluate model on test set"""
     model.eval()
     all_preds = []
@@ -384,38 +469,32 @@ def evaluate(model, test_loader, device, args):
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     
-    # Separate normal, anomalous, and excluded samples
-    normal_mask = all_labels == 0
-    anomalous_mask = all_labels == 1
-    excluded_mask = all_labels == 2
-    
-    # Calculate metrics only on non-excluded samples
-    valid_mask = ~excluded_mask
-    valid_preds = all_preds[valid_mask]
-    valid_labels = all_labels[valid_mask]
-    
     # Calculate metrics
-    auroc = roc_auc_score(valid_labels, valid_preds)
+    auroc = roc_auc_score(all_labels, all_preds)
     
     # Get optimal threshold
-    fpr, tpr, thresholds = roc_curve(valid_labels, valid_preds)
+    fpr, tpr, thresholds = roc_curve(all_labels, all_preds)
     optimal_idx = np.argmax(tpr - fpr)
     optimal_threshold = thresholds[optimal_idx]
     
     # Calculate accuracy at optimal threshold
-    predictions_at_threshold = (valid_preds >= optimal_threshold).astype(int)
-    accuracy = accuracy_score(valid_labels, predictions_at_threshold)
+    predictions_at_threshold = (all_preds >= optimal_threshold).astype(int)
+    accuracy = accuracy_score(all_labels, predictions_at_threshold)
     
     # Print detailed results
-    print("\nTest Set Results:")
+    print(f"\n{name} Results:")
     print(f"AUROC: {auroc:.4f}")
     print(f"Accuracy at optimal threshold: {accuracy:.4f}")
     print(f"Optimal threshold: {optimal_threshold:.4f}")
     
-    print("\nDataset Composition:")
-    print(f"Normal samples: {np.sum(normal_mask)}")
-    print(f"Anomalous samples: {np.sum(anomalous_mask)}")
-    print(f"Excluded samples: {np.sum(excluded_mask)}")
+    # Count sample types
+    normal_count = np.sum(all_labels == 0)
+    anomalous_count = np.sum(all_labels == 1)
+    
+    print(f"\nDataset Composition:")
+    print(f"Normal samples: {normal_count}")
+    print(f"Anomalous samples: {anomalous_count}")
+    print(f"Total samples: {len(all_labels)}")
     
     # Return metrics
     return {

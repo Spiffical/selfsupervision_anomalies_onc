@@ -204,6 +204,7 @@ class ONCSpectrogramDataset(Dataset):
             # Convert labels to binary (normal vs anomalous)
             # For test set, excluded samples are still labeled as anomalous
             labels = torch.tensor(float(sample['is_anomalous'])).float()
+            labels = torch.round(labels)  # Ensure binary values
         
         # Apply normalization
         data = self.normalise(data)
@@ -216,6 +217,7 @@ class ONCSpectrogramDataset(Dataset):
             with h5py.File(self.data_path, 'r') as hf:
                 mix_data = hf['spectrograms'][mix_sample['index']]
                 mix_labels = torch.tensor(float(mix_sample['is_anomalous'])).float()
+                mix_labels = torch.round(mix_labels)  # Ensure binary values
             
             mix_data = self.normalise(mix_data)
             mix_data = torch.from_numpy(mix_data).permute(2, 0, 1)
@@ -323,9 +325,17 @@ def exclude_anomaly_type(datasets, exclude_labels, data_path):
         data_path: Path to the HDF5 data file
     
     Returns:
-        Modified (train_dataset, val_dataset, test_dataset) tuple
+        If exclude_labels is None or empty:
+            Modified (train_dataset, val_dataset, test_dataset) tuple
+        If exclude_labels is provided:
+            Modified (train_dataset, val_dataset, test_dataset, excluded_test_dataset) tuple
+            where excluded_test_dataset contains only the samples that were excluded
     """
     train_dataset, val_dataset, test_dataset = datasets
+    
+    # If no labels to exclude, return original datasets
+    if not exclude_labels:
+        return datasets
     
     with h5py.File(data_path, 'r') as hf:
         raw_label_strings = hf['label_strings'][:]
@@ -365,12 +375,29 @@ def exclude_anomaly_type(datasets, exclude_labels, data_path):
         val_dataset.sample_info = val_remaining
         val_dataset.indices = np.array([s['index'] for s in val_remaining])
         
-        # Add excluded samples to test set and mark them as excluded
-        test_dataset.sample_info.extend(train_excluded + val_excluded)
-        test_dataset.indices = np.concatenate([
-            test_dataset.indices,
-            np.array([s['index'] for s in train_excluded + val_excluded])
-        ])
+        # Create a new dataset for excluded samples
+        excluded_test_dataset = ONCSpectrogramDataset(
+            data_path=data_path,
+            split='test',
+            train_ratio=test_dataset.train_ratio,
+            val_ratio=test_dataset.val_ratio,
+            seed=test_dataset.seed,
+            target_length=test_dataset.target_length,
+            num_mel_bins=test_dataset.num_mel_bins,
+            freqm=0,
+            timem=0,
+            dataset_mean=test_dataset.dataset_mean,
+            dataset_std=test_dataset.dataset_std,
+            mixup=0.0,
+            supervised=True,
+            ood=test_dataset.ood,
+            amount=test_dataset.amount,
+            subsample_test=False  # Don't subsample excluded test set
+        )
+        
+        # Set the excluded samples in the new dataset
+        excluded_test_dataset.sample_info = train_excluded + val_excluded
+        excluded_test_dataset.indices = np.array([s['index'] for s in train_excluded + val_excluded])
         
         # Print combinations being excluded
         print("\n=== EXCLUSION ANALYSIS ===")
@@ -381,9 +408,9 @@ def exclude_anomaly_type(datasets, exclude_labels, data_path):
             print(f"  - {' + '.join(combo)}: {count} samples")
             total_excluded += count
         print(f"\nTotal samples containing excluded labels: {total_excluded}")
-        print(f"These samples have been moved to the test set")
+        print(f"These samples have been moved to a separate test dataset")
         
-        return train_dataset, val_dataset, test_dataset
+        return train_dataset, val_dataset, test_dataset, excluded_test_dataset
 
 def get_onc_spectrogram_data(
     data_path: str,
@@ -402,8 +429,14 @@ def get_onc_spectrogram_data(
     subsample_test: bool = True,
     exclude_labels: list = None
 ) -> tuple:
-    """Load and split data into train/val/test sets"""
+    """Load and split data into train/val/test sets
     
+    Returns:
+        If exclude_labels is None or empty:
+            (ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset)
+        If exclude_labels is provided:
+            (ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset, excluded_test_dataset)
+    """
     print("\n=== DATASET CONFIGURATION ===")
     print(f"Data path: {data_path}")
     print(f"Split ratios - Train: {train_ratio*100}%, Val: {val_ratio*100}%, Test: {(1-train_ratio-val_ratio)*100}%")
@@ -504,8 +537,9 @@ def get_onc_spectrogram_data(
     )
     
     # If exclude_labels is provided, modify the supervised datasets
+    excluded_test_dataset = None
     if exclude_labels:
-        train_dataset, val_dataset, test_dataset = exclude_anomaly_type(
+        train_dataset, val_dataset, test_dataset, excluded_test_dataset = exclude_anomaly_type(
             (train_dataset, val_dataset, test_dataset),
             exclude_labels,
             data_path
@@ -537,15 +571,23 @@ def get_onc_spectrogram_data(
         
         test_normal = sum(1 for s in test_dataset.sample_info if not s['is_anomalous'])
         test_anomalous = sum(1 for s in test_dataset.sample_info if s['is_anomalous'])
-        test_excluded = sum(1 for s in test_dataset.sample_info if s['is_excluded'])
         
         print(f"\nTest Set:")
         print(f"  - Normal samples:    {test_normal}")
         print(f"  - Anomalous samples: {test_anomalous}")
-        if exclude_labels:
-            print(f"  - Excluded samples:  {test_excluded}")
-            print(f"  - Total:             {len(test_dataset)} samples")
+        print(f"  - Total:             {len(test_dataset)} samples")
+
+        if excluded_test_dataset is not None:
+            excluded_normal = sum(1 for s in excluded_test_dataset.sample_info if not s['is_anomalous'])
+            excluded_anomalous = sum(1 for s in excluded_test_dataset.sample_info if s['is_anomalous'])
+            print(f"\nExcluded Test Set:")
+            print(f"  - Normal samples:    {excluded_normal}")
+            print(f"  - Anomalous samples: {excluded_anomalous}")
+            print(f"  - Total:             {len(excluded_test_dataset)} samples")
     
     print("\n" + "="*80)
     
-    return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset 
+    if excluded_test_dataset is not None:
+        return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset, excluded_test_dataset
+    else:
+        return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset 

@@ -13,6 +13,7 @@ def submit_linked_jobs(
     wandb_group: str,
     project_path: str,
     exp_dir: str,
+    training_type: str = "pretrain_finetune",
     wandb_entity: Optional[str] = None,
     exclude_labels: Optional[List[str]] = None,
     pretrained_path: Optional[str] = None,
@@ -32,11 +33,12 @@ def submit_linked_jobs(
         wandb_group: W&B group name
         project_path: Path to the project directory
         exp_dir: Directory for experiment outputs
+        training_type: Type of training ('pretrain_finetune' or 'supervised')
         wandb_entity: W&B entity (team) name
         exclude_labels: List of labels to exclude from training
         pretrained_path: Path to pretrained model
         resume: Whether to resume training
-        task: Training task type
+        task: Training task type (only used for pretrain_finetune)
         train_ratio: Ratio of data to use for training
         time_limit: Time limit for each job
         dry_run: Whether to only print commands without executing
@@ -57,14 +59,15 @@ def submit_linked_jobs(
             f"--output=out/{job_name}_ratio{train_ratio}_job{i}_%j.out",
             f"--error=err/{job_name}_ratio{train_ratio}_job{i}_%j.err",
         ]
-        
+
         # Add dependency if not first job
         if prev_job_id is not None:
             cmd.append(f"--dependency=afterany:{prev_job_id}")
-        
-        # Add script and its arguments with named parameters
-        cmd.append("submit_amba_spectrogram.sh")
-        
+
+        # Choose script based on training type
+        script = "submit_supervised.sh" if training_type == "supervised" else "submit_amba_spectrogram.sh"
+        cmd.append(script)
+
         # Add required arguments
         cmd.extend([
             "--dataset", dataset_path,
@@ -72,22 +75,28 @@ def submit_linked_jobs(
             "--wandb-group", wandb_group,
             "--train-ratio", str(train_ratio),
             "--project-path", project_path,
-            "--resume", str(resume).lower(),
-            "--task", task,
             "--exp-dir", exp_dir,
         ])
-        
+
+        # Add training type specific arguments
+        if training_type == "pretrain_finetune":
+            cmd.extend([
+                "--resume", str(resume).lower(),
+                "--task", task,
+            ])
+            if pretrained_path:
+                cmd.extend(["--pretrained-path", pretrained_path])
+        elif training_type == "supervised" and resume:
+            cmd.extend(["--resume"])
+
         # Add optional arguments
         if wandb_entity:
             cmd.extend(["--wandb-entity", wandb_entity])
-        
+
         # Add exclude labels as separate --exclude-label arguments
         if exclude_labels:
             for label in exclude_labels:
                 cmd.extend(["--exclude-label", label])
-        
-        if pretrained_path:
-            cmd.extend(["--pretrained-path", pretrained_path])
 
         if dry_run:
             cmd.extend(["--dry-run"])
@@ -122,6 +131,7 @@ def submit_training_size_experiments(
     project_path: str,
     exp_dir: str,
     train_ratios: Optional[List[float]] = None,
+    training_type: str = "pretrain_finetune",
     wandb_entity: Optional[str] = None,
     exclude_labels: Optional[List[str]] = None,
     pretrained_path: Optional[str] = None,
@@ -138,7 +148,7 @@ def submit_training_size_experiments(
     """
     if train_ratios is None:
         train_ratios = [0.1, 0.2, 0.4, 0.6, 0.8]
-    
+
     for ratio in train_ratios:
         print(f"\nSubmitting {num_jobs} linked jobs for training ratio {ratio}")
         submit_linked_jobs(
@@ -149,6 +159,7 @@ def submit_training_size_experiments(
             wandb_group=wandb_group,
             project_path=project_path,
             exp_dir=exp_dir,
+            training_type=training_type,
             wandb_entity=wandb_entity,
             exclude_labels=exclude_labels,
             pretrained_path=pretrained_path,
@@ -175,7 +186,7 @@ def main():
     parser.add_argument("--task", default="ft_cls", help="Training task type")
     parser.add_argument("--time-limit", default="0-12:00:00", help="Time limit for each job")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
-    
+
     # Mode selection
     parser.add_argument("--mode", choices=["single", "multi"], default="single",
                        help="'single' for one linked job, 'multi' for training size experiments")
@@ -183,6 +194,8 @@ def main():
                        help="Training ratio for single mode (ignored in multi mode)")
     parser.add_argument("--train-ratios", type=float, nargs="+",
                        help="List of training ratios for multi mode (default: [0.1, 0.2, 0.4, 0.6, 0.8])")
+    parser.add_argument("--training-type", choices=["pretrain_finetune", "supervised"], default="pretrain_finetune",
+                       help="Type of training to perform")
 
     args = parser.parse_args()
 
@@ -199,6 +212,7 @@ def main():
             wandb_group=args.wandb_group,
             project_path=args.project_path,
             exp_dir=args.exp_dir,
+            training_type=args.training_type,
             wandb_entity=args.wandb_entity,
             exclude_labels=args.exclude_labels,
             pretrained_path=args.pretrained_path,
@@ -208,7 +222,7 @@ def main():
             time_limit=args.time_limit,
             dry_run=args.dry_run,
         )
-    else:  # multi mode
+    else:
         submit_training_size_experiments(
             dataset_path=args.dataset_path,
             job_name=args.job_name,
@@ -218,6 +232,7 @@ def main():
             project_path=args.project_path,
             exp_dir=args.exp_dir,
             train_ratios=args.train_ratios,
+            training_type=args.training_type,
             wandb_entity=args.wandb_entity,
             exclude_labels=args.exclude_labels,
             pretrained_path=args.pretrained_path,

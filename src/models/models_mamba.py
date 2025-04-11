@@ -43,9 +43,10 @@ class PatchEmbed(nn.Module):
         super().__init__()
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
+        stride = to_2tuple(stride)  # Convert stride to tuple
         self.img_size = img_size
         self.patch_size = patch_size
-        self.grid_size = ((img_size[0] - patch_size[0]) // stride + 1, (img_size[1] - patch_size[1]) // stride + 1)
+        self.grid_size = ((img_size[0] - patch_size[0]) // stride[0] + 1, (img_size[1] - patch_size[1]) // stride[1] + 1)
         self.num_patches = self.grid_size[0] * self.grid_size[1]
         self.flatten = flatten
 

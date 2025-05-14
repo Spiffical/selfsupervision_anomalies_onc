@@ -119,6 +119,7 @@ if [[ $TASK == *"pretrain"* ]]; then
     bal=none
     fstride=16  # No overlap in pretraining
     tstride=16  # No overlap in pretraining
+    main_metric="acc"
 else
     # Finetuning parameters
     mask_patch=0  # No masking in finetuning
@@ -132,6 +133,7 @@ else
     bal=balanced
     fstride=10  # Use overlap in finetuning
     tstride=10  # Use overlap in finetuning
+    main_metric="auc"
 fi
 
 # Dataset parameters
@@ -239,7 +241,8 @@ $([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
---use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token}"
+--use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
+--main_metric ${main_metric}"
 
 # Add exclude labels as a single argument with multiple values
 if [ ${#EXCLUDE_LABELS[@]} -gt 0 ]; then

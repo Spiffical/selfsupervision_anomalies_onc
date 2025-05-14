@@ -1,15 +1,151 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix, roc_auc_score, fbeta_score
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import seaborn as sns
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Tuple, Optional, Set, Union, Any
 import h5py
 from ..onc_dataset import ONCSpectrogramDataset
 import logging
 from pathlib import Path
 import pandas as pd
+
+# Colormap function
+def colmap_hyd_py(mapsize=64, idev=1):
+    iflip = 0
+    if idev < 0:
+        iflip = 1
+        idev = abs(idev)
+    
+    if idev < 10:
+        cmid = mapsize / 2
+        np_ = int((mapsize + 1) / 5)
+        top = np.ones(np_)
+        bot = np.zeros(np_)
+        x = np.arange(1, 2 * np_ + 2)  # Equivalent to MATLAB's 1:2*np+1 (generates 1, ..., 2*np_+1)
+
+        if idev != 2:
+            # Screen display
+            wave = np.sin((x / np.max(x)) * np.pi)
+            slope1 = 1.5
+            slope2 = 1
+        else:
+            # Postscript printers
+            wave = ((1 - np.cos((x / np.max(x)) * 2 * np.pi)) / 2) ** 1
+            slope1 = 1
+            slope2 = 2
+
+        wave = wave[np_: 2 * np_]  # MATLAB's wave(np+1:2*np)
+        evaw = np.flip(wave)
+        red = np.concatenate([
+            evaw ** slope1,
+            top,
+            wave ** slope2,
+            bot,
+            bot,
+            bot
+        ])
+        grn = np.concatenate([
+            bot,
+            evaw,
+            top,
+            top,
+            wave,
+            bot
+        ])
+        blu = np.concatenate([
+            bot,
+            bot,
+            bot,
+            evaw ** slope2,
+            top,
+            wave ** slope1
+        ])
+        colmap0 = np.vstack((red, grn, blu)).T
+        mc, nc = colmap0.shape
+        dif = int((mc - mapsize) / 2)
+        if dif > 0:
+            cmap = np.flipud(colmap0[dif: mc - dif, :])
+        else:
+            cmap = np.flipud(colmap0)
+        
+        if idev == 3:
+            # Fade to black at blue end
+            b1 = cmap[0, 2] * 0.9
+            zbk = np.linspace(b1 / 8, b1, 8)
+            z = np.zeros(8)
+            cmbk = np.column_stack((z, z, zbk))
+            z0 = np.zeros(4)
+            cmb = np.column_stack((z0, z0, z0))
+            cmap = np.vstack((cmb, cmbk, cmap))
+        elif idev == 4:
+            # Fade to white at blue end
+            mc_cmap, nc_cmap = cmap.shape # Use different var name to avoid conflict with mc outside
+            mm = int(0.15 * mc_cmap) + 1
+            cmap = cmap[int(mm / 1.5):, :]
+            sgr = np.linspace(1, 0, mm)
+            b1 = cmap[0, 2]
+            sb = np.linspace(1, b1, mm)
+            red_channel = np.concatenate((sgr, cmap[:, 0]))
+            grn_channel = np.concatenate((sgr, cmap[:, 1]))
+            blu_channel = np.concatenate((sb, cmap[:, 2]))
+            cmap = np.column_stack((red_channel, grn_channel, blu_channel))
+        
+        # This check should be on the shape of cmap *after* idev==3 or idev==4 modifications
+        # mc, nc = cmap.shape # Re-evaluate shape
+        cmap = np.vstack((cmap, np.array([1, 1, 1])))
+    
+    elif idev > 9:
+        # Grayscale
+        maxblk = 0.2
+        if idev == 10:
+            grey0 = np.linspace(maxblk + (1 - maxblk) / mapsize, 1, mapsize)
+            cmap = np.column_stack((grey0, grey0, grey0))
+        elif idev == 11:
+            nc2 = int(mapsize / 2)
+            # Ensure nc2 is not zero to prevent division by zero if mapsize is 1
+            if nc2 == 0 and mapsize == 1: nc2 = 1 # Handle mapsize=1 for grayscale
+            
+            grey1_part1 = np.linspace(maxblk + (1 - maxblk) / nc2, 1 - (1 - maxblk) / nc2, nc2) if nc2 > 0 else np.array([])
+            grey1_part2 = np.linspace(1, maxblk + (1 - maxblk) / nc2, nc2) if nc2 > 0 else np.array([])
+            
+            # Handle odd mapsize for idev=11
+            if mapsize % 2 == 1 and nc2 > 0:
+                 # Simple strategy: duplicate middle element of first part or just make it '1'
+                 # Or, more robustly, ensure total length is mapsize
+                 if len(grey1_part1) > 0:
+                     grey1_part1_adjusted = np.linspace(maxblk + (1-maxblk)/(nc2+1), 1 - (1-maxblk)/(nc2+1), nc2+1)
+                     grey1_part2_adjusted = np.linspace(1, maxblk + (1-maxblk)/nc2, nc2) if nc2 > 0 else np.array([])
+                     grey1 = np.concatenate((grey1_part1_adjusted, grey1_part2_adjusted))
+                 else: # mapsize = 1, nc2 = 0 (after adjustment)
+                     grey1 = np.array([1.0]) # Or some other default for mapsize=1
+            else: # mapsize is even or nc2=0 (mapsize=0 or 1 initially handled)
+                grey1 = np.concatenate((grey1_part1, grey1_part2))
+
+            # Ensure grey1 has mapsize elements, especially for small mapsizes
+            if len(grey1) != mapsize:
+                # Fallback if logic above doesn't perfectly yield mapsize elements (e.g. mapsize=1)
+                # For mapsize=1, it might be better to just have grey1 = np.array([ (maxblk+1)/2 ]) or similar
+                if mapsize > 0:
+                    grey1 = np.linspace(maxblk, 1, mapsize) # Simplified fallback
+                else: # mapsize = 0
+                    grey1 = np.array([])
+
+
+            cmap = np.column_stack((grey1, grey1, grey1))
+            cmap = np.vstack((cmap, np.array([1.0, 1.0, 1.0])))
+    else: # Should not be reached if idev is positive integer as per MATLAB original
+        cmap = np.zeros((mapsize, 3))
+
+    if iflip == 1:
+        cmap = np.flipud(cmap)
+    
+    # Clip values to be strictly in [0, 1] as mcolors.ListedColormap expects this.
+    cmap = np.clip(cmap, 0, 1)
+
+    return cmap
 
 def calculate_f2_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """
@@ -187,7 +323,7 @@ def get_sample_anomalies(sample_info: Dict) -> Set[str]:
     return set(label for label in sample_info['labels'] if label != 'normal')
 
 def evaluate_by_anomaly_type(
-    test_dataset: ONCSpectrogramDataset,
+    test_dataset: Union[ONCSpectrogramDataset, ConcatDataset],
     y_pred: np.ndarray,
     threshold: float = 0.5
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -195,7 +331,7 @@ def evaluate_by_anomaly_type(
     Calculate detailed metrics for each anomaly type.
     
     Args:
-        test_dataset: The test dataset
+        test_dataset: The test dataset (can be single dataset or ConcatDataset)
         y_pred: Raw model predictions (before thresholding)
         threshold: Classification threshold
     
@@ -207,9 +343,16 @@ def evaluate_by_anomaly_type(
     # Convert predictions to binary using threshold
     y_pred_binary = (y_pred >= threshold).astype(int)
     
+    # Use the helper function to get samples from either dataset type
+    try:
+        samples = get_dataset_samples(test_dataset)
+    except AttributeError as e:
+        print(f"Error getting samples: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+    
     # Get all unique anomaly types from the dataset
     anomaly_types = set()
-    for sample in test_dataset.sample_info:
+    for sample in samples:
         anomalies = get_sample_anomalies(sample)
         anomaly_types.update(anomalies)
     anomaly_types = sorted(list(anomaly_types))
@@ -228,7 +371,7 @@ def evaluate_by_anomaly_type(
     co_occurrences = []
     
     # First pass: count occurrences and co-occurrences
-    for idx, sample in enumerate(test_dataset.sample_info):
+    for idx, sample in enumerate(samples):
         anomalies = get_sample_anomalies(sample)
         
         # Record co-occurrences
@@ -267,22 +410,13 @@ def evaluate_by_anomaly_type(
             
             if metrics['solo_occurrences'] > 0:
                 solo_indices = [idx for idx in metrics['samples_with_type'] 
-                              if len(get_sample_anomalies(test_dataset.sample_info[idx])) == 1]
+                              if len(get_sample_anomalies(samples[idx])) == 1]
                 solo_detection_rate = np.mean(y_pred_binary[solo_indices])
             
             if metrics['co_occurrences'] > 0:
                 co_indices = [idx for idx in metrics['samples_with_type'] 
-                            if len(get_sample_anomalies(test_dataset.sample_info[idx])) > 1]
+                            if len(get_sample_anomalies(samples[idx])) > 1]
                 co_detection_rate = np.mean(y_pred_binary[co_indices])
-            
-            # Get most common co-occurring anomalies
-            co_occurring = []
-            for idx in metrics['samples_with_type']:
-                anomalies = get_sample_anomalies(test_dataset.sample_info[idx])
-                if len(anomalies) > 1:
-                    co_occurring.extend(a for a in anomalies if a != atype)
-            
-            top_co_occurring = pd.Series(co_occurring).value_counts().head(3).to_dict() if co_occurring else {}
             
             results.append({
                 'anomaly_type': atype,
@@ -291,11 +425,13 @@ def evaluate_by_anomaly_type(
                 'co_occurrences': metrics['co_occurrences'],
                 'detection_rate': detection_rate,
                 'solo_detection_rate': solo_detection_rate,
-                'co_detection_rate': co_detection_rate,
-                'top_co_occurring': top_co_occurring
+                'co_detection_rate': co_detection_rate
             })
     
-    metrics_df = pd.DataFrame(results)
+    metrics_df = pd.DataFrame(results) if results else pd.DataFrame(
+        columns=['anomaly_type', 'total_samples', 'solo_occurrences', 
+                'co_occurrences', 'detection_rate', 'solo_detection_rate', 
+                'co_detection_rate'])
     
     # Create co-occurrence DataFrame
     if co_occurrences:
@@ -312,68 +448,136 @@ def plot_anomaly_type_metrics(
     save_path: Optional[str] = None
 ) -> None:
     """
-    Create visualization of anomaly type metrics.
-    
-    Args:
-        metrics_df: DataFrame from evaluate_by_anomaly_type
-        save_path: Optional path to save the plot
+    Create visualization of anomaly type metrics with improved visual distinction.
     """
-    plt.figure(figsize=(15, 10))
+    # Set seaborn style properly
+    sns.set_theme(style="whitegrid")
+    
+    # Create figure with higher DPI for sharper rendering
+    plt.figure(figsize=(15, 10), dpi=100)
     
     # Sort by total samples for better visualization
     metrics_df = metrics_df.sort_values('total_samples', ascending=True)
     
-    # Create bar plot
-    y_pos = np.arange(len(metrics_df))
+    # Create bar plot with adjusted positions for better separation
+    y_pos = np.arange(len(metrics_df)) * 1.5  # Increase spacing between bars
+    bar_height = 0.3
     
-    # Plot bars for different detection rates
-    overall_bars = plt.barh(y_pos, metrics_df['detection_rate'], 
-             label='Overall Detection Rate', alpha=0.3, color='blue')
-    solo_bars = plt.barh(y_pos, metrics_df['solo_detection_rate'], 
-             label='Solo Detection Rate', alpha=0.3, color='green')
-    co_bars = plt.barh(y_pos, metrics_df['co_detection_rate'], 
-             label='Co-occurrence Detection Rate', alpha=0.3, color='red')
+    # Define hatching patterns and colors with better contrast
+    solo_pattern = '//'    # Diagonal lines
+    co_pattern = 'xx'      # Crossed lines
     
-    # Add anomaly type labels
-    plt.yticks(y_pos, metrics_df['anomaly_type'])
+    # Plot bars with enhanced styling
+    overall_bars = plt.barh(y_pos, metrics_df['detection_rate'],
+                           label='Overall Detection Rate', 
+                           alpha=0.7, 
+                           color='#4878CF',  # Clean blue
+                           height=bar_height,
+                           edgecolor='black',
+                           linewidth=1)
     
-    # Add count information on the left
+    solo_bars = plt.barh(y_pos - bar_height, metrics_df['solo_detection_rate'],
+                        label='Solo Detection Rate', 
+                        alpha=0.7, 
+                        color='#6ACC65',  # Fresh green
+                        height=bar_height,
+                        hatch=solo_pattern,
+                        edgecolor='black',
+                        linewidth=1)
+    
+    co_bars = plt.barh(y_pos + bar_height, metrics_df['co_detection_rate'],
+                      label='Co-occurrence Detection Rate', 
+                      alpha=0.7, 
+                      color='#D65F5F',  # Warm red
+                      height=bar_height,
+                      hatch=co_pattern,
+                      edgecolor='black',
+                      linewidth=1)
+    
+    # Add anomaly type labels with improved formatting
+    plt.yticks(y_pos, metrics_df['anomaly_type'], fontsize=10, fontweight='bold')
+    
+    # Add count information on the left with better formatting
     for i, row in enumerate(metrics_df.itertuples()):
-        plt.text(-0.02, i, f'n={row.total_samples} ({row.solo_occurrences}s+{row.co_occurrences}c)', 
-                va='center', ha='right')
+        plt.text(-0.05, y_pos[i], 
+                f'n={row.total_samples}\n({row.solo_occurrences}s+{row.co_occurrences}c)', 
+                va='center', 
+                ha='right',
+                fontsize=9,
+                bbox=dict(facecolor='white', 
+                         edgecolor='#CCCCCC',
+                         alpha=0.8,
+                         pad=3,
+                         boxstyle='round,pad=0.5'))
     
-    # Add percentage annotations at the end of each bar
+    # Add percentage annotations with improved positioning and formatting
     for i, row in enumerate(metrics_df.itertuples()):
         # Overall rate
         if row.detection_rate > 0:
-            plt.text(row.detection_rate + 0.01, i, 
-                    f'{row.detection_rate:.1%} overall',
-                    va='center', color='blue')
+            plt.text(row.detection_rate + 0.01, y_pos[i],
+                    f'{row.detection_rate:.1%}',
+                    va='center',
+                    color='#4878CF',
+                    fontweight='bold',
+                    fontsize=9)
         
         # Solo rate
         if row.solo_detection_rate > 0:
-            plt.text(row.solo_detection_rate + 0.01, i - 0.2,
-                    f'{row.solo_detection_rate:.1%} solo',
-                    va='center', color='green', fontsize=8)
+            plt.text(row.solo_detection_rate + 0.01, y_pos[i] - bar_height,
+                    f'{row.solo_detection_rate:.1%}',
+                    va='center',
+                    color='#6ACC65',
+                    fontweight='bold',
+                    fontsize=9)
         
         # Co-occurrence rate
         if row.co_detection_rate > 0:
-            plt.text(row.co_detection_rate + 0.01, i + 0.2,
-                    f'{row.co_detection_rate:.1%} co-occur',
-                    va='center', color='red', fontsize=8)
+            plt.text(row.co_detection_rate + 0.01, y_pos[i] + bar_height,
+                    f'{row.co_detection_rate:.1%}',
+                    va='center',
+                    color='#D65F5F',
+                    fontweight='bold',
+                    fontsize=9)
     
-    plt.xlabel('Detection Rate')
-    plt.title('Anomaly Detection Performance by Type')
-    plt.legend()
+    # Enhance grid
+    plt.grid(True, axis='x', alpha=0.2, linestyle='--', color='gray')
     
-    # Set x-axis limits to make room for annotations
-    plt.xlim(-0.2, 1.3)
+    # Improve axis labels and title
+    plt.xlabel('Detection Rate', fontsize=12, fontweight='bold', labelpad=10)
+    plt.title('Anomaly Detection Performance by Type', 
+              fontsize=14, 
+              fontweight='bold',
+              pad=20)
     
-    # Adjust layout to prevent label cutoff
+    # Enhance legend
+    plt.legend(bbox_to_anchor=(0.5, -0.15),
+              loc='upper center',
+              ncol=3,
+              fontsize=10,
+              frameon=True,
+              edgecolor='black',
+              fancybox=True,
+              shadow=True)
+    
+    # Set x-axis limits and add subtle spines
+    plt.xlim(-0.25, 1.3)
+    for spine in plt.gca().spines.values():
+        spine.set_linewidth(0.5)
+        spine.set_color('#666666')
+    
+    # Add a light background color to the plot
+    plt.gca().set_facecolor('#F8F8F8')
+    
+    # Adjust layout
     plt.tight_layout()
     
+    # Save or show the plot
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.savefig(save_path, 
+                    bbox_inches='tight', 
+                    dpi=300,
+                    facecolor='white',
+                    edgecolor='none')
         plt.close()
     else:
         plt.show()
@@ -501,7 +705,7 @@ def plot_example_spectrograms(
     test_dataset: ONCSpectrogramDataset,
     y_pred: np.ndarray,
     num_examples: int = 4,
-    samples_per_row: int = 4,  # Control number of samples per row
+    samples_per_row: int = 4,
     save_dir: Optional[str] = None
 ) -> None:
     """
@@ -514,19 +718,28 @@ def plot_example_spectrograms(
         samples_per_row: Number of samples to show in each row
         save_dir: Optional directory to save the plots
     """
-    # Get indices for each category
-    # Convert sample_info labels to numpy array for comparison
+    # Create the custom colormap
+    # Using mapsize=36, idev=3 as specified in the problem description
+    cmap_array = colmap_hyd_py(36, 3) 
+    custom_cmap = mcolors.ListedColormap(cmap_array)
+
     true_labels = np.array([sample['is_anomalous'] for sample in test_dataset.sample_info])
     
-    # Ensure y_pred is 1D
     if len(y_pred.shape) > 1:
         y_pred = y_pred.squeeze()
     
-    # Ensure boolean comparison
-    true_pos = np.where((y_pred.astype(bool)) & (true_labels.astype(bool)))[0]
-    true_neg = np.where((~y_pred.astype(bool)) & (~true_labels.astype(bool)))[0]
-    false_pos = np.where((y_pred.astype(bool)) & (~true_labels.astype(bool)))[0]
-    false_neg = np.where((~y_pred.astype(bool)) & (true_labels.astype(bool)))[0]
+    # Ensure y_pred and true_labels are boolean for logical operations
+    y_pred_bool = y_pred.astype(bool) # Assuming y_pred contains probabilities/logits, thresholding may be needed
+                                     # If y_pred is already binary (0/1), astype(bool) is fine.
+                                     # For probabilities, a threshold (e.g. 0.5) should be applied first.
+                                     # E.g., y_pred_bool = (y_pred > 0.5).astype(bool)
+
+    true_labels_bool = true_labels.astype(bool)
+    
+    true_pos = np.where(y_pred_bool & true_labels_bool)[0]
+    true_neg = np.where(~y_pred_bool & ~true_labels_bool)[0]
+    false_pos = np.where(y_pred_bool & ~true_labels_bool)[0]
+    false_neg = np.where(~y_pred_bool & true_labels_bool)[0]
     
     print("\nCategory sizes:")
     print(f"True Positives: {len(true_pos)}")
@@ -543,60 +756,60 @@ def plot_example_spectrograms(
     
     for category, indices in categories.items():
         if len(indices) == 0:
+            print(f"No examples for {category}.")
             continue
         
-        # Calculate grid dimensions
         n_samples = min(num_examples, len(indices))
         n_rows = (n_samples + samples_per_row - 1) // samples_per_row
         
-        # Create figure with a title section at the top
-        fig = plt.figure(figsize=(5*samples_per_row, 1 + 3*n_rows))
+        fig = plt.figure(figsize=(5 * samples_per_row, 1 + 3 * n_rows))
+        fig.suptitle(f'{category} Examples\n(Total: {len(indices)}, Showing: {n_samples})', 
+                     fontsize=16, y=1.0) # Adjusted y for suptitle with more space
         
-        # Add category header at the top
-        fig.suptitle(f'{category} Examples\n(Total: {len(indices)})', 
-                    fontsize=16, y=1.0)
-        
-        for i in range(min(num_examples, len(indices))):
-            idx = np.random.choice(indices)
-            spec, label, source = test_dataset[idx]
+        for i in range(n_samples):
+            idx = np.random.choice(indices) # Pick a random example from the category
+            spec_tensor, label_bool, source_str = test_dataset[idx]
+            # Use ._data if it's the MockTensor from placeholder, otherwise just .numpy()
+            spec_numpy = spec_tensor.numpy() if not hasattr(spec_tensor, '_data') else spec_tensor._data
+            
             raw_labels = test_dataset.sample_info[idx]['labels']
-            label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
-            is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
+            label_string = ';'.join(raw_labels)
+            is_anomalous_true = test_dataset.sample_info[idx]['is_anomalous']
             
             plt.subplot(n_rows, samples_per_row, i + 1)
-            plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')
+            # Use the custom colormap here
+            plt.imshow(spec_numpy[0], aspect='auto', origin='lower', cmap=custom_cmap)
             
-            # Add title with source and debug info
-            title = f'Source: {source}'
+            title = f'Source: {source_str}'
             if label_string:
-                # Split long label strings into multiple lines
-                label_lines = [label_string[i:i+20] for i in range(0, len(label_string), 20)]
-                title += '\n' + '\n'.join(label_lines)
+                # Split long label strings into multiple lines for title
+                label_lines = [label_string[j:j+20] for j in range(0, len(label_string), 20)]
+                title += '\nLabels: ' + '\n'.join(label_lines)
             
-            # Add debug information to title
-            title += f'\nTrue label: {is_anomalous}'
-            title += f'\nPred: {y_pred[idx]:.3f}'
+            title += f'\nTrue: {"Anomalous" if is_anomalous_true else "Normal"}'
+            # Display raw prediction value if y_pred contains scores/probabilities
+            title += f'\nPred Score: {y_pred[idx]:.3f} (Interpreted: {"Anomalous" if y_pred_bool[idx] else "Normal"})'
             
             plt.title(title, fontsize=8)
             plt.colorbar()
             
-            # Add label text directly on the spectrogram in white
             if label_string:
-                # Position text at the bottom of the spectrogram
                 plt.text(0.02, 0.02, label_string, 
-                        color='white', fontsize=6,
-                        transform=plt.gca().transAxes,
-                        bbox=dict(facecolor='black', alpha=0.7),
-                        wrap=True)
+                         color='white', fontsize=6,
+                         transform=plt.gca().transAxes,
+                         bbox=dict(facecolor='black', alpha=0.7),
+                         wrap=True)
         
         plt.tight_layout()
-        # Adjust layout to make room for the main title
-        plt.subplots_adjust(top=0.94)
-        
+        plt.subplots_adjust(top=0.90 if n_rows > 1 else 0.85) # Adjust top margin for suptitle
+
         if save_dir:
-            save_path = Path(save_dir) / f'{category.lower().replace(" ", "_")}.png'
+            output_path = Path(save_dir)
+            output_path.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            save_path = output_path / f'{category.lower().replace(" ", "_")}_examples.png'
             plt.savefig(save_path, bbox_inches='tight', dpi=300)
-            plt.close()
+            print(f"Saved {category} examples to {save_path}")
+            plt.close(fig)
         else:
             plt.show()
 
@@ -697,72 +910,78 @@ def plot_all_false_positives(
     test_dataset: ONCSpectrogramDataset,
     y_pred: np.ndarray,
     save_dir: Optional[str] = None,
-    max_samples: int = 100,  # Maximum number of samples to plot
-    samples_per_row: int = 5  # Number of samples to show in each row
+    max_samples: int = 100,
+    samples_per_row: int = 5
 ) -> None:
     """
     Plot all false positive predictions in a grid layout.
-    
-    Args:
-        test_dataset: The test dataset
-        y_pred: Model predictions
-        save_dir: Optional directory to save the plots
-        max_samples: Maximum number of samples to plot
-        samples_per_row: Number of samples to show in each row
     """
-    # Ensure y_pred is 1D
+    # Create the custom colormap
+    cmap_array = colmap_hyd_py(36, 3)
+    custom_cmap = mcolors.ListedColormap(cmap_array)
+
     if len(y_pred.shape) > 1:
         y_pred = y_pred.squeeze()
     
-    # Get false positives
     true_labels = np.array([sample['is_anomalous'] for sample in test_dataset.sample_info])
-    false_pos = np.where((y_pred.astype(bool)) & (~true_labels.astype(bool)))[0]
     
-    if len(false_pos) == 0:
+    # Assuming y_pred are scores/probabilities, apply a threshold (e.g., 0.5)
+    # If y_pred is already binary (0/1), this can be simplified.
+    y_pred_bool = (y_pred > 0.5).astype(bool) # Example threshold
+    true_labels_bool = true_labels.astype(bool)
+
+    false_pos_indices = np.where(y_pred_bool & ~true_labels_bool)[0]
+    
+    if len(false_pos_indices) == 0:
         print("No false positives found.")
         return
     
-    # Limit number of samples to plot
-    n_samples = min(len(false_pos), max_samples)
-    indices = false_pos[:n_samples]
+    print(f"Found {len(false_pos_indices)} false positives. Plotting up to {max_samples}.")
     
-    # Calculate grid dimensions
-    n_rows = (n_samples + samples_per_row - 1) // samples_per_row
+    n_samples_to_plot = min(len(false_pos_indices), max_samples)
+    indices_to_plot = false_pos_indices[:n_samples_to_plot]
     
-    # Create figure
-    plt.figure(figsize=(4*samples_per_row, 3*n_rows))
+    n_rows = (n_samples_to_plot + samples_per_row - 1) // samples_per_row
     
-    for i, idx in enumerate(indices):
-        spec, label, source = test_dataset[idx]
+    fig = plt.figure(figsize=(4 * samples_per_row, 1 + 3 * n_rows)) # Added 1 to height for suptitle
+    fig.suptitle(f'All False Positives (Showing {n_samples_to_plot} of {len(false_pos_indices)})',
+                 fontsize=16, y=1.0)
+
+
+    for i, idx in enumerate(indices_to_plot):
+        spec_tensor, _, source_str = test_dataset[idx]
+        spec_numpy = spec_tensor.numpy() if not hasattr(spec_tensor, '_data') else spec_tensor._data
+
         raw_labels = test_dataset.sample_info[idx]['labels']
-        label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
-        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
+        label_string = ';'.join(raw_labels)
         
         plt.subplot(n_rows, samples_per_row, i + 1)
-        plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')
+        # Use the custom colormap here
+        plt.imshow(spec_numpy[0], aspect='auto', origin='lower', cmap=custom_cmap)
         
-        # Add title with source and debug info
-        title = f'Source: {source}'
+        title = f'Source: {source_str}'
         if label_string:
-            # Split long label strings into multiple lines
-            label_lines = [label_string[i:i+20] for i in range(0, len(label_string), 20)]
-            title += '\n' + '\n'.join(label_lines)
+            label_lines = [label_string[j:j+20] for j in range(0, len(label_string), 20)]
+            title += '\nLabel: ' + '\n'.join(label_lines)
         
         plt.title(title, fontsize=8)
-        plt.colorbar()
+        #plt.colorbar()
         
-        # Add prediction info directly on the spectrogram
-        plt.text(0.02, 0.02, f'Pred: {y_pred[idx]:.3f}', 
-                color='white', fontsize=6,
-                transform=plt.gca().transAxes,
-                bbox=dict(facecolor='black', alpha=0.7))
+        #plt.text(0.02, 0.02, f'Pred Score: {y_pred[idx]:.3f}', 
+        #         color='white', fontsize=6,
+        #         transform=plt.gca().transAxes,
+        #         bbox=dict(facecolor='black', alpha=0.7))
     
     plt.tight_layout()
-    
+    plt.subplots_adjust(top=0.92 if n_rows > 1 else 0.88) # Adjust top for suptitle
+
     if save_dir:
-        save_path = Path(save_dir) / 'all_false_positives.png'
+        output_path = Path(save_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        save_path = output_path / 'all_false_positives.png'
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
-        plt.close()
+        print(f"Saved false positives plot to {save_path}")
+        plt.close(fig)
     else:
         plt.show()
 
@@ -770,72 +989,76 @@ def plot_all_false_negatives(
     test_dataset: ONCSpectrogramDataset,
     y_pred: np.ndarray,
     save_dir: Optional[str] = None,
-    max_samples: int = 100,  # Maximum number of samples to plot
-    samples_per_row: int = 5  # Number of samples to show in each row
+    max_samples: int = 100,
+    samples_per_row: int = 5
 ) -> None:
     """
     Plot all false negative predictions in a grid layout.
-    
-    Args:
-        test_dataset: The test dataset
-        y_pred: Model predictions
-        save_dir: Optional directory to save the plots
-        max_samples: Maximum number of samples to plot
-        samples_per_row: Number of samples to show in each row
     """
-    # Ensure y_pred is 1D
+    # Create the custom colormap
+    cmap_array = colmap_hyd_py(36, 3)
+    custom_cmap = mcolors.ListedColormap(cmap_array)
+
     if len(y_pred.shape) > 1:
         y_pred = y_pred.squeeze()
-    
-    # Get false negatives
+        
     true_labels = np.array([sample['is_anomalous'] for sample in test_dataset.sample_info])
-    false_neg = np.where((~y_pred.astype(bool)) & (true_labels.astype(bool)))[0]
+
+    # Assuming y_pred are scores/probabilities, apply a threshold (e.g., 0.5)
+    y_pred_bool = (y_pred > 0.5).astype(bool) # Example threshold
+    true_labels_bool = true_labels.astype(bool)
+
+    false_neg_indices = np.where(~y_pred_bool & true_labels_bool)[0]
     
-    if len(false_neg) == 0:
+    if len(false_neg_indices) == 0:
         print("No false negatives found.")
         return
+
+    print(f"Found {len(false_neg_indices)} false negatives. Plotting up to {max_samples}.")
+
+    n_samples_to_plot = min(len(false_neg_indices), max_samples)
+    indices_to_plot = false_neg_indices[:n_samples_to_plot]
     
-    # Limit number of samples to plot
-    n_samples = min(len(false_neg), max_samples)
-    indices = false_neg[:n_samples]
+    n_rows = (n_samples_to_plot + samples_per_row - 1) // samples_per_row
     
-    # Calculate grid dimensions
-    n_rows = (n_samples + samples_per_row - 1) // samples_per_row
-    
-    # Create figure
-    plt.figure(figsize=(4*samples_per_row, 3*n_rows))
-    
-    for i, idx in enumerate(indices):
-        spec, label, source = test_dataset[idx]
+    fig = plt.figure(figsize=(4 * samples_per_row, 1 + 3 * n_rows)) # Added 1 to height for suptitle
+    fig.suptitle(f'All False Negatives (Showing {n_samples_to_plot} of {len(false_neg_indices)})',
+                 fontsize=16, y=1.0)
+
+    for i, idx in enumerate(indices_to_plot):
+        spec_tensor, _, source_str = test_dataset[idx]
+        spec_numpy = spec_tensor.numpy() if not hasattr(spec_tensor, '_data') else spec_tensor._data
+        
         raw_labels = test_dataset.sample_info[idx]['labels']
-        label_string = ';'.join(raw_labels)  # Join the labels with semicolons for display
-        is_anomalous = test_dataset.sample_info[idx]['is_anomalous']
+        label_string = ';'.join(raw_labels)
         
         plt.subplot(n_rows, samples_per_row, i + 1)
-        plt.imshow(spec.numpy()[0], aspect='auto', origin='lower')
+        # Use the custom colormap here
+        plt.imshow(spec_numpy[0], aspect='auto', origin='lower', cmap=custom_cmap)
         
-        # Add title with source and debug info
-        title = f'Source: {source}'
+        title = f'Source: {source_str}'
         if label_string:
-            # Split long label strings into multiple lines
-            label_lines = [label_string[i:i+20] for i in range(0, len(label_string), 20)]
-            title += '\n' + '\n'.join(label_lines)
-        
+            label_lines = [label_string[j:j+20] for j in range(0, len(label_string), 20)]
+            title += '\nLabels: ' + '\n'.join(label_lines)
+            
         plt.title(title, fontsize=8)
         plt.colorbar()
         
-        # Add prediction info directly on the spectrogram
-        plt.text(0.02, 0.02, f'Pred: {y_pred[idx]:.3f}', 
-                color='white', fontsize=6,
-                transform=plt.gca().transAxes,
-                bbox=dict(facecolor='black', alpha=0.7))
+        plt.text(0.02, 0.02, f'Pred Score: {y_pred[idx]:.3f}', 
+                 color='white', fontsize=6,
+                 transform=plt.gca().transAxes,
+                 bbox=dict(facecolor='black', alpha=0.7))
     
     plt.tight_layout()
-    
+    plt.subplots_adjust(top=0.92 if n_rows > 1 else 0.88) # Adjust top for suptitle
+
     if save_dir:
-        save_path = Path(save_dir) / 'all_false_negatives.png'
+        output_path = Path(save_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        save_path = output_path / 'all_false_negatives.png'
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
-        plt.close()
+        print(f"Saved false negatives plot to {save_path}")
+        plt.close(fig)
     else:
         plt.show()
 

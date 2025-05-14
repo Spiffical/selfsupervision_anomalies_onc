@@ -106,14 +106,16 @@ def setup_custom_sections(run, task=None):
             "Finetuning Loss",
             "Finetuning Precision",
             "Finetuning Recall",
-            "Finetuning F2"
+            "Finetuning F2",
+            "Finetuning AUC"
         ])
         per_hydrophone_sections.extend([
             "Per_Hydrophone_FT_Accuracy",
             "Per_Hydrophone_FT_Loss",
             "Per_Hydrophone_FT_Precision",
             "Per_Hydrophone_FT_Recall",
-            "Per_Hydrophone_FT_F2"
+            "Per_Hydrophone_FT_F2",
+            "Per_Hydrophone_FT_AUC"
         ])
     
     # Add per-hydrophone sections to the main sections list
@@ -141,7 +143,7 @@ def create_hydrophone_table(task):
     elif task == 'pretrain_joint':
         return wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Reconstruction Accuracy", "Patch Localization MSE"])
     else:
-        return wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Accuracy", "Precision", "Recall", "F2"])
+        return wandb.Table(columns=["Epoch", "Hydrophone", "Sample Count", "Accuracy", "Precision", "Recall", "F2", "AUC"])
 
 def log_training_metrics(metrics_dict, use_wandb=True):
     """Log training metrics to wandb with organized categories."""
@@ -198,6 +200,8 @@ def log_training_metrics(metrics_dict, use_wandb=True):
                 wandb.log({"Finetuning Recall/training": {key: value}})
             elif 'f2' in key or 'f1' in key:
                 wandb.log({"Finetuning F2/training": {key: value}})
+            elif 'auc' in key:
+                wandb.log({"Finetuning AUC/training": {key: value}})
             else:
                 wandb.log({"Global Metrics/training": {key: value}})
     
@@ -241,6 +245,8 @@ def log_validation_metrics(metrics, task, epoch, prefix="", use_wandb=True):
             section = f"{section_prefix} Recall"
         elif 'f2' in clean_key or 'f1' in clean_key:
             section = f"{section_prefix} F2"
+        elif 'auc' in clean_key:
+            section = f"{section_prefix} AUC"
         else:
             section = "Global Metrics"
         

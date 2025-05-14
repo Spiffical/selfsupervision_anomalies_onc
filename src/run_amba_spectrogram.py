@@ -96,7 +96,7 @@ parser.add_argument("--task", type=str, default='ft_cls', help="pretraining or f
 parser.add_argument("--mask_patch", type=int, default=300, help="number of patches to mask")
 parser.add_argument("--epoch_iter", type=float, default=0.5, 
                     help="fraction of training set to process before saving (e.g., 0.25 = 25% of dataset)")
-parser.add_argument("--main_metric", type=str, default='f2', help="metric to track for model selection",
+parser.add_argument("--main_metric", type=str, default='auc', help="metric to track for model selection",
                     choices=['auc', 'acc', 'f2', 'precision', 'recall'])
 
 # Wandb logging
@@ -384,63 +384,63 @@ else:
     trainmask(None, train_loader, val_loader, args)
 
 # Evaluate on test set if provided
-if args.data_eval is not None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    audio_model = create_model(args)
-    sd = torch.load(args.exp_dir + '/models/best_audio_model.pth', map_location=device)
-    audio_model.load_state_dict(sd, strict=False)
+# if args.data_eval is not None:
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     audio_model = create_model(args)
+#     sd = torch.load(args.exp_dir + '/models/best_audio_model.pth', map_location=device)
+#     audio_model.load_state_dict(sd, strict=False)
 
-    args.loss_fn = torch.nn.BCEWithLogitsLoss()
-    stats, _ = validate(audio_model, val_loader, args, 'valid_set')
-    val_acc = stats[0]['acc']
-    val_mAUC = np.mean([stat['auc'] for stat in stats])
-    print('---------------evaluate on the validation set---------------')
-    print("Accuracy: {:.6f}".format(val_acc))
-    print("AUC: {:.6f}".format(val_mAUC))
+#     args.loss_fn = torch.nn.BCEWithLogitsLoss()
+#     stats, _ = validate(audio_model, val_loader, args, 'valid_set')
+#     val_acc = stats[0]['acc']
+#     val_mAUC = np.mean([stat['auc'] for stat in stats])
+#     print('---------------evaluate on the validation set---------------')
+#     print("Accuracy: {:.6f}".format(val_acc))
+#     print("AUC: {:.6f}".format(val_mAUC))
 
-    # Evaluate on original test set
-    test_metrics = evaluate(audio_model, eval_loader, device, args, "Original Test Set")
+#     # Evaluate on original test set
+#     test_metrics = evaluate(audio_model, eval_loader, device, args, "Original Test Set")
     
-    metrics_to_log = {
-        'val_accuracy': val_acc,
-        'val_mAUC': val_mAUC,
-        'test_auroc': test_metrics['auroc'],
-        'test_accuracy': test_metrics['accuracy'],
-        'test_optimal_threshold': test_metrics['optimal_threshold']
-    }
+#     metrics_to_log = {
+#         'val_accuracy': val_acc,
+#         'val_mAUC': val_mAUC,
+#         'test_auroc': test_metrics['auroc'],
+#         'test_accuracy': test_metrics['accuracy'],
+#         'test_optimal_threshold': test_metrics['optimal_threshold']
+#     }
     
-    # If we have excluded data, evaluate that too
-    if excluded_test_dataset is not None:
-        # Evaluate excluded test set
-        excluded_metrics = evaluate(audio_model, excluded_eval_loader, device, args, "Excluded Test Set")
+#     # If we have excluded data, evaluate that too
+#     if excluded_test_dataset is not None:
+#         # Evaluate excluded test set
+#         excluded_metrics = evaluate(audio_model, excluded_eval_loader, device, args, "Excluded Test Set")
         
-        # Evaluate combined test set
-        full_metrics = evaluate(audio_model, full_eval_loader, device, args, "Combined Test Set")
+#         # Evaluate combined test set
+#         full_metrics = evaluate(audio_model, full_eval_loader, device, args, "Combined Test Set")
         
-        # Add excluded and full metrics to logging
-        metrics_to_log.update({
-            'excluded_test_auroc': excluded_metrics['auroc'],
-            'excluded_test_accuracy': excluded_metrics['accuracy'],
-            'excluded_test_optimal_threshold': excluded_metrics['optimal_threshold'],
-            'full_test_auroc': full_metrics['auroc'],
-            'full_test_accuracy': full_metrics['accuracy'],
-            'full_test_optimal_threshold': full_metrics['optimal_threshold']
-        })
+#         # Add excluded and full metrics to logging
+#         metrics_to_log.update({
+#             'excluded_test_auroc': excluded_metrics['auroc'],
+#             'excluded_test_accuracy': excluded_metrics['accuracy'],
+#             'excluded_test_optimal_threshold': excluded_metrics['optimal_threshold'],
+#             'full_test_auroc': full_metrics['auroc'],
+#             'full_test_accuracy': full_metrics['accuracy'],
+#             'full_test_optimal_threshold': full_metrics['optimal_threshold']
+#         })
     
-    if args.use_wandb:
-        log_training_metrics(metrics_to_log, use_wandb=args.use_wandb)
+#     if args.use_wandb:
+#         log_training_metrics(metrics_to_log, use_wandb=args.use_wandb)
     
-    # Save all metrics to CSV
-    metrics_list = [
-        val_acc, val_mAUC,
-        test_metrics['accuracy'], test_metrics['auroc']
-    ]
-    if excluded_test_dataset is not None:
-        metrics_list.extend([
-            excluded_metrics['accuracy'], excluded_metrics['auroc'],
-            full_metrics['accuracy'], full_metrics['auroc']
-        ])
-    np.savetxt(args.exp_dir + '/eval_result.csv', metrics_list)
+#     # Save all metrics to CSV
+#     metrics_list = [
+#         val_acc, val_mAUC,
+#         test_metrics['accuracy'], test_metrics['auroc']
+#     ]
+#     if excluded_test_dataset is not None:
+#         metrics_list.extend([
+#             excluded_metrics['accuracy'], excluded_metrics['auroc'],
+#             full_metrics['accuracy'], full_metrics['auroc']
+#         ])
+#     np.savetxt(args.exp_dir + '/eval_result.csv', metrics_list)
 
 # Finish wandb run if it was started
 if args.use_wandb:

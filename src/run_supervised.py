@@ -250,9 +250,65 @@ model = SupervisedAMBAModel(
     }
 ).to(device)
 
+# Debug: Print model architecture and parameter count
+print("\n=== Model Architecture ===")
+print(model)
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"\nTotal parameters: {total_params:,}")
+print(f"Trainable parameters: {trainable_params:,}")
+
+# Debug: Print dataset statistics
+print("\n=== Dataset Statistics ===")
+print(f"Number of training samples: {len(train_dataset)}")
+print(f"Number of validation samples: {len(val_dataset)}")
+print(f"Number of test samples: {len(test_dataset)}")
+
+# Analyze label distribution
+print("\nAnalyzing label distribution...")
+# Get first label to determine shape
+_, first_label, _ = train_dataset[0]
+print(f"Label shape: {first_label.shape}")
+
+if len(first_label.shape) > 0:  # Multi-label case
+    train_label_dist = np.sum([label.numpy() for _, label, _ in train_dataset], axis=0)
+    val_label_dist = np.sum([label.numpy() for _, label, _ in val_dataset], axis=0)
+    print("\nLabel distribution in training set:")
+    for i, count in enumerate(train_label_dist):
+        print(f"Class {i}: {count} samples ({count/len(train_dataset)*100:.2f}%)")
+    print("\nLabel distribution in validation set:")
+    for i, count in enumerate(val_label_dist):
+        print(f"Class {i}: {count} samples ({count/len(val_dataset)*100:.2f}%)")
+else:  # Single-label case
+    train_labels = [label.item() for _, label, _ in train_dataset]
+    val_labels = [label.item() for _, label, _ in val_dataset]
+    unique_labels = sorted(set(train_labels + val_labels))
+    
+    print("\nLabel distribution in training set:")
+    for label in unique_labels:
+        count = sum(1 for x in train_labels if x == label)
+        print(f"Class {label}: {count} samples ({count/len(train_dataset)*100:.2f}%)")
+    
+    print("\nLabel distribution in validation set:")
+    for label in unique_labels:
+        count = sum(1 for x in val_labels if x == label)
+        print(f"Class {label}: {count} samples ({count/len(val_dataset)*100:.2f}%)")
+
+# Debug: Print input shape and range
+sample_batch, sample_labels, _ = next(iter(train_loader))
+print("\n=== Input Statistics ===")
+print(f"Input shape: {sample_batch.shape}")
+print(f"Label shape: {sample_labels.shape}")
+print(f"Input range: [{sample_batch.min():.4f}, {sample_batch.max():.4f}]")
+print(f"Input mean: {sample_batch.mean():.4f}")
+print(f"Input std: {sample_batch.std():.4f}")
+
 # Loss function and optimizer
 criterion = torch.nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+# Add gradient clipping
+max_grad_norm = 1.0
 
 # Learning rate scheduler
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -265,6 +321,12 @@ best_epoch = 0
 start_epoch = 0
 patience = args.lr_patience * 2  # Early stopping patience
 patience_counter = 0
+
+# Debug: Print parameter initialization statistics
+print("\n=== Parameter Initialization Statistics ===")
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        print(f"{name}: mean={param.data.mean():.4f}, std={param.data.std():.4f}")
 
 # Resume from checkpoint if requested
 if args.resume:
@@ -297,22 +359,70 @@ for epoch in range(start_epoch, args.n_epochs):
         
         optimizer.zero_grad()
         outputs = model(data)
+        
+        # Debug: Print intermediate activations for first batch
+        if batch_idx == 0 and epoch == 0:
+            print("\n=== First Batch Activation Statistics ===")
+            with torch.no_grad():
+                # Assuming outputs is the final layer
+                print(f"Final layer output stats: mean={outputs.mean():.4f}, std={outputs.std():.4f}")
+        
         loss = criterion(outputs, labels)
         loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        
         optimizer.step()
         
         train_loss += loss.item()
         train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy())
         train_labels.extend(labels.cpu().numpy())
         
+        # Debug: Print detailed batch information every n_print_steps
         if (batch_idx + 1) % args.n_print_steps == 0:
-            print(f'Epoch: {epoch + 1}/{args.n_epochs}, Batch: {batch_idx + 1}/{len(train_loader)}, Loss: {loss.item():.4f}')
+            batch_preds = torch.sigmoid(outputs).detach().cpu().numpy()
+            print(f'\n=== Batch {batch_idx + 1} Debug Info ===')
+            print(f'Loss: {loss.item():.4f}')
+            print(f'Predictions distribution: min={batch_preds.min():.4f}, max={batch_preds.max():.4f}, mean={batch_preds.mean():.4f}')
+            print(f'Labels distribution: {np.sum(labels.cpu().numpy(), axis=0)}')
+            print(f'Sample predictions vs labels:')
+            for i in range(min(5, len(batch_preds))):  # Show first 5 samples
+                print(f'Sample {i}: pred={batch_preds[i]}, true={labels[i].cpu().numpy()}')
+            
+            # Debug: Print gradient statistics
+            grad_norms = []
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    grad_norms.append((name, torch.norm(param.grad).item()))
+            print("\nGradient norms:")
+            for name, norm in grad_norms[:5]:  # Show first 5 gradients
+                print(f'{name}: {norm:.4f}')
     
     # Calculate training metrics
     train_loss /= len(train_loader)
     train_preds = np.array(train_preds)
-    train_labels = np.array(train_labels).astype(int)  # Convert to integer type
+    train_labels = np.array(train_labels).astype(int)
     train_auroc = roc_auc_score(train_labels, train_preds)
+    
+    # Debug: Print detailed epoch statistics
+    print(f"\n=== Epoch {epoch + 1} Detailed Statistics ===")
+    print(f"Training predictions: min={train_preds.min():.4f}, max={train_preds.max():.4f}, mean={train_preds.mean():.4f}")
+    print(f"Training labels distribution: {np.sum(train_labels, axis=0)}")
+    print(f"Number of positive predictions (>0.5): {np.sum(train_preds > 0.5)}")
+    print(f"Number of positive labels: {np.sum(train_labels)}")
+    
+    # Debug: Print confusion matrix-like statistics
+    pred_binary = (train_preds > 0.5).astype(int)
+    true_pos = np.sum((pred_binary == 1) & (train_labels == 1))
+    false_pos = np.sum((pred_binary == 1) & (train_labels == 0))
+    true_neg = np.sum((pred_binary == 0) & (train_labels == 0))
+    false_neg = np.sum((pred_binary == 0) & (train_labels == 1))
+    print("\nPrediction Statistics (threshold=0.5):")
+    print(f"True Positives: {true_pos}")
+    print(f"False Positives: {false_pos}")
+    print(f"True Negatives: {true_neg}")
+    print(f"False Negatives: {false_neg}")
     
     # Validation
     model.eval()
@@ -334,7 +444,7 @@ for epoch in range(start_epoch, args.n_epochs):
     
     val_loss /= len(val_loader)
     val_preds = np.array(val_preds)
-    val_labels = np.array(val_labels).astype(int)  # Convert to integer type
+    val_labels = np.array(val_labels).astype(int)
     val_auroc = roc_auc_score(val_labels, val_preds)
     
     # Update learning rate scheduler

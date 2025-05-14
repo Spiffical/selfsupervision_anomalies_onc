@@ -3,19 +3,19 @@
 import sys
 import os
 import datetime
-sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
-from utilities import *
-from utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet
-from utilities.metrics.validation_metrics import ValidationMetricsCollector
-from utilities.metrics.hydrophone_metrics import (
+# sys.path.append(os.path.dirname(os.path.dirname(sys.path[0]))) # Removed
+from .utilities import * # Changed
+from .utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet # Changed
+from .utilities.metrics.validation_metrics import ValidationMetricsCollector # Changed
+from .utilities.metrics.hydrophone_metrics import ( # Changed
     calculate_hydrophone_metrics, print_hydrophone_metrics, 
     extract_hydrophone, calculate_binary_metrics
 )
-from utilities.checkpoint_utils import save_checkpoint, load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint
-from utilities.training_utils import (
+from .utilities.checkpoint_utils import save_checkpoint, load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint # Changed
+from .utilities.training_utils import ( # Changed
     create_model, setup_training, training_loop, validation_loop
 )
-from utilities.wandb_utils import init_wandb, log_validation_metrics, finish_run
+from .utilities.wandb_utils import init_wandb, log_validation_metrics, finish_run # Changed
 import time
 import torch
 from torch import nn

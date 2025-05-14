@@ -3,15 +3,15 @@
 import sys
 import os
 import datetime
-sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
-from utilities import *
-from utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet
-from utilities.metrics.validation_metrics import ValidationMetricsCollector
-from utilities.checkpoint_utils import save_checkpoint
-from utilities.training_utils import (
+# sys.path.append(os.path.dirname(os.path.dirname(sys.path[0]))) # Removed this line
+from .utilities import * # Changed to relative import
+from .utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet # Changed to relative import
+from .utilities.metrics.validation_metrics import ValidationMetricsCollector # Changed to relative import
+from .utilities.checkpoint_utils import save_checkpoint # Changed to relative import
+from .utilities.training_utils import ( # Changed to relative import
     create_model, setup_training, training_loop, validation_loop
 )
-from utilities.wandb_utils import init_wandb, finish_run
+from .utilities.wandb_utils import init_wandb, finish_run # Changed to relative import
 import time
 import torch
 from torch import nn

@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import WeightedRandomSampler
 import numpy as np
 import datetime
-from utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
-from onc_dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
-from models.supervised_model import SupervisedAMBAModel
+from ssamba.utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
+from ssamba.dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
+from ssamba.models.supervised_model import SupervisedAMBAModel
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))

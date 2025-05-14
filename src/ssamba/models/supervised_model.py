@@ -1,5 +1,5 @@
 import torch.nn as nn
-from models.models_mamba import VisionMamba
+from .models_mamba import VisionMamba
 import torch
 
 class SupervisedAMBAModel(nn.Module):

@@ -7,16 +7,16 @@ import sys
 import time
 import torch
 from torch.utils.data import WeightedRandomSampler
-import dataloader
-from utilities import *
-from utilities.training_utils import create_model
-from utilities.metrics.validation_metrics import validate
+from ssamba.utilities import *
+from ssamba.utilities.training_utils import create_model
+from ssamba.utilities.metrics.validation_metrics import validate
+from ssamba.utilities.stats import calculate_dataset_stats
 import numpy as np
-from traintest import train
-from traintest_mask import trainmask
+from ssamba.traintest import train
+from ssamba.traintest_mask import trainmask
 import datetime
-from utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
-from onc_dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
+from ssamba.utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
+from ssamba.dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
@@ -175,7 +175,7 @@ print(f"Using random seed: {args.split_seed}")
 # Calculate dataset statistics if needed
 if args.dataset_mean == "none" or args.dataset_std == "none":
     print("Calculating dataset statistics...")
-    mean, std = dataloader.calculate_dataset_stats(args.data_train)
+    mean, std = calculate_dataset_stats(args.data_train)
     print(f"Calculated dataset mean: {mean:.6f}")
     print(f"Calculated dataset std: {std:.6f}")
     args.dataset_mean = mean

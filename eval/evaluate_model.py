@@ -7,10 +7,122 @@ from torch.utils.data import DataLoader, ConcatDataset
 import seaborn as sns
 from typing import Dict, List, Tuple, Optional, Set, Union, Any
 import h5py
-from ..onc_dataset import ONCSpectrogramDataset
+from src.ssamba.dataset import ONCSpectrogramDataset
 import logging
 from pathlib import Path
 import pandas as pd
+import matplotx
+from matplotlib.ticker import AutoMinorLocator
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+def setup_presentation_style(style: str = 'default') -> Dict[str, Any]:
+    """
+    Set up plot styling for different contexts.
+    
+    Args:
+        style: One of ['default', 'presentation', 'poster']
+        
+    Returns:
+        Dictionary containing style parameters
+    """
+    # Base style that applies to all contexts
+    base_style = {
+        'figure.dpi': 300,
+        'figure.figsize': (12, 8),
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'DejaVu Sans', 'Liberation Sans'],
+        'axes.grid': True,
+        'grid.alpha': 0.3,
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'axes.linewidth': 1.5,
+    }
+    
+    style_configs = {
+        'default': {
+            'font.size': 10,
+            'axes.titlesize': 12,
+            'axes.labelsize': 10,
+            'xtick.labelsize': 9,
+            'ytick.labelsize': 9,
+            'legend.fontsize': 9,
+            'lines.linewidth': 1.5,
+            'axes.titlepad': 10,
+            'legend.frameon': True,
+            'legend.framealpha': 0.8,
+            'legend.edgecolor': '0.8',
+        },
+        'presentation': {
+            'font.size': 14,
+            'axes.titlesize': 16,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'lines.linewidth': 2.0,
+            'axes.titlepad': 15,
+            'legend.frameon': True,
+            'legend.framealpha': 0.9,
+            'legend.edgecolor': '0.8',
+        },
+        'poster': {
+            'font.size': 18,
+            'axes.titlesize': 24,
+            'axes.labelsize': 20,
+            'xtick.labelsize': 16,
+            'ytick.labelsize': 16,
+            'legend.fontsize': 16,
+            'lines.linewidth': 2.5,
+            'axes.titlepad': 20,
+            'legend.frameon': True,
+            'legend.framealpha': 0.9,
+            'legend.edgecolor': '0.8',
+        }
+    }
+    
+    # Try to use matplotx style
+    try:
+        import matplotx
+        plt.style.use(matplotx.styles.tableau)  # Using a light theme (tableau style)
+        print("Using matplotx style: matplotx.styles.tableau")
+    except (ImportError, AttributeError):
+        print("matplotx styles not available. Using default matplotlib style.")
+        plt.style.use('seaborn-v0_8-whitegrid')  # Fallback to a clean default style
+    
+    # Update with base style
+    plt.rcParams.update(base_style)
+    
+    # Update with context-specific style
+    if style in style_configs:
+        plt.rcParams.update(style_configs[style])
+    
+    # Return the combined style dict for reference
+    return {**base_style, **style_configs[style]}
+
+def setup_axis_style(ax: plt.Axes) -> None:
+    """
+    Apply consistent styling to a matplotlib axis.
+    
+    Args:
+        ax: Matplotlib axis object
+    """
+    # Add minor ticks
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.yaxis.set_minor_locator(AutoMinorLocator())
+    
+    # Style the grid
+    ax.grid(True, which='major', linestyle='-', alpha=0.2)
+    ax.grid(True, which='minor', linestyle=':', alpha=0.1)
+    
+    # Add light box around plot
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.8)
+        spine.set_color('#666666')
+    
+    # Adjust tick parameters
+    ax.tick_params(which='both', direction='out')
+    ax.tick_params(which='major', length=6)
+    ax.tick_params(which='minor', length=3)
 
 # Colormap function
 def colmap_hyd_py(mapsize=64, idev=1):
@@ -445,68 +557,77 @@ def evaluate_by_anomaly_type(
 
 def plot_anomaly_type_metrics(
     metrics_df: pd.DataFrame,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    style: str = 'default'
 ) -> None:
     """
     Create visualization of anomaly type metrics with improved visual distinction.
-    """
-    # Set seaborn style properly
-    sns.set_theme(style="whitegrid")
     
-    # Create figure with higher DPI for sharper rendering
-    plt.figure(figsize=(15, 10), dpi=100)
+    Args:
+        metrics_df: DataFrame containing metrics
+        save_path: Optional path to save the plot
+        style: Plot style ('default', 'presentation', or 'poster')
+    """
+    # Set up the plotting style
+    setup_presentation_style(style)
     
     # Sort by total samples for better visualization
     metrics_df = metrics_df.sort_values('total_samples', ascending=True)
     
-    # Create bar plot with adjusted positions for better separation
-    y_pos = np.arange(len(metrics_df)) * 1.5  # Increase spacing between bars
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(15, 10))
+    
+    # Set up spacing
+    y_pos = np.arange(len(metrics_df)) * 1.5
     bar_height = 0.3
     
-    # Define hatching patterns and colors with better contrast
-    solo_pattern = '//'    # Diagonal lines
-    co_pattern = 'xx'      # Crossed lines
+    # Define colors with better contrast using matplotx's color palette
+    colors = matplotx.color_palette('colorblind')
     
     # Plot bars with enhanced styling
-    overall_bars = plt.barh(y_pos, metrics_df['detection_rate'],
-                           label='Overall Detection Rate', 
-                           alpha=0.7, 
-                           color='#4878CF',  # Clean blue
-                           height=bar_height,
-                           edgecolor='black',
-                           linewidth=1)
+    overall_bars = ax.barh(y_pos, metrics_df['detection_rate'],
+                          label='Overall Detection Rate', 
+                          alpha=0.8, 
+                          color=colors[0],
+                          height=bar_height,
+                          edgecolor='black',
+                          linewidth=1)
     
-    solo_bars = plt.barh(y_pos - bar_height, metrics_df['solo_detection_rate'],
-                        label='Solo Detection Rate', 
-                        alpha=0.7, 
-                        color='#6ACC65',  # Fresh green
-                        height=bar_height,
-                        hatch=solo_pattern,
-                        edgecolor='black',
-                        linewidth=1)
+    solo_bars = ax.barh(y_pos - bar_height, metrics_df['solo_detection_rate'],
+                       label='Solo Detection Rate', 
+                       alpha=0.8, 
+                       color=colors[1],
+                       height=bar_height,
+                       hatch='//',
+                       edgecolor='black',
+                       linewidth=1)
     
-    co_bars = plt.barh(y_pos + bar_height, metrics_df['co_detection_rate'],
-                      label='Co-occurrence Detection Rate', 
-                      alpha=0.7, 
-                      color='#D65F5F',  # Warm red
-                      height=bar_height,
-                      hatch=co_pattern,
-                      edgecolor='black',
-                      linewidth=1)
+    co_bars = ax.barh(y_pos + bar_height, metrics_df['co_detection_rate'],
+                     label='Co-occurrence Detection Rate', 
+                     alpha=0.8, 
+                     color=colors[2],
+                     height=bar_height,
+                     hatch='xx',
+                     edgecolor='black',
+                     linewidth=1)
+    
+    # Customize the axis
+    setup_axis_style(ax)
     
     # Add anomaly type labels with improved formatting
-    plt.yticks(y_pos, metrics_df['anomaly_type'], fontsize=10, fontweight='bold')
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(metrics_df['anomaly_type'], fontweight='bold')
     
-    # Add count information on the left with better formatting
+    # Add count information with better formatting
     for i, row in enumerate(metrics_df.itertuples()):
-        plt.text(-0.05, y_pos[i], 
+        ax.text(-0.05, y_pos[i], 
                 f'n={row.total_samples}\n({row.solo_occurrences}s+{row.co_occurrences}c)', 
                 va='center', 
                 ha='right',
-                fontsize=9,
+                fontsize=plt.rcParams['font.size'] * 0.9,
                 bbox=dict(facecolor='white', 
                          edgecolor='#CCCCCC',
-                         alpha=0.8,
+                         alpha=0.9,
                          pad=3,
                          boxstyle='round,pad=0.5'))
     
@@ -514,64 +635,55 @@ def plot_anomaly_type_metrics(
     for i, row in enumerate(metrics_df.itertuples()):
         # Overall rate
         if row.detection_rate > 0:
-            plt.text(row.detection_rate + 0.01, y_pos[i],
-                    f'{row.detection_rate:.1%}',
-                    va='center',
-                    color='#4878CF',
-                    fontweight='bold',
-                    fontsize=9)
+            ax.text(row.detection_rate + 0.01, y_pos[i],
+                   f'{row.detection_rate:.1%}',
+                   va='center',
+                   color=colors[0],
+                   fontweight='bold',
+                   fontsize=plt.rcParams['font.size'] * 0.9)
         
         # Solo rate
         if row.solo_detection_rate > 0:
-            plt.text(row.solo_detection_rate + 0.01, y_pos[i] - bar_height,
-                    f'{row.solo_detection_rate:.1%}',
-                    va='center',
-                    color='#6ACC65',
-                    fontweight='bold',
-                    fontsize=9)
+            ax.text(row.solo_detection_rate + 0.01, y_pos[i] - bar_height,
+                   f'{row.solo_detection_rate:.1%}',
+                   va='center',
+                   color=colors[1],
+                   fontweight='bold',
+                   fontsize=plt.rcParams['font.size'] * 0.9)
         
         # Co-occurrence rate
         if row.co_detection_rate > 0:
-            plt.text(row.co_detection_rate + 0.01, y_pos[i] + bar_height,
-                    f'{row.co_detection_rate:.1%}',
-                    va='center',
-                    color='#D65F5F',
-                    fontweight='bold',
-                    fontsize=9)
+            ax.text(row.co_detection_rate + 0.01, y_pos[i] + bar_height,
+                   f'{row.co_detection_rate:.1%}',
+                   va='center',
+                   color=colors[2],
+                   fontweight='bold',
+                   fontsize=plt.rcParams['font.size'] * 0.9)
     
-    # Enhance grid
-    plt.grid(True, axis='x', alpha=0.2, linestyle='--', color='gray')
-    
-    # Improve axis labels and title
-    plt.xlabel('Detection Rate', fontsize=12, fontweight='bold', labelpad=10)
-    plt.title('Anomaly Detection Performance by Type', 
-              fontsize=14, 
-              fontweight='bold',
-              pad=20)
+    # Enhance axis labels and title
+    ax.set_xlabel('Detection Rate', fontweight='bold', labelpad=10)
+    ax.set_title('Anomaly Detection Performance by Type', 
+                fontweight='bold',
+                pad=20)
     
     # Enhance legend
-    plt.legend(bbox_to_anchor=(0.5, -0.15),
-              loc='upper center',
-              ncol=3,
-              fontsize=10,
-              frameon=True,
-              edgecolor='black',
-              fancybox=True,
-              shadow=True)
+    ax.legend(bbox_to_anchor=(0.5, -0.15),
+             loc='upper center',
+             ncol=3,
+             frameon=True,
+             edgecolor='black',
+             fancybox=True,
+             shadow=True)
     
     # Set x-axis limits and add subtle spines
-    plt.xlim(-0.25, 1.3)
-    for spine in plt.gca().spines.values():
-        spine.set_linewidth(0.5)
-        spine.set_color('#666666')
+    ax.set_xlim(-0.25, 1.3)
     
     # Add a light background color to the plot
-    plt.gca().set_facecolor('#F8F8F8')
+    ax.set_facecolor('#F8F8F8')
     
     # Adjust layout
     plt.tight_layout()
     
-    # Save or show the plot
     if save_path:
         plt.savefig(save_path, 
                     bbox_inches='tight', 
@@ -584,7 +696,8 @@ def plot_anomaly_type_metrics(
 
 def plot_co_occurrence_matrix(
     test_dataset: ONCSpectrogramDataset,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    style: str = 'default'
 ) -> None:
     """
     Create a heatmap visualization of anomaly co-occurrences.
@@ -592,7 +705,11 @@ def plot_co_occurrence_matrix(
     Args:
         test_dataset: The test dataset
         save_path: Optional path to save the plot
+        style: Plot style ('default', 'presentation', or 'poster')
     """
+    # Set up the plotting style
+    setup_presentation_style(style)
+    
     # Get all unique anomaly types from the dataset
     anomaly_types = set()
     for sample in test_dataset.sample_info:
@@ -619,17 +736,28 @@ def plot_co_occurrence_matrix(
     total_co_occurrences = co_matrix.sum()
     percentage_matrix = (co_matrix / total_co_occurrences * 100) if total_co_occurrences > 0 else co_matrix
     
-    # Create heatmap
-    plt.figure(figsize=(12, 10))
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(12, 10))
     
-    # Create heatmap with colorbar
+    # Create custom colormap
+    cmap = sns.color_palette("YlOrRd", as_cmap=True)
+    
+    # Create heatmap with enhanced styling
     heatmap = sns.heatmap(co_matrix, 
                          xticklabels=anomaly_types,
                          yticklabels=anomaly_types,
-                         cmap='YlOrRd',
+                         cmap=cmap,
                          annot=True,
                          fmt='g',  # Use integer format for counts
-                         cbar_kws={'label': 'Number of Co-occurrences'})
+                         cbar_kws={'label': 'Number of Co-occurrences'},
+                         ax=ax)
+    
+    # Customize the axis
+    setup_axis_style(ax)
+    
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     
     # Add percentage annotations
     for i in range(n_types):
@@ -639,18 +767,25 @@ def plot_co_occurrence_matrix(
                 text = heatmap.texts[i * n_types + j]
                 # Update text to include percentage
                 text.set_text(f'{int(co_matrix[i, j])}\n({percentage_matrix[i, j]:.1f}%)')
-                # Adjust font size if needed
-                text.set_fontsize(8)
+                # Adjust font size based on style
+                text.set_fontsize(plt.rcParams['font.size'] * 0.8)
+                # Center align the text
+                text.set_ha('center')
+                text.set_va('center')
     
-    plt.title('Anomaly Co-occurrence Matrix')
-    plt.xticks(rotation=45, ha='right')
-    plt.yticks(rotation=0)
+    # Enhance title and labels
+    ax.set_title('Anomaly Co-occurrence Matrix', pad=20, fontweight='bold')
+    ax.set_xlabel('Anomaly Type', labelpad=10, fontweight='bold')
+    ax.set_ylabel('Anomaly Type', labelpad=10, fontweight='bold')
+    
+    # Add a light background color
+    ax.set_facecolor('#F8F8F8')
     
     # Adjust layout to prevent label cutoff
     plt.tight_layout()
     
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300, facecolor='white')
         plt.close()
     else:
         plt.show()
@@ -658,11 +793,21 @@ def plot_co_occurrence_matrix(
 def plot_confusion_matrix(
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    style: str = 'default'
 ) -> None:
     """
     Plot confusion matrix with category labels (TP, TN, FP, FN) in each square
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        save_path: Optional path to save the plot
+        style: Plot style ('default', 'presentation', or 'poster')
     """
+    # Set up the plotting style
+    setup_presentation_style(style)
+    
     # Calculate confusion matrix manually to verify
     tn = np.sum((y_true == 0) & (y_pred == 0))
     fp = np.sum((y_true == 0) & (y_pred == 1))
@@ -672,31 +817,40 @@ def plot_confusion_matrix(
     # Create confusion matrix
     cm = np.array([[tn, fp], [fn, tp]])
     
+    # Calculate percentages for annotations
+    total = np.sum(cm)
+    cm_percentages = cm / total * 100
     
+    # Create category labels with counts and percentages
+    category_labels = [
+        [f'True Negative\n{tn}\n({cm_percentages[0,0]:.1f}%)', 
+         f'False Positive\n{fp}\n({cm_percentages[0,1]:.1f}%)'],
+        [f'False Negative\n{fn}\n({cm_percentages[1,0]:.1f}%)', 
+         f'True Positive\n{tp}\n({cm_percentages[1,1]:.1f}%)']
+    ]
     
-    # Create category labels
-    category_labels = np.array([
-        ['True Negative\n(TN)', 'False Positive\n(FP)'],
-        ['False Negative\n(FN)', 'True Positive\n(TP)']
-    ])
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(10, 8))
     
-    # Create annotation text combining count with category
-    annotations = np.array([
-        [f'{cm[0,0]}\n{category_labels[0,0]}', f'{cm[0,1]}\n{category_labels[0,1]}'],
-        [f'{cm[1,0]}\n{category_labels[1,0]}', f'{cm[1,1]}\n{category_labels[1,1]}']
-    ])
+    # Create heatmap with improved aesthetics
+    sns.heatmap(cm, annot=category_labels, fmt='', cmap='Blues',
+                xticklabels=['Predicted\nNormal', 'Predicted\nAnomaly'],
+                yticklabels=['Actual\nNormal', 'Actual\nAnomaly'],
+                ax=ax, cbar_kws={'label': 'Count'})
     
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=annotations, fmt='', cmap='Blues', 
-                xticklabels=['Predicted Normal', 'Predicted Anomaly'],
-                yticklabels=['Actual Normal', 'Actual Anomaly'])
+    # Customize the axis
+    setup_axis_style(ax)
     
-    plt.title('Confusion Matrix', pad=20)
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
+    # Additional customization
+    ax.set_title('Confusion Matrix', pad=20, weight='bold')
+    ax.set_ylabel('True Label', weight='bold')
+    ax.set_xlabel('Predicted Label', weight='bold')
+    
+    # Adjust layout
+    plt.tight_layout()
     
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.savefig(save_path, bbox_inches='tight', dpi=300, facecolor='white')
         plt.close()
     else:
         plt.show()
@@ -706,7 +860,8 @@ def plot_example_spectrograms(
     y_pred: np.ndarray,
     num_examples: int = 4,
     samples_per_row: int = 4,
-    save_dir: Optional[str] = None
+    save_dir: Optional[str] = None,
+    style: str = 'default'
 ) -> None:
     """
     Plot example spectrograms for true/false positives/negatives with label strings
@@ -717,9 +872,12 @@ def plot_example_spectrograms(
         num_examples: Number of examples to show for each category
         samples_per_row: Number of samples to show in each row
         save_dir: Optional directory to save the plots
+        style: Plot style ('default', 'presentation', or 'poster')
     """
+    # Set up the plotting style
+    setup_presentation_style(style)
+    
     # Create the custom colormap
-    # Using mapsize=36, idev=3 as specified in the problem description
     cmap_array = colmap_hyd_py(36, 3) 
     custom_cmap = mcolors.ListedColormap(cmap_array)
 
@@ -729,11 +887,7 @@ def plot_example_spectrograms(
         y_pred = y_pred.squeeze()
     
     # Ensure y_pred and true_labels are boolean for logical operations
-    y_pred_bool = y_pred.astype(bool) # Assuming y_pred contains probabilities/logits, thresholding may be needed
-                                     # If y_pred is already binary (0/1), astype(bool) is fine.
-                                     # For probabilities, a threshold (e.g. 0.5) should be applied first.
-                                     # E.g., y_pred_bool = (y_pred > 0.5).astype(bool)
-
+    y_pred_bool = y_pred.astype(bool)
     true_labels_bool = true_labels.astype(bool)
     
     true_pos = np.where(y_pred_bool & true_labels_bool)[0]
@@ -762,52 +916,71 @@ def plot_example_spectrograms(
         n_samples = min(num_examples, len(indices))
         n_rows = (n_samples + samples_per_row - 1) // samples_per_row
         
+        # Create figure with subplots
         fig = plt.figure(figsize=(5 * samples_per_row, 1 + 3 * n_rows))
         fig.suptitle(f'{category} Examples\n(Total: {len(indices)}, Showing: {n_samples})', 
-                     fontsize=16, y=1.0) # Adjusted y for suptitle with more space
+                     fontsize=plt.rcParams['axes.titlesize'] * 1.2,
+                     y=1.0,
+                     fontweight='bold')
         
         for i in range(n_samples):
-            idx = np.random.choice(indices) # Pick a random example from the category
+            idx = np.random.choice(indices)
             spec_tensor, label_bool, source_str = test_dataset[idx]
-            # Use ._data if it's the MockTensor from placeholder, otherwise just .numpy()
             spec_numpy = spec_tensor.numpy() if not hasattr(spec_tensor, '_data') else spec_tensor._data
             
             raw_labels = test_dataset.sample_info[idx]['labels']
             label_string = ';'.join(raw_labels)
             is_anomalous_true = test_dataset.sample_info[idx]['is_anomalous']
             
-            plt.subplot(n_rows, samples_per_row, i + 1)
-            # Use the custom colormap here
-            plt.imshow(spec_numpy[0], aspect='auto', origin='lower', cmap=custom_cmap)
+            # Create subplot with proper axes object
+            ax = plt.subplot(n_rows, samples_per_row, i + 1)
             
+            # Plot spectrogram with custom colormap
+            im = ax.imshow(spec_numpy[0], aspect='auto', origin='lower', cmap=custom_cmap)
+            
+            # Add colorbar with proper sizing
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+            
+            # Customize the axis
+            setup_axis_style(ax)
+            
+            # Create title with source and labels
             title = f'Source: {source_str}'
             if label_string:
-                # Split long label strings into multiple lines for title
+                # Split long label strings into multiple lines
                 label_lines = [label_string[j:j+20] for j in range(0, len(label_string), 20)]
                 title += '\nLabels: ' + '\n'.join(label_lines)
             
             title += f'\nTrue: {"Anomalous" if is_anomalous_true else "Normal"}'
-            # Display raw prediction value if y_pred contains scores/probabilities
-            title += f'\nPred Score: {y_pred[idx]:.3f} (Interpreted: {"Anomalous" if y_pred_bool[idx] else "Normal"})'
+            title += f'\nPred Score: {y_pred[idx]:.3f}'
+            title += f'\n({"Anomalous" if y_pred_bool[idx] else "Normal"})'
             
-            plt.title(title, fontsize=8)
-            plt.colorbar()
+            ax.set_title(title, fontsize=plt.rcParams['font.size'] * 0.8)
             
+            # Add label string in bottom-left corner with improved styling
             if label_string:
-                plt.text(0.02, 0.02, label_string, 
-                         color='white', fontsize=6,
-                         transform=plt.gca().transAxes,
-                         bbox=dict(facecolor='black', alpha=0.7),
-                         wrap=True)
+                ax.text(0.02, 0.02, label_string, 
+                        color='white',
+                        fontsize=plt.rcParams['font.size'] * 0.6,
+                        transform=ax.transAxes,
+                        bbox=dict(facecolor='black',
+                                alpha=0.7,
+                                edgecolor='white',
+                                linewidth=0.5,
+                                pad=3),
+                        wrap=True)
         
+        # Adjust layout
         plt.tight_layout()
-        plt.subplots_adjust(top=0.90 if n_rows > 1 else 0.85) # Adjust top margin for suptitle
-
+        plt.subplots_adjust(top=0.90 if n_rows > 1 else 0.85)
+        
         if save_dir:
             output_path = Path(save_dir)
-            output_path.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            output_path.mkdir(parents=True, exist_ok=True)
             save_path = output_path / f'{category.lower().replace(" ", "_")}_examples.png'
-            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.savefig(save_path, bbox_inches='tight', dpi=300, facecolor='white')
             print(f"Saved {category} examples to {save_path}")
             plt.close(fig)
         else:
@@ -911,7 +1084,8 @@ def plot_all_false_positives(
     y_pred: np.ndarray,
     save_dir: Optional[str] = None,
     max_samples: int = 100,
-    samples_per_row: int = 5
+    samples_per_row: int = 5,
+    style: str = 'default'
 ) -> None:
     """
     Plot all false positive predictions in a grid layout.
@@ -990,7 +1164,8 @@ def plot_all_false_negatives(
     y_pred: np.ndarray,
     save_dir: Optional[str] = None,
     max_samples: int = 100,
-    samples_per_row: int = 5
+    samples_per_row: int = 5,
+    style: str = 'default'
 ) -> None:
     """
     Plot all false negative predictions in a grid layout.
@@ -1067,7 +1242,8 @@ def plot_anomaly_type_by_hydrophone(
     y_pred: np.ndarray,
     threshold: float = 0.5,
     min_samples: int = 5,  # Minimum samples required for a hydrophone to be included
-    save_dir: Optional[str] = None
+    save_dir: Optional[str] = None,
+    style: str = 'default'
 ) -> Dict[str, pd.DataFrame]:
     """
     Analyze and plot anomaly detection performance broken down by both type and hydrophone.
@@ -1538,10 +1714,20 @@ def main(
     output_dir: str,
     batch_size: int = 32,
     device: str = 'cuda',
-    threshold: float = 0.5
+    threshold: float = 0.5,
+    plot_style: str = 'default'
 ):
     """
     Main evaluation function
+    
+    Args:
+        model_path: Path to saved model
+        data_path: Path to HDF5 dataset
+        output_dir: Directory to save results
+        batch_size: Batch size for evaluation
+        device: Device to run evaluation on
+        threshold: Classification threshold
+        plot_style: Plot style ('default', 'presentation', or 'poster')
     """
     # Create output directory
     output_dir = Path(output_dir)
@@ -1598,56 +1784,58 @@ def main(
     logging.info(anomaly_metrics.to_string())
     
     # Plot confusion matrix
-    plot_confusion_matrix(y_true, y_pred, output_dir / 'confusion_matrix.png')
+    plot_confusion_matrix(y_true, y_pred, 
+                         output_dir / 'confusion_matrix.png',
+                         style=plot_style)
     
     # Plot example spectrograms
     plot_example_spectrograms(
         test_dataset,
         y_pred,
         num_examples=4,
-        save_dir=output_dir / 'examples'
+        save_dir=output_dir / 'examples',
+        style=plot_style
     )
 
     # Plot all false positives
     plot_all_false_positives(
         test_dataset,
         y_pred,
-        save_dir=output_dir / 'false_positives'
+        save_dir=output_dir / 'false_positives',
+        style=plot_style
     )
 
     # Plot all false negatives
     plot_all_false_negatives(
         test_dataset,
         y_pred,
-        save_dir=output_dir / 'false_negatives'
+        save_dir=output_dir / 'false_negatives',
+        style=plot_style
     )
 
     # Plot anomaly type metrics
-    plot_anomaly_type_metrics(anomaly_metrics, output_dir / 'anomaly_type_metrics.png')
+    plot_anomaly_type_metrics(
+        anomaly_metrics,
+        output_dir / 'anomaly_type_metrics.png',
+        style=plot_style
+    )
 
     # Plot co-occurrence matrix
-    plot_co_occurrence_matrix(test_dataset, output_dir / 'co_occurrence_matrix.png')
+    plot_co_occurrence_matrix(
+        test_dataset,
+        output_dir / 'co_occurrence_matrix.png',
+        style=plot_style
+    )
 
     # Plot anomaly type by hydrophone
-    plot_anomaly_type_by_hydrophone(test_dataset, y_pred, threshold, min_samples=5, save_dir=output_dir / 'anomaly_type_by_hydrophone')
-
-    # # First analysis: Just the excluded data
-    # excluded_metrics = analyze_excluded_data(test_dataset, y_pred, excluded_labels)
-    # print("\nAnalysis of Excluded Data Only:")
-    # print(excluded_metrics)
-
-    # # Second analysis: Full test set
-    # full_metrics = analyze_full_test_set(test_dataset, y_pred, excluded_labels)
-    # print("\nAnalysis of Full Test Set:")
-    # print(full_metrics)
-
-    # # First analysis: Just the excluded data
-    # excluded_metrics = analyze_excluded_data(test_dataset, y_pred, excluded_labels)
-    # plot_excluded_analysis(excluded_metrics, save_path='excluded_analysis.png')
-
-    # # Second analysis: Full test set
-    # full_metrics = analyze_full_test_set(test_dataset, y_pred, excluded_labels)
-    # plot_full_test_analysis(full_metrics, save_path='full_test_analysis.png')
+    plot_anomaly_type_by_hydrophone(
+        test_dataset,
+        y_pred,
+        threshold,
+        min_samples=5,
+        save_dir=output_dir / 'anomaly_type_by_hydrophone',
+        style=plot_style
+    )
 
 if __name__ == "__main__":
     import argparse
@@ -1659,6 +1847,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
     parser.add_argument('--device', default='cuda', help='Device to run evaluation on')
     parser.add_argument('--threshold', type=float, default=0.5, help='Classification threshold')
+    parser.add_argument('--plot-style', default='default', choices=['default', 'presentation', 'poster'],
+                      help='Plot style to use')
     
     args = parser.parse_args()
     main(**vars(args))

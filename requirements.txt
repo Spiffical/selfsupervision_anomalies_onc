@@ -12,6 +12,7 @@ timm>=0.9.0
 # Data processing
 tqdm>=4.65.0
 scikit-learn>=1.0.0
+opencv-python>=4.8.0
 
 # Utilities
 matplotlib>=3.7.0

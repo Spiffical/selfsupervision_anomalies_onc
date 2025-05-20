@@ -3,6 +3,7 @@ import numpy as np
 from collections import Counter
 import json
 import argparse
+import os
 
 def analyze_label_distributions(data_path, exclude_labels=None):
     with h5py.File(data_path, 'r') as hf:
@@ -232,9 +233,14 @@ def analyze_label_distributions(data_path, exclude_labels=None):
                 }
             }
         
-        # Save results to JSON
-        with open('label_analysis.json', 'w') as f:
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+        
+        # Save results to JSON in logs directory
+        output_path = os.path.join('logs', 'label_analysis.json')
+        with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
+        print(f"\nResults saved to: {output_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze label distributions in HDF5 dataset")

@@ -26,7 +26,7 @@ The repository is organized as follows:
 *   `eval/`: Scripts and potentially notebooks related to model evaluation.
 *   `tests/`: Unit tests for the project.
 *   `exp/`: (Gitignored) Default directory where experiment outputs (models, results, configs) are saved.
-*   `drac/`: (Only in `drac` branch) Contains DRAC-specific job submission scripts and configurations.
+*   `drac/`: Contains DRAC cluster-specific job submission scripts and configurations for running experiments on Digital Research Alliance of Canada clusters.
 
 ## Setup & Installation
 
@@ -199,7 +199,47 @@ The script automatically adjusts hyperparameters based on the task (e.g., learni
 
 ### Running on DRAC Cluster
 
-For users with access to the DRAC cluster, DRAC-specific scripts for job submission are available in the `drac` branch of this repository within the `drac/` directory. This includes job submission scripts (e.g., `drac/scripts/submit_jobs.py`) and a DRAC-specific requirements file (`drac/requirements_drac.txt`). Please refer to the `README_DRAC.md` file in the `drac` branch for detailed instructions.
+For users with access to DRAC (Digital Research Alliance of Canada) clusters, comprehensive job submission scripts and documentation are available in the `drac/` directory.
+
+**For detailed DRAC setup and usage instructions**, see: **[DRAC_README.md](DRAC_README.md)**
+
+#### Quick Start for DRAC
+
+1. **Setup environment:**
+   ```bash
+   module load python/3.10 cuda/11.8 cudnn/8.7
+   python -m venv .env_drac
+   source .env_drac/bin/activate
+   pip install -r requirements.txt
+   pip install -r drac/requirements_drac.txt
+   ```
+
+2. **Submit linked pre-training and fine-tuning jobs:**
+   ```bash
+   python drac/scripts/submit_jobs.py \
+       /lustre03/project/6003287/shared/ssamba_data/your_dataset.h5 \
+       --job-name "ssamba_experiment" \
+       --num-jobs 2 \
+       --wandb-project "ssamba_drac" \
+       --wandb-group "experiment_v1" \
+       --project-path $PWD \
+       --exp-dir /scratch/$USER/ssamba_experiments \
+       --training-type pretrain_finetune \
+       --task ft_avgtok
+   ```
+
+#### Available DRAC Scripts
+
+- **`submit_jobs.py`**: Main job submission script with multiple modes
+- **`submit_amba_spectrogram.sh`**: SLURM script for SSAMBA training
+- **`submit_supervised.sh`**: SLURM script for supervised training
+- **Training size experiments**: Scripts for running experiments across multiple training set sizes
+
+The DRAC scripts support:
+- **Linked job submission**: Automatic dependency management between pre-training and fine-tuning
+- **Training size experiments**: Run experiments across multiple data ratios
+- **Resource management**: Optimized SLURM configurations for different cluster types
+- **Dry-run testing**: Test job configurations before submission
 
 ### Jupyter Notebooks
 
@@ -216,4 +256,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 *   Dataset provided by [Ocean Networks Canada](https://www.oceannetworks.ca/).
 
 ---
-*(README template, further details can be added as needed)*
+

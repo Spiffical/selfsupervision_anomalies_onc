@@ -17,7 +17,7 @@ The repository is organized as follows:
     *   `run_supervised.py`: Script for running supervised training/evaluation.
     *   `run_amba_spectrogram.py`: Script for running self-supervised pre-training or fine-tuning experiments with the SSAMBA model on spectrograms.
 *   `scripts/`: Contains utility and experiment execution scripts.
-    *   Data preparation: `create_test_dataset.py`
+    *   Data preparation: `create_h5_dataset.py`
     *   Analysis: `analyze_labels.py`, `analyze_val_set.py`
     *   Local experiment runners: `run_supervised.sh`, `run_amba_spectrogram.sh`, etc.
 *   `notebooks/`: Jupyter notebooks for data exploration, results analysis, and experimentation.

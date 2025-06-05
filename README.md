@@ -1,5 +1,29 @@
 # Self-Supervised Learning for Anomaly Detection in Underwater Acoustics
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Repository Structure](#repository-structure)
+- [Setup & Installation](#setup--installation)
+  - [Dependencies](#dependencies)
+  - [Installation Steps](#installation-steps)
+- [Data](#data)
+  - [Downloading Spectrogram Data from ONC](#downloading-spectrogram-data-from-onc)
+- [Usage](#usage)
+  - [Running Experiments Locally](#running-experiments-locally)
+  - [Self-Supervised Pre-training and Fine-tuning Example](#self-supervised-pre-training-and-fine-tuning-example)
+    - [Available Tasks](#available-tasks)
+    - [1. Pre-training Phase](#1-pre-training-phase)
+    - [2. Fine-tuning Phase](#2-fine-tuning-phase)
+    - [Key Parameters](#key-parameters)
+    - [Task Selection Guidelines](#task-selection-guidelines)
+  - [Running on DRAC Cluster](#running-on-drac-cluster)
+    - [Quick Start for DRAC](#quick-start-for-drac)
+    - [Available DRAC Scripts](#available-drac-scripts)
+  - [Jupyter Notebooks](#jupyter-notebooks)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
+
 ## Overview
 
 This project focuses on leveraging self-supervised learning techniques for anomaly detection in underwater acoustic data. It utilizes the SSAMBA (Self-Supervised Audio Mamba) model as a core component to learn robust audio representations, which are then applied to identify anomalous sound events in recordings from the Ocean Networks Canada (ONC) dataset.

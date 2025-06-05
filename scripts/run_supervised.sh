@@ -1,17 +1,51 @@
 #!/bin/bash
-# Load necessary modules
-module load python/3.10
 
-# Activate your virtual environment
-source $HOME/ssamba/myenv/bin/activate
-
-# Load environment variables from .env file
-if [ -f ~/ssamba/.env ]; then
-    export $(grep -v '^#' ~/ssamba/.env | xargs)
+# Detect if we're on DRAC cluster
+if [[ -n "$SLURM_JOB_ID" ]] || [[ "$HOSTNAME" == *"cedar"* ]] || [[ "$HOSTNAME" == *"graham"* ]] || [[ "$HOSTNAME" == *"narval"* ]] || [[ "$HOSTNAME" == *"beluga"* ]]; then
+    echo "🔧 Detected DRAC cluster environment"
+    IS_DRAC=true
+    
+    # Load necessary modules on DRAC
+    module load python/3.10
+    
+    # Activate DRAC virtual environment
+    source $HOME/ssamba/myenv/bin/activate
+    
+    # DRAC-specific environment variables
+    export TORCH_HOME=../../pretrained_models
+    export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
+    export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
+    export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
+    
+    # Load environment variables from DRAC location
+    if [ -f ~/ssamba/.env ]; then
+        export $(grep -v '^#' ~/ssamba/.env | xargs)
+    fi
+    
+    # Default to DRAC path for Python script
+    DEFAULT_PYTHON_SCRIPT="$SLURM_TMPDIR/ssamba_project/src/run_supervised.py"
+else
+    echo "💻 Detected local environment"
+    IS_DRAC=false
+    
+    # Activate local virtual environment (if it exists)
+    if [ -f ".venv/bin/activate" ]; then
+        source .venv/bin/activate
+    elif [ -f "venv/bin/activate" ]; then
+        source venv/bin/activate
+    fi
+    
+    # Load environment variables from local .env file
+    if [ -f .env ]; then
+        export $(grep -v '^#' .env | xargs)
+    fi
+    
+    # Default to local path for Python script
+    DEFAULT_PYTHON_SCRIPT="src/run_supervised.py"
 fi
 
 # Initialize variables with defaults
-PYTHON_SCRIPT="$SLURM_TMPDIR/ssamba_project/src/run_supervised.py"
+PYTHON_SCRIPT="$DEFAULT_PYTHON_SCRIPT"
 DATA_TRAIN_PATH=""
 WANDB_PROJECT="amba_spectrogram_supervised"
 WANDB_GROUP="supervised_experiment"
@@ -178,12 +212,10 @@ if [ "$DRY_RUN" = "true" ]; then
     exit 0
 fi
 
-# Set up environment variables
-set -x
-export TORCH_HOME=../../pretrained_models
-export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
-export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
-export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
+# Set up additional environment variables if needed
+if [ "$IS_DRAC" = true ]; then
+    set -x  # Enable command echoing on DRAC for debugging
+fi
 
 # Execute the Python command
 eval "$PYTHON_CMD" 

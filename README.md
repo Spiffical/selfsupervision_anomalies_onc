@@ -100,13 +100,20 @@ Requirements:
 The main scripts for running experiments are `src/run_supervised.py` and `src/run_amba_spectrogram.py`. These scripts accept various command-line arguments to configure the dataset, model, training parameters, etc.
 
 Example shell scripts are provided in the `scripts/` directory to demonstrate how to run these Python scripts:
-*   `scripts/run_supervised.sh`
-*   `scripts/run_amba_spectrogram.sh`
+*   `scripts/run_supervised.sh` - Automatically detects DRAC vs local environment
+*   `scripts/run_amba_spectrogram.sh` - Automatically detects DRAC vs local environment
 
-Examine these shell scripts and modify them as needed (e.g., update paths, hyperparameters). You can execute them directly:
+Both scripts now automatically detect whether you're running on DRAC or locally and adjust the environment setup accordingly:
+
 ```bash
-bash scripts/run_supervised.sh
+# Supervised training
+bash scripts/run_supervised.sh --dataset data/your_dataset.h5
+
+# Self-supervised training
+bash scripts/run_amba_spectrogram.sh --dataset data/your_dataset.h5 --task pretrain_joint
 ```
+
+Examine these shell scripts and modify them as needed (e.g., update paths, hyperparameters).
 
 ### Self-Supervised Pre-training and Fine-tuning Example
 

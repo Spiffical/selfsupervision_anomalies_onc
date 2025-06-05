@@ -72,14 +72,26 @@ The repository is organized as follows:
 
 ## Data
 
-The primary dataset used for this project is from Ocean Networks Canada (ONC) and is expected to reside on the DRAC (Digital Research Alliance of Canada) cluster at:
-`/lustre03/project/6003287/shared/ssamba_data/`
 
-This directory should contain the HDF5 files with pre-computed spectrograms and labels.
 
-For local development and testing, a script is provided to create a smaller subset of the data:
-*   `scripts/create_test_dataset.py`
-This script will generate a `testing_dataset.h5` (or similar) file. By default, you should modify it to save this file into the `data/` directory at the root of the project. The `data/` directory is gitignored.
+### Downloading Spectrogram Data from ONC
+
+To download new spectrogram data directly from Ocean Networks Canada, use the provided download script:
+
+```bash
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 1000
+```
+
+**For detailed instructions**, including setup, configuration, and usage examples, see: **[SPECTROGRAM_DOWNLOAD_README.md](SPECTROGRAM_DOWNLOAD_README.md)**
+
+The download script supports multiple modes:
+- **Sampling schedule**: Downloads spectrograms based on intelligent sampling
+- **Specific times**: Downloads spectrograms for exact timestamps  
+- **Date range**: Downloads all available spectrograms in a date range
+
+Requirements:
+- ONC API token (configured in `.env` file)
+- `python-dotenv` and `onc` packages (see `requirements.txt`)
 
 ## Usage
 
@@ -90,12 +102,100 @@ The main scripts for running experiments are `src/run_supervised.py` and `src/ru
 Example shell scripts are provided in the `scripts/` directory to demonstrate how to run these Python scripts:
 *   `scripts/run_supervised.sh`
 *   `scripts/run_amba_spectrogram.sh`
-*   `scripts/run_amba_finetune.sh`
 
 Examine these shell scripts and modify them as needed (e.g., update paths, hyperparameters). You can execute them directly:
 ```bash
 bash scripts/run_supervised.sh
 ```
+
+### Self-Supervised Pre-training and Fine-tuning Example
+
+The `run_amba_spectrogram.sh` script is designed for self-supervised learning workflows. Here's how to use it for both pre-training and fine-tuning:
+
+#### Available Tasks
+
+**Pre-training Tasks:**
+- `pretrain_mpc`: Masked Patch Classification (discriminative objective)
+- `pretrain_mpg`: Masked Patch Generation/Reconstruction (generative objective)  
+- `pretrain_joint`: Combined MPC + MPG training (recommended)
+
+**Fine-tuning Tasks:**
+- `ft_cls`: Fine-tuning using [CLS] token for classification
+- `ft_avgtok`: Fine-tuning using average of all patch tokens (default for SSAMBA)
+- `ft_avgtok_1sec`: Fine-tuning with 1-second segment averaging
+
+#### 1. Pre-training Phase
+
+First, train the model using self-supervised learning on your dataset:
+
+```bash
+bash scripts/run_amba_spectrogram.sh \
+    --python-script src/run_amba_spectrogram.py \
+    --dataset data/your_dataset.h5 \
+    --task pretrain_joint \
+    --wandb-project "ssamba_pretraining" \
+    --wandb-group "experiment_v1" \
+    --train-ratio 0.8 \
+    --exp-dir ./exp
+```
+
+This will:
+- Use both masked patch classification and reconstruction for robust self-supervised learning
+- Save the pre-trained model to `./exp/pretrain/amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/`
+- Log training progress to Weights & Biases
+
+#### 2. Fine-tuning Phase
+
+After pre-training completes, fine-tune the model for your specific anomaly detection task. You can choose different fine-tuning strategies:
+
+**Option A: Average Token Fine-tuning (Recommended)**
+```bash
+bash scripts/run_amba_spectrogram.sh \
+    --python-script src/run_amba_spectrogram.py \
+    --dataset data/your_dataset.h5 \
+    --task ft_avgtok \
+    --pretrained-path ./exp/pretrain/amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/models/best_audio_model.pth \
+    --wandb-project "ssamba_finetuning" \
+    --wandb-group "experiment_v1" \
+    --train-ratio 0.8 \
+    --exp-dir ./exp
+```
+
+**Option B: CLS Token Fine-tuning**
+```bash
+bash scripts/run_amba_spectrogram.sh \
+    --python-script src/run_amba_spectrogram.py \
+    --dataset data/your_dataset.h5 \
+    --task ft_cls \
+    --pretrained-path ./exp/pretrain/amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/models/best_audio_model.pth \
+    --wandb-project "ssamba_finetuning" \
+    --wandb-group "experiment_v1" \
+    --train-ratio 0.8 \
+    --exp-dir ./exp
+```
+
+Both will:
+- Load the pre-trained weights and fine-tune for classification
+- Use data augmentation and balanced sampling for better performance
+- Save the fine-tuned model to `./exp/finetune/amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/`
+
+#### Key Parameters
+
+- `--task`: Choose from the available tasks above based on your training phase and strategy
+- `--pretrained-path`: Path to the pre-trained model checkpoint (only needed for fine-tuning)
+- `--dataset`: Path to your HDF5 dataset file
+- `--wandb-project` / `--wandb-group`: For experiment tracking and organization
+- `--train-ratio`: Fraction of data to use for training (rest split between validation and test)
+- `--exp-dir`: Directory where models and logs will be saved
+
+#### Task Selection Guidelines
+
+- **For pre-training**: Use `pretrain_joint` for the most robust self-supervised learning
+- **For fine-tuning**: Use `ft_avgtok` (SSAMBA default) or `ft_cls` depending on your preference
+  - `ft_avgtok`: Uses average of all patch representations (typically better for SSAMBA)
+  - `ft_cls`: Uses the [CLS] token representation (more traditional approach)
+
+The script automatically adjusts hyperparameters based on the task (e.g., learning rate, data augmentation, masking strategy).
 
 ### Running on DRAC Cluster
 

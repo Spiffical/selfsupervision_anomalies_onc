@@ -12,10 +12,12 @@ timm>=0.9.0
 # Data processing
 tqdm>=4.65.0
 scikit-learn>=1.0.0
+onc>=2.3.0
 
 # Utilities
 matplotlib>=3.7.0
 pandas>=2.0.0
+python-dotenv>=1.0.0
 
 einops==0.8.0
 interfaces==0.0.4

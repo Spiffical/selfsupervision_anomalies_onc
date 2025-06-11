@@ -41,6 +41,7 @@ The repository is organized as follows:
     *   `run_supervised.py`: Script for running supervised training/evaluation.
     *   `run_amba_spectrogram.py`: Script for running self-supervised pre-training or fine-tuning experiments with the SSAMBA model on spectrograms.
 *   `scripts/`: Contains utility and experiment execution scripts.
+    *   Data download: `download_spectrograms.py` (see [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md))
     *   Data preparation: `create_h5_dataset.py`
     *   Analysis: `analyze_labels.py`, `analyze_val_set.py`
     *   Local experiment runners: `run_supervised.sh`, `run_amba_spectrogram.sh`, etc.
@@ -96,26 +97,30 @@ The repository is organized as follows:
 
 ## Data
 
+### ONC Data Download and Preparation
 
+This repository includes comprehensive tools for downloading Ocean Networks Canada (ONC) hydrophone data and preparing it for machine learning workflows. The system supports:
 
-### Downloading Spectrogram Data from ONC
+- **🤖 Interactive Downloads**: Smart guidance through device selection and date ranges
+- **🚀 Deployment Validation**: Ensures hydrophones were active during requested periods
+- **⏰ Customizable Duration**: Control spectrogram time windows (5min to hours)
+- **📁 Universal Folder Support**: Works with enhanced, legacy, flat, and nested structures
+- **🗂️ HDF5 Dataset Creation**: Convert spectrograms into ML-ready datasets with flexible labeling
 
-To download new spectrogram data directly from Ocean Networks Canada, use the provided download script:
+**For complete setup, usage examples, and workflow documentation, see: [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md)**
+
+#### Quick Start
 
 ```bash
-python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 1000
+# Interactive mode - guides you through the entire process
+python scripts/download_spectrograms.py
+
+# Direct download with custom duration
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --check-deployments
+
+# Create HDF5 dataset from downloaded spectrograms
+python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
 ```
-
-**For detailed instructions**, including setup, configuration, and usage examples, see: **[SPECTROGRAM_DOWNLOAD_README.md](SPECTROGRAM_DOWNLOAD_README.md)**
-
-The download script supports multiple modes:
-- **Sampling schedule**: Downloads spectrograms based on intelligent sampling
-- **Specific times**: Downloads spectrograms for exact timestamps  
-- **Date range**: Downloads all available spectrograms in a date range
-
-Requirements:
-- ONC API token (configured in `.env` file)
-- `python-dotenv` and `onc` packages (see `requirements.txt`)
 
 ## Usage
 

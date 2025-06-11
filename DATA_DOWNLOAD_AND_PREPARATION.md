@@ -1,0 +1,217 @@
+# 🌊 ONC Data Download and Preparation
+
+Complete guide for downloading Ocean Networks Canada spectrograms and preparing ML-ready HDF5 datasets.
+
+## 📋 Table of Contents
+
+- [🚀 Quick Start](#-quick-start)
+- [⚙️ Setup](#️-setup)
+- [📥 Downloading Spectrograms](#-downloading-spectrograms)
+- [🗂️ Creating HDF5 Datasets](#️-creating-hdf5-datasets)
+- [🏷️ Labels and Classification](#️-labels-and-classification)
+- [🔧 Advanced Options](#-advanced-options)
+- [🛠️ Troubleshooting](#️-troubleshooting)
+
+## 🚀 Quick Start
+
+```bash
+# 1. Interactive download (recommended for beginners)
+python scripts/download_spectrograms.py
+
+# 2. Direct download with custom duration
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --check-deployments
+
+# 3. Create HDF5 dataset
+python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
+```
+
+## ✨ Key Features
+
+- **🤖 Smart Interactive Mode**: Automatically prompts for missing parameters
+- **🚀 Deployment Validation**: Ensures hydrophones were deployed during requested periods  
+- **📊 Device Discovery**: Browse available hydrophones with deployment information
+- **⏰ Date Validation**: Checks dates fall within active deployment periods
+- **💾 Efficient Caching**: Minimizes API calls through intelligent caching
+- **🔧 Multiple Modes**: Sampling, range, specific times, and deployment checking
+- **📁 Universal Folder Support**: Works with enhanced, flat, and nested folder structures
+- **🗂️ HDF5 Dataset Creation**: Convert downloaded spectrograms into ML-ready datasets
+
+## ⚙️ Setup
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure ONC API token:**
+   Edit `.env` file:
+   ```
+   ONC_TOKEN=your_actual_onc_token_here
+   DATA_DIR=./data
+   ```
+
+## 📥 Downloading Spectrograms
+
+### 🎯 Usage Modes
+
+| Mode | Description | Example |
+|------|-------------|---------|
+| **Interactive** | Guided setup (recommended) | `python scripts/download_spectrograms.py` |
+| **Sampling** | Smart sampling from date range | `--mode sampling --threshold 1000` |
+| **Range** | All spectrograms in date range | `--mode range --start-date 2021 1 1 --end-date 2021 1 7` |
+| **Specific** | Exact timestamps from JSON | `--mode specific --config times.json` |
+| **Check** | View deployment info | `--mode check-deployments` |
+
+### ⏰ Duration Options
+
+Control spectrogram time windows with `--duration` (seconds):
+
+| Duration | Use Case | Trade-off |
+|----------|----------|-----------|
+| `300` (5min) | Detailed analysis | High temporal resolution |
+| `600` (10min) | Balanced approach | Good detail/coverage balance |
+| `1800` (30min) | Standard studies | Standard research window |
+| `3600` (1h) | Long-term patterns | More frequency resolution |
+
+```bash
+# Custom duration example
+python scripts/download_spectrograms.py --mode sampling --duration 600
+```
+
+### 🚀 Deployment Validation
+
+Ensures hydrophones were active during requested periods. Add `--check-deployments` to verify:
+- ✅ Deployment coverage for your dates
+- 📍 Exact locations and coordinates  
+- 🔍 Data availability verification
+- 💡 Alternative suggestions if needed
+
+```bash
+python scripts/download_spectrograms.py --check-deployments
+```
+
+### 🎛️ Key Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--mode` | Download mode | Interactive prompt |
+| `--device` | Hydrophone device code | Interactive selection |
+| `--duration` | Spectrogram duration (seconds) | 300 (5min) |
+| `--check-deployments` | Validate deployment periods | Recommended |
+| `--start-date` | Start date (YYYY MM DD) | Prompted |
+| `--threshold` | Number of spectrograms | Prompted |
+
+### 📁 File Organization
+
+Downloads are organized by device, method, dates, and duration:
+
+```
+data/mat/DEVICE/METHOD_DATES_DURATION/
+├── processed/     # Downloaded spectrograms
+└── rejects/       # Quality-filtered files
+```
+
+**Example:** `data/mat/ICLISTENHF6020/sampling_2021-01-01_to_2021-01-31_5min/`
+
+### 📝 Specific Times Config
+
+For exact timestamps, create a JSON file:
+```json
+{
+  "ICLISTENHF6020": [
+    [2021, 1, 15, 12, 0, 0],
+    [2021, 1, 15, 18, 30, 0]
+  ]
+}
+```
+Format: `[Year, Month, Day, Hour, Minute, Second]`
+
+## 🗂️ Creating HDF5 Datasets
+
+Convert downloaded spectrograms into ML-ready HDF5 datasets with flexible labeling.
+
+```bash
+# Basic usage
+python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
+
+# Multiple devices
+python scripts/create_h5_dataset.py data/mat/DEVICE1/ data/mat/DEVICE2/ --output datasets/multi_device.h5
+```
+
+### 📂 Supported Structures
+- **Enhanced**: `data/mat/DEVICE/METHOD_DATES/processed/*.mat` (recommended)
+- **Flat**: `folder/*.mat` + `folder/labels.json`
+- **Nested**: Any structure with `.mat` files
+
+## 🏷️ Labels and Classification
+
+### 📍 Label File Placement
+Place `labels.json` files at any level (checked in order):
+1. **Method**: `data/mat/DEVICE/METHOD_DATES/labels.json` (highest priority)
+2. **Device**: `data/mat/DEVICE/labels.json`  
+3. **Folder**: `your_folder/labels.json`
+4. **Automatic**: Folder-based rules (if no JSON entry found)
+
+### 📝 Label Format
+```json
+{
+  "spectrogram_20210115_120000.mat": ["ship_noise", "anomaly"],
+  "spectrogram_20210118_140000.mat": ["normal"],
+  "spectrogram_20210120_100000.mat": ["whale_call", "bio_acoustic"]
+}
+```
+
+### 🤖 Automatic Labeling
+
+**When automatic labeling is used:**
+- Files **without** entries in any `labels.json` file
+- Files in folders without any `labels.json` file present
+
+**Automatic rules:**
+- `processed/` folders → "normal"
+- `rejects/` folders → "anomaly" 
+- All other locations → "normal"
+
+**Note:** If a file has an entry in any `labels.json` file (even an empty list `[]`), automatic labeling is **not** applied.
+
+**💡 Labeling App**: A dedicated annotation tool will be included soon!
+
+## 🔧 Advanced Options
+
+```bash
+# Custom batch size and dimensions
+python scripts/create_h5_dataset.py data/ --output datasets/custom.h5 --batch-size 50 --target-dim 256 256
+
+# Multiple structures together
+python scripts/create_h5_dataset.py data/enhanced/ data/flat/ --output datasets/mixed.h5
+```
+
+### 📊 HDF5 Output
+- **`spectrograms`**: Image arrays
+- **`labels`**: Multi-hot encoded vectors
+- **`filenames`**: Original .mat names
+- **`label_strings`**: Human-readable labels
+
+### 🔄 Complete Workflow
+```bash
+# 1. Download with custom duration
+python scripts/download_spectrograms.py --mode sampling --duration 600 --check-deployments
+
+# 2. Add custom labels (optional)
+echo '{"spec_001.mat": ["ship_noise"]}' > data/mat/DEVICE/METHOD/labels.json
+
+# 3. Create HDF5 dataset
+python scripts/create_h5_dataset.py data/mat/DEVICE/ --output datasets/my_data.h5
+```
+
+## 🛠️ Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Invalid ONC Token | Check `.env` file |
+| No Deployment Coverage | Use `--check-deployments` |
+| No .mat files found | Verify folder structure |
+| Labels not loading | Check JSON syntax |
+| Memory errors | Reduce `--batch-size` |
+
+**💡 Pro Tip**: Always use `--check-deployments` to ensure active deployment periods!

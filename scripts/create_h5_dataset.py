@@ -209,51 +209,160 @@ def process_batch(mat_files, label_data, target_dim, hf, num_workers=None):
         hf['label_strings'].resize((hf['label_strings'].shape[0] + label_strings_array.shape[0]), axis=0)
         hf['label_strings'][-label_strings_array.shape[0]:] = label_strings_array
 
-def create_or_update_h5(h5_filename, data_folders, batch_size=10, target_dim=None):
+def find_mat_files_and_labels(folder):
     """
-    Creates or updates HDF5 file using JSON label files in data folders.
+    Find .mat files and labels.json files in various folder structures.
+    
+    Supports:
+    1. Legacy structure: folder/matfiles/*.mat, folder/labels.json
+    2. Legacy with Normal: folder/Normal/*.mat, folder/matfiles/*.mat
+    3. New enhanced structure: folder/mat/DEVICE/METHOD_DATE_DURATION/processed/*.mat
+    4. Simple flat structure: folder/*.mat, folder/labels.json
+    
+    Returns:
+    --------
+    tuple: (mat_files_list, labels_dict)
     """
-    logging.info(f"Starting dataset creation: {h5_filename}")
-    os.makedirs(os.path.dirname(h5_filename), exist_ok=True)
-
-    # First, collect all labels from JSON files
-    all_labels = {}
-    for folder in data_folders:
-        json_file = os.path.join(folder, 'labels.json')
-        if os.path.exists(json_file):
-            with open(json_file, 'r') as f:
-                folder_labels = json.load(f)
-                all_labels.update(folder_labels)
-                logging.info(f"Loaded {len(folder_labels)} labels from {json_file}")
-
-    # Collect all mat files
-    all_mat_files = []
-    for folder in data_folders:
-        logging.info(f"Processing folder: {folder}")
+    mat_files = []
+    labels = {}
+    
+    logging.info(f"Analyzing folder structure: {folder}")
+    
+    # Strategy 1: Check for new enhanced structure (data/mat/DEVICE/METHOD_*/processed/*.mat)
+    mat_root = os.path.join(folder, 'mat')
+    if os.path.exists(mat_root):
+        logging.info("  Detected enhanced structure (data/mat/...)")
+        device_folders = [d for d in os.listdir(mat_root) if os.path.isdir(os.path.join(mat_root, d))]
         
-        # Get immediate subdirectories
-        subdirs = next(os.walk(folder))[1]
-        # Filter for mat-containing folder names
+        for device in device_folders:
+            device_path = os.path.join(mat_root, device)
+            method_folders = [d for d in os.listdir(device_path) if os.path.isdir(os.path.join(device_path, d))]
+            
+            for method_folder in method_folders:
+                method_path = os.path.join(device_path, method_folder)
+                
+                # Check for processed and rejects subfolders
+                for subfolder in ['processed', 'rejects']:
+                    subfolder_path = os.path.join(method_path, subfolder)
+                    if os.path.exists(subfolder_path):
+                        mat_files_in_subfolder = glob.glob(os.path.join(subfolder_path, '*.mat'))
+                        mat_files.extend(mat_files_in_subfolder)
+                        logging.info(f"    Found {len(mat_files_in_subfolder)} .mat files in {subfolder_path}")
+                
+                # Check for labels.json in method folder
+                labels_file = os.path.join(method_path, 'labels.json')
+                if os.path.exists(labels_file):
+                    with open(labels_file, 'r') as f:
+                        method_labels = json.load(f)
+                        labels.update(method_labels)
+                        logging.info(f"    Loaded {len(method_labels)} labels from {labels_file}")
+            
+            # Check for device-level labels.json
+            device_labels_file = os.path.join(device_path, 'labels.json')
+            if os.path.exists(device_labels_file):
+                with open(device_labels_file, 'r') as f:
+                    device_labels = json.load(f)
+                    labels.update(device_labels)
+                    logging.info(f"    Loaded {len(device_labels)} labels from {device_labels_file}")
+    
+    # Strategy 2: Check for legacy structure with subdirectories
+    if not mat_files:  # Only if we haven't found files yet
+        logging.info("  Checking for legacy structure...")
+        subdirs = [d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
+        
+        # Look for folders with 'mat' in name
         mat_folders = [d for d in subdirs if 'mat' in d.lower()]
-        
         for mat_folder in mat_folders:
             mat_folder_path = os.path.join(folder, mat_folder)
-            mat_files = glob.glob(os.path.join(mat_folder_path, '*.mat'))
-            all_mat_files.extend(mat_files)
-            logging.info(f"Found {len(mat_files)} .mat files in {mat_folder_path}")
+            folder_mat_files = glob.glob(os.path.join(mat_folder_path, '*.mat'))
+            mat_files.extend(folder_mat_files)
+            logging.info(f"    Found {len(folder_mat_files)} .mat files in {mat_folder_path}")
         
         # Check for Normal folder
         if 'Normal' in subdirs:
             normal_folder = os.path.join(folder, 'Normal')
             normal_mat_files = glob.glob(os.path.join(normal_folder, '*.mat'))
-            all_mat_files.extend(normal_mat_files)
-            normal_count = 0
-            for mat_file in normal_mat_files:
-                filename = os.path.basename(mat_file)
-                if filename not in all_labels:
-                    all_labels[filename] = []
-                    normal_count += 1
-            logging.info(f"Found {len(normal_mat_files)} files in Normal folder, {normal_count} new normal files")
+            mat_files.extend(normal_mat_files)
+            logging.info(f"    Found {len(normal_mat_files)} .mat files in Normal folder")
+        
+        # Check for folder-level labels.json
+        labels_file = os.path.join(folder, 'labels.json')
+        if os.path.exists(labels_file):
+            with open(labels_file, 'r') as f:
+                folder_labels = json.load(f)
+                labels.update(folder_labels)
+                logging.info(f"    Loaded {len(folder_labels)} labels from {labels_file}")
+    
+    # Strategy 3: Flat structure (folder/*.mat)
+    if not mat_files:  # Only if we haven't found files yet
+        logging.info("  Checking for flat structure...")
+        flat_mat_files = glob.glob(os.path.join(folder, '*.mat'))
+        if flat_mat_files:
+            mat_files.extend(flat_mat_files)
+            logging.info(f"    Found {len(flat_mat_files)} .mat files in flat structure")
+            
+            # Check for labels.json in same folder
+            labels_file = os.path.join(folder, 'labels.json')
+            if os.path.exists(labels_file):
+                with open(labels_file, 'r') as f:
+                    folder_labels = json.load(f)
+                    labels.update(folder_labels)
+                    logging.info(f"    Loaded {len(folder_labels)} labels from {labels_file}")
+    
+    # Strategy 4: Recursive search as fallback
+    if not mat_files:
+        logging.info("  Performing recursive search as fallback...")
+        for root, dirs, files in os.walk(folder):
+            mat_files_in_dir = [os.path.join(root, f) for f in files if f.endswith('.mat')]
+            if mat_files_in_dir:
+                mat_files.extend(mat_files_in_dir)
+                logging.info(f"    Found {len(mat_files_in_dir)} .mat files in {root}")
+            
+            # Look for labels.json files
+            if 'labels.json' in files:
+                labels_file = os.path.join(root, 'labels.json')
+                with open(labels_file, 'r') as f:
+                    dir_labels = json.load(f)
+                    labels.update(dir_labels)
+                    logging.info(f"    Loaded {len(dir_labels)} labels from {labels_file}")
+    
+    return mat_files, labels
+
+def create_or_update_h5(h5_filename, data_folders, batch_size=10, target_dim=None):
+    """
+    Creates or updates HDF5 file using JSON label files in data folders.
+    
+    Supports multiple folder structures:
+    1. Enhanced: data/mat/DEVICE/METHOD_DATE_DURATION/processed/*.mat
+    2. Legacy: folder/matfiles/*.mat + folder/Normal/*.mat + folder/labels.json
+    3. Flat: folder/*.mat + folder/labels.json
+    4. Recursive: any nested structure with .mat files and labels.json
+    """
+    logging.info(f"Starting dataset creation: {h5_filename}")
+    os.makedirs(os.path.dirname(h5_filename), exist_ok=True)
+
+    # Collect all mat files and labels from all folders
+    all_mat_files = []
+    all_labels = {}
+    
+    for folder in data_folders:
+        logging.info(f"\nProcessing data folder: {folder}")
+        mat_files, labels = find_mat_files_and_labels(folder)
+        
+        all_mat_files.extend(mat_files)
+        all_labels.update(labels)
+        
+        logging.info(f"  Total from this folder: {len(mat_files)} .mat files, {len(labels)} labels")
+    
+    # Auto-label files as normal if they don't have labels
+    normal_count = 0
+    for mat_file in all_mat_files:
+        filename = os.path.basename(mat_file)
+        if filename not in all_labels:
+            all_labels[filename] = []
+            normal_count += 1
+    
+    logging.info(f"\nAuto-labeled {normal_count} files as normal (no existing labels)")
 
     # Log summary statistics
     anomaly_counts = {}

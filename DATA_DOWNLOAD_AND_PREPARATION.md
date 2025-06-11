@@ -15,7 +15,7 @@ Complete guide for downloading Ocean Networks Canada spectrograms and preparing 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Interactive download (recommended for beginners)
+# 1. Interactive download (recommended for beginners) - uses sampling strategy
 python scripts/download_spectrograms.py
 
 # 2. Direct download with custom duration
@@ -27,7 +27,7 @@ python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/h
 
 ## ✨ Key Features
 
-- **🤖 Smart Interactive Mode**: Automatically prompts for missing parameters
+- **🤖 Smart Interactive Mode**: Guided setup that uses the intelligent sampling strategy
 - **🚀 Deployment Validation**: Ensures hydrophones were deployed during requested periods  
 - **📊 Device Discovery**: Browse available hydrophones with deployment information
 - **⏰ Date Validation**: Checks dates fall within active deployment periods
@@ -56,11 +56,33 @@ python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/h
 
 | Mode | Description | Example |
 |------|-------------|---------|
-| **Interactive** | Guided setup (recommended) | `python scripts/download_spectrograms.py` |
+| **Interactive** | Guided setup using **sampling strategy** (recommended) | `python scripts/download_spectrograms.py` |
 | **Sampling** | Smart sampling from date range | `--mode sampling --threshold 1000` |
 | **Range** | All spectrograms in date range | `--mode range --start-date 2021 1 1 --end-date 2021 1 7` |
 | **Specific** | Exact timestamps from JSON | `--mode specific --config times.json` |
 | **Check** | View deployment info | `--mode check-deployments` |
+
+**📌 Note**: **Interactive mode** is simply a guided way to set up the intelligent sampling strategy. It prompts you for device, dates, threshold, and duration, then uses the same smart sampling algorithm described below.
+
+### 🧠 Intelligent Sampling Strategy
+
+The **sampling mode** (including **interactive mode**) uses a smart algorithm to efficiently distribute downloads across your date range:
+
+**How it works:**
+1. **Data Availability Check**: Queries ONC API to find which days have data available
+2. **Optimal Day Spacing**: Calculates ideal `day_interval` to spread downloads evenly:
+   ```
+   day_interval = days_available / (target_files × 1.1 / spectrograms_per_day)
+   ```
+3. **Time Distribution**: Varies hourly start times to avoid clustering (0h, 1h, 2h, etc.)
+4. **Duplicate Prevention**: Automatically skips dates where files already exist
+5. **Adaptive Sampling**: If fewer days available, increases spectrograms per day
+
+**Benefits:**
+- **Even temporal coverage** across your entire date range
+- **Avoids clustering** in specific time periods
+- **Efficient API usage** by checking availability first
+- **Resume-friendly** by skipping existing downloads
 
 ### ⏰ Duration Options
 

@@ -60,12 +60,12 @@ class VerboseSpectrogramDownloader:
         self.downloader = SpectrogramDownloader(onc_token, parent_dir)
         self.verbose = verbose
         
-    def download_spectrograms_with_sampling_schedule(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', check_deployments=False, auto_select_deployment=False, duration_seconds=None):
+    def download_spectrograms_with_sampling_schedule(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', check_deployments=False, auto_select_deployment=False, duration_seconds=None, download_flac=False):
         """Download spectrograms using sampling schedule with optional deployment checking"""
         
         if check_deployments:
             print_status("Using deployment-aware download mode", "INFO")
-            return self._download_with_deployment_check(deviceCode, start_date, threshold_num, num_days, filetype, auto_select_deployment, duration_seconds)
+            return self._download_with_deployment_check(deviceCode, start_date, threshold_num, num_days, filetype, auto_select_deployment, duration_seconds, download_flac)
         
         print_status("Setting up directories...", "PROGRESS")
         
@@ -141,9 +141,9 @@ class VerboseSpectrogramDownloader:
             if not self.verbose:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day)
+                    self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day, download_flac=download_flac)
             else:
-                self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day)
+                self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day, download_flac=download_flac)
             
             # Process files
             print_status("Processing downloaded files...", "PROGRESS")
@@ -157,7 +157,7 @@ class VerboseSpectrogramDownloader:
             else:
                 print_status("No new files added (may be duplicates or anomalies)", "WARNING")
     
-    def _download_with_deployment_check(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', auto_select_deployment=False, duration_seconds=None):
+    def _download_with_deployment_check(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', auto_select_deployment=False, duration_seconds=None, download_flac=False):
         """Internal method for deployment-aware downloads"""
         print_status("Using deployment-aware download with validation", "INFO")
         
@@ -168,13 +168,13 @@ class VerboseSpectrogramDownloader:
                     self.downloader.download_spectrograms_with_deployment_check(
                         deviceCode, start_date, threshold_num, num_days=num_days, 
                         filetype=filetype, auto_select_deployment=auto_select_deployment,
-                        duration_seconds=duration_seconds
+                        duration_seconds=duration_seconds, download_flac=download_flac
                     )
             else:
                 self.downloader.download_spectrograms_with_deployment_check(
                     deviceCode, start_date, threshold_num, num_days=num_days, 
                     filetype=filetype, auto_select_deployment=auto_select_deployment,
-                    duration_seconds=duration_seconds
+                    duration_seconds=duration_seconds, download_flac=download_flac
                 )
         except Exception as e:
             print_status(f"Deployment-aware download failed: {e}", "ERROR")
@@ -215,7 +215,7 @@ class VerboseSpectrogramDownloader:
             print_status(f"Interactive download failed: {e}", "ERROR")
             raise
     
-    def download_specific_spectrograms(self, device_times_dict, filetype='png', duration_seconds=300):
+    def download_specific_spectrograms(self, device_times_dict, filetype='png', duration_seconds=300, download_flac=False):
         """Download specific spectrograms with progress tracking"""
         total_downloads = sum(len(times) for times in device_times_dict.values())
         current_download = 0
@@ -237,9 +237,9 @@ class VerboseSpectrogramDownloader:
                 if not self.verbose:
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
-                        self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds)
+                        self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds, download_flac=download_flac)
                 else:
-                    self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds)
+                    self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds, download_flac=download_flac)
                 
                 # Process the spectrograms
                 self.downloader.process_spectrograms(filetype)
@@ -313,6 +313,11 @@ def download_with_sampling_schedule(args, downloader):
     else:
         print_status("Deployment Checking: DISABLED", "WARNING")
     
+    if args.download_flac:
+        print_status("FLAC Audio Download: ENABLED", "SUCCESS")
+    else:
+        print_status("FLAC Audio Download: DISABLED", "INFO")
+    
     print_section("Starting Download Process")
     
     try:
@@ -324,7 +329,8 @@ def download_with_sampling_schedule(args, downloader):
             filetype=args.filetype,
             check_deployments=args.check_deployments,
             auto_select_deployment=args.auto_select_deployment,
-            duration_seconds=args.duration
+            duration_seconds=args.duration,
+            download_flac=args.download_flac
         )
     except Exception as e:
         if "restricted" in str(e).lower():
@@ -346,6 +352,11 @@ def download_specific_times(args, downloader):
     print_status(f"Devices Found: {', '.join(device_times_dict.keys())}")
     print_status(f"File Type: {args.filetype.upper()}")
     
+    if args.download_flac:
+        print_status("FLAC Audio Download: ENABLED", "SUCCESS")
+    else:
+        print_status("FLAC Audio Download: DISABLED", "INFO")
+    
     total_downloads = sum(len(times) for times in device_times_dict.values())
     print_status(f"Total Downloads Planned: {total_downloads}")
     
@@ -355,7 +366,8 @@ def download_specific_times(args, downloader):
         downloader.download_specific_spectrograms(
             device_times_dict=device_times_dict,
             filetype=args.filetype,
-            duration_seconds=args.duration
+            duration_seconds=args.duration,
+            download_flac=args.download_flac
         )
     except Exception as e:
         if "restricted" in str(e).lower():
@@ -390,6 +402,11 @@ def download_date_range(args, downloader):
     else:
         print_status("Deployment Checking: DISABLED", "WARNING")
     
+    if args.download_flac:
+        print_status("FLAC Audio Download: ENABLED", "SUCCESS")
+    else:
+        print_status("FLAC Audio Download: DISABLED", "INFO")
+    
     print_section("Starting Download Process")
     
     # Set up directories for date range mode
@@ -400,12 +417,12 @@ def download_date_range(args, downloader):
         if args.check_deployments:
             downloader._download_with_deployment_check(
                 args.device, args.start_date, threshold, num_days, 
-                args.filetype, args.auto_select_deployment
+                args.filetype, args.auto_select_deployment, args.duration, args.download_flac
             )
         else:
             # Use the internal sampling method but with date_range directory
             downloader.downloader.download_spectrograms_with_sampling_schedule(
-                args.device, args.start_date, threshold, num_days=num_days, filetype=args.filetype
+                args.device, args.start_date, threshold, num_days=num_days, filetype=args.filetype, download_flac=args.download_flac
             )
     except Exception as e:
         if "restricted" in str(e).lower():
@@ -490,6 +507,10 @@ Examples:
   # Custom duration examples
   python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 100 --duration 600  # 10 minutes
   python %(prog)s --mode specific --config my_times.json --duration 1800  # 30 minutes
+  
+  # Download with FLAC audio files
+  python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 50 --download-flac
+  python %(prog)s --mode range --device ICLISTENHF6020 --start-date 2020 10 2 --end-date 2020 10 5 --download-flac
         """
     )
     
@@ -506,6 +527,10 @@ Examples:
                         choices=['png', 'mat'], 
                         default='mat',
                         help='File type to download (default: mat)')
+    
+    parser.add_argument('--download-flac', 
+                        action='store_true',
+                        help='Also download corresponding FLAC audio files')
     
     parser.add_argument('--check-deployments', 
                         action='store_true',
@@ -645,6 +670,14 @@ def collect_missing_parameters(args, downloader):
         if args.duration is None:
             print_status("Duration selection cancelled", "ERROR")
             sys.exit(1)
+    
+    # Ask about FLAC downloads if not specified (skip for check-deployments mode)
+    if args.mode != 'check-deployments' and not hasattr(args, 'download_flac_prompted'):
+        # Only prompt if download_flac wasn't explicitly set via command line
+        if not args.download_flac:
+            args.download_flac = prompt_for_flac()
+        # Mark that we've prompted to avoid re-prompting
+        args.download_flac_prompted = True
     
     return args
 
@@ -896,6 +929,34 @@ def prompt_for_duration():
             
         except ValueError:
             print_status("Please enter a valid option", "WARNING")
+
+
+def prompt_for_flac():
+    """
+    Prompt user for FLAC download preference.
+    
+    :return: True if user wants to download FLAC files, False otherwise
+    """
+    print_status("FLAC audio files contain raw underwater recordings", "INFO")
+    print("\n🎵 FLAC Audio Files:")
+    print("  ✅ Pros: Raw audio data, custom analysis, quality control")
+    print("  ⚠️ Cons: 10-50x larger files, much longer downloads, high storage needs")
+    print("  💡 Tip: Start with small downloads (5-10 files) to test")
+    
+    while True:
+        try:
+            flac_input = input("\nDownload FLAC audio files alongside spectrograms? (y/n): ").strip().lower()
+            if flac_input in ['y', 'yes']:
+                print_status("FLAC downloads enabled - files will be saved in flac/ subdirectory", "SUCCESS")
+                return True
+            elif flac_input in ['n', 'no']:
+                print_status("FLAC downloads disabled - only spectrograms will be downloaded", "INFO")
+                return False
+            else:
+                print_status("Please enter 'y' for yes or 'n' for no", "WARNING")
+        except KeyboardInterrupt:
+            print_status("\nFLAC selection cancelled", "WARNING")
+            return False
 
 
 if __name__ == "__main__":

@@ -1,12 +1,13 @@
 # 🌊 ONC Data Download and Preparation
 
-Complete guide for downloading Ocean Networks Canada spectrograms and preparing ML-ready HDF5 datasets.
+Complete guide for downloading Ocean Networks Canada spectrograms, FLAC audio files, and preparing ML-ready HDF5 datasets.
 
 ## 📋 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
 - [⚙️ Setup](#️-setup)
 - [📥 Downloading Spectrograms](#-downloading-spectrograms)
+- [🎵 Downloading FLAC Audio Files](#-downloading-flac-audio-files)
 - [🗂️ Creating HDF5 Datasets](#️-creating-hdf5-datasets)
 - [🏷️ Labels and Classification](#️-labels-and-classification)
 - [🔧 Advanced Options](#-advanced-options)
@@ -16,18 +17,23 @@ Complete guide for downloading Ocean Networks Canada spectrograms and preparing 
 
 ```bash
 # 1. Interactive download (recommended for beginners) - uses sampling strategy
+#    Now includes option to download FLAC files!
 python scripts/download_spectrograms.py
 
 # 2. Direct download with custom duration
 python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --check-deployments
 
-# 3. Create HDF5 dataset
+# 3. Download spectrograms WITH corresponding FLAC audio files
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --download-flac
+
+# 4. Create HDF5 dataset
 python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
 ```
 
 ## ✨ Key Features
 
-- **🤖 Smart Interactive Mode**: Guided setup that uses the intelligent sampling strategy
+- **🤖 Smart Interactive Mode**: Guided setup that uses the intelligent sampling strategy and includes FLAC audio option
+- **🎵 FLAC Audio Download**: Download corresponding raw audio files alongside spectrograms
 - **🚀 Deployment Validation**: Ensures hydrophones were deployed during requested periods  
 - **📊 Device Discovery**: Browse available hydrophones with deployment information
 - **⏰ Date Validation**: Checks dates fall within active deployment periods
@@ -119,6 +125,7 @@ python scripts/download_spectrograms.py --check-deployments
 | `--mode` | Download mode | Interactive prompt |
 | `--device` | Hydrophone device code | Interactive selection |
 | `--duration` | Spectrogram duration (seconds) | 300 (5min) |
+| `--download-flac` | Also download FLAC audio files | False |
 | `--check-deployments` | Validate deployment periods | Recommended |
 | `--start-date` | Start date (YYYY MM DD) | Prompted |
 | `--threshold` | Number of spectrograms | Prompted |
@@ -130,7 +137,8 @@ Downloads are organized by device, method, dates, and duration:
 ```
 data/mat/DEVICE/METHOD_DATES_DURATION/
 ├── processed/     # Downloaded spectrograms
-└── rejects/       # Quality-filtered files
+├── rejects/       # Quality-filtered files
+└── flac/          # FLAC audio files (if --download-flac used)
 ```
 
 **Example:** `data/mat/ICLISTENHF6020/sampling_2021-01-01_to_2021-01-31_5min/`
@@ -147,6 +155,22 @@ For exact timestamps, create a JSON file:
 }
 ```
 Format: `[Year, Month, Day, Hour, Minute, Second]`
+
+## 🎵 Downloading FLAC Audio Files
+
+FLAC files contain raw hydrophone audio recordings. Add `--download-flac` to any command or use interactive mode (which now prompts for FLAC preference):
+
+```bash
+# Interactive mode (prompts for FLAC)
+python scripts/download_spectrograms.py
+
+# Any mode with FLAC
+python scripts/download_spectrograms.py --mode sampling --download-flac
+```
+
+**Use Cases**: Audio analysis, custom spectrograms, ML training on raw audio
+**File Organization**: FLAC files saved in `flac/` subdirectory alongside spectrograms  
+**Performance**: 10-50x larger than spectrograms; start with small downloads (--threshold 5-10)
 
 ## 🗂️ Creating HDF5 Datasets
 
@@ -206,6 +230,9 @@ python scripts/create_h5_dataset.py data/ --output datasets/custom.h5 --batch-si
 
 # Multiple structures together
 python scripts/create_h5_dataset.py data/enhanced/ data/flat/ --output datasets/mixed.h5
+
+# Download with custom settings
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --duration 1800 --threshold 200 --check-deployments
 ```
 
 ### 📊 HDF5 Output
@@ -235,5 +262,7 @@ python scripts/create_h5_dataset.py data/mat/DEVICE/ --output datasets/my_data.h
 | No .mat files found | Verify folder structure |
 | Labels not loading | Check JSON syntax |
 | Memory errors | Reduce `--batch-size` |
+| FLAC download fails | Check network connection and storage space |
+| Large FLAC files | Monitor disk space, start with small downloads |
 
 **💡 Pro Tip**: Always use `--check-deployments` to ensure active deployment periods!

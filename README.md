@@ -8,7 +8,7 @@
   - [Dependencies](#dependencies)
   - [Installation Steps](#installation-steps)
 - [Data](#data)
-  - [Downloading Spectrogram Data from ONC](#downloading-spectrogram-data-from-onc)
+  - [ONC Data Download and Preparation](#onc-data-download-and-preparation)
 - [Usage](#usage)
   - [Running Experiments Locally](#running-experiments-locally)
   - [Self-Supervised Pre-training and Fine-tuning Example](#self-supervised-pre-training-and-fine-tuning-example)

@@ -60,106 +60,36 @@ class VerboseSpectrogramDownloader:
         self.downloader = SpectrogramDownloader(onc_token, parent_dir)
         self.verbose = verbose
         
-    def download_spectrograms_with_sampling_schedule(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', check_deployments=False, auto_select_deployment=False, duration_seconds=None, download_flac=False):
+    def download_spectrograms_with_sampling_schedule(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', check_deployments=False, auto_select_deployment=False, spectrograms_per_batch=6, download_flac=False):
         """Download spectrograms using sampling schedule with optional deployment checking"""
         
         if check_deployments:
             print_status("Using deployment-aware download mode", "INFO")
-            return self._download_with_deployment_check(deviceCode, start_date, threshold_num, num_days, filetype, auto_select_deployment, duration_seconds, download_flac)
+            return self._download_with_deployment_check(deviceCode, start_date, threshold_num, num_days, filetype, auto_select_deployment, spectrograms_per_batch, download_flac)
         
         print_status("Setting up directories...", "PROGRESS")
+        print_status(f"Batch size: {spectrograms_per_batch} spectrograms per request", "INFO")
         
-        # Calculate end date for directory naming
-        year, month, day = start_date
-        if num_days:
-            from datetime import date, timedelta
-            start_date_obj = date(year, month, day)
-            end_date_obj = start_date_obj + timedelta(days=num_days)
-            end_date_tuple = (end_date_obj.year, end_date_obj.month, end_date_obj.day)
-        else:
-            end_date_tuple = None
-        
-        # Use provided duration or default
-        actual_duration = duration_seconds if duration_seconds else 1799
-        
-        self.downloader.setup_directories(filetype, deviceCode, 'sampling', start_date, end_date_tuple, actual_duration)
-        
-        print_status("Calculating sampling schedule...", "PROGRESS")
-        year, month, day = start_date
-        
-        # Use custom duration if provided, otherwise use calculated sampling duration
-        if duration_seconds:
-            sample_time_per_day = duration_seconds
-        
-        # Suppress warnings unless verbose mode
+        # Use the new method directly
         if not self.verbose:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                if duration_seconds:
-                    # Custom duration: create simple date list
-                    date_object_list = self.downloader.sampling_schedule(
-                        deviceCode, threshold_num, year, month, day, num_days=num_days
-                    )[0]  # Only get date list, ignore calculated sample_time
-                else:
-                    # Default behavior: calculate optimal sampling
-                    date_object_list, sample_time_per_day = self.downloader.sampling_schedule(
-                        deviceCode, threshold_num, year, month, day, num_days=num_days
-                    )
-        else:
-            if duration_seconds:
-                # Custom duration: create simple date list
-                date_object_list = self.downloader.sampling_schedule(
-                    deviceCode, threshold_num, year, month, day, num_days=num_days
-                )[0]  # Only get date list, ignore calculated sample_time
-            else:
-                # Default behavior: calculate optimal sampling
-                date_object_list, sample_time_per_day = self.downloader.sampling_schedule(
-                    deviceCode, threshold_num, year, month, day, num_days=num_days
+                self.downloader.download_spectrograms_with_sampling_schedule(
+                    deviceCode, start_date, threshold_num, num_days=num_days, 
+                    filetype=filetype, spectrograms_per_batch=spectrograms_per_batch, 
+                    download_flac=download_flac
                 )
-        
-        print_status(f"Found {len(date_object_list)} time slots to download", "SUCCESS")
-        
-        if len(date_object_list) == 0:
-            print_status("No new files to download (all already exist)", "INFO")
-            return
-        
-        print_section("Downloading Files")
-        
-        for i, start_date_object in enumerate(date_object_list, 1):
-            # Check current progress for this specific device
-            num_files_downloaded = len(glob.glob(os.path.join(self.downloader.processed_path, f'{deviceCode}_*.{filetype}')))
-            
-            print_status(f"Progress: {num_files_downloaded}/{threshold_num} files downloaded", "PROGRESS")
-            
-            if num_files_downloaded >= threshold_num:
-                print_status("Target number of files reached!", "SUCCESS")
-                break
-            
-            print_status(f"Downloading batch {i}/{len(date_object_list)}: {start_date_object.strftime('%Y-%m-%d %H:%M:%S')}", "PROGRESS")
-            
-            # Download files
-            if not self.verbose:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day, download_flac=download_flac)
-            else:
-                self.downloader.download_MAT_or_PNG(deviceCode, start_date_object, filetype=filetype, data_length_seconds=sample_time_per_day, download_flac=download_flac)
-            
-            # Process files
-            print_status("Processing downloaded files...", "PROGRESS")
-            self.downloader.process_spectrograms(filetype)
-            
-            # Show updated progress for this specific device
-            num_files_after = len(glob.glob(os.path.join(self.downloader.processed_path, f'{deviceCode}_*.{filetype}')))
-            new_files = num_files_after - num_files_downloaded
-            if new_files > 0:
-                print_status(f"Added {new_files} new files", "SUCCESS")
-            else:
-                print_status("No new files added (may be duplicates or anomalies)", "WARNING")
+        else:
+            self.downloader.download_spectrograms_with_sampling_schedule(
+                deviceCode, start_date, threshold_num, num_days=num_days, 
+                filetype=filetype, spectrograms_per_batch=spectrograms_per_batch, 
+                download_flac=download_flac
+            )
     
-    def _download_with_deployment_check(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', auto_select_deployment=False, duration_seconds=None, download_flac=False):
+    def _download_with_deployment_check(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', auto_select_deployment=False, spectrograms_per_batch=6, download_flac=False):
         """Internal method for deployment-aware downloads"""
         print_status("Using deployment-aware download with validation", "INFO")
+        print_status(f"Batch size: {spectrograms_per_batch} spectrograms per request", "INFO")
         
         try:
             if not self.verbose:
@@ -168,13 +98,13 @@ class VerboseSpectrogramDownloader:
                     self.downloader.download_spectrograms_with_deployment_check(
                         deviceCode, start_date, threshold_num, num_days=num_days, 
                         filetype=filetype, auto_select_deployment=auto_select_deployment,
-                        duration_seconds=duration_seconds, download_flac=download_flac
+                        spectrograms_per_batch=spectrograms_per_batch, download_flac=download_flac
                     )
             else:
                 self.downloader.download_spectrograms_with_deployment_check(
                     deviceCode, start_date, threshold_num, num_days=num_days, 
                     filetype=filetype, auto_select_deployment=auto_select_deployment,
-                    duration_seconds=duration_seconds, download_flac=download_flac
+                    spectrograms_per_batch=spectrograms_per_batch, download_flac=download_flac
                 )
         except Exception as e:
             print_status(f"Deployment-aware download failed: {e}", "ERROR")
@@ -215,7 +145,7 @@ class VerboseSpectrogramDownloader:
             print_status(f"Interactive download failed: {e}", "ERROR")
             raise
     
-    def download_specific_spectrograms(self, device_times_dict, filetype='png', duration_seconds=300, download_flac=False):
+    def download_specific_spectrograms(self, device_times_dict, filetype='png', spectrograms_per_batch=6, download_flac=False):
         """Download specific spectrograms with progress tracking"""
         total_downloads = sum(len(times) for times in device_times_dict.values())
         current_download = 0
@@ -237,9 +167,9 @@ class VerboseSpectrogramDownloader:
                 if not self.verbose:
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
-                        self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds, download_flac=download_flac)
+                        self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, spectrograms_per_batch=spectrograms_per_batch, download_flac=download_flac)
                 else:
-                    self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, data_length_seconds=duration_seconds, download_flac=download_flac)
+                    self.downloader.download_MAT_or_PNG(device_id, start_date_object, filetype=filetype, spectrograms_per_batch=spectrograms_per_batch, download_flac=download_flac)
                 
                 # Process the spectrograms
                 self.downloader.process_spectrograms(filetype)
@@ -329,7 +259,7 @@ def download_with_sampling_schedule(args, downloader):
             filetype=args.filetype,
             check_deployments=args.check_deployments,
             auto_select_deployment=args.auto_select_deployment,
-            duration_seconds=args.duration,
+            spectrograms_per_batch=args.spectrograms_per_batch,
             download_flac=args.download_flac
         )
     except Exception as e:
@@ -366,7 +296,7 @@ def download_specific_times(args, downloader):
         downloader.download_specific_spectrograms(
             device_times_dict=device_times_dict,
             filetype=args.filetype,
-            duration_seconds=args.duration,
+            spectrograms_per_batch=args.spectrograms_per_batch,
             download_flac=args.download_flac
         )
     except Exception as e:
@@ -411,13 +341,13 @@ def download_date_range(args, downloader):
     
     # Set up directories for date range mode
     print_status("Setting up directories...", "PROGRESS")
-    downloader.downloader.setup_directories(args.filetype, args.device, 'date_range', args.start_date, args.end_date, args.duration)
+    downloader.downloader.setup_directories(args.filetype, args.device, 'date_range', args.start_date, args.end_date, args.spectrograms_per_batch)
     
     try:
         if args.check_deployments:
             downloader._download_with_deployment_check(
                 args.device, args.start_date, threshold, num_days, 
-                args.filetype, args.auto_select_deployment, args.duration, args.download_flac
+                args.filetype, args.auto_select_deployment, args.spectrograms_per_batch, args.download_flac
             )
         else:
             # Use the internal sampling method but with date_range directory
@@ -505,8 +435,8 @@ Examples:
   python %(prog)s --mode check-deployments --device ICLISTENHF6020 --start-date 2020 10 2 --end-date 2020 10 5
 
   # Custom duration examples
-  python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 100 --duration 600  # 10 minutes
-  python %(prog)s --mode specific --config my_times.json --duration 1800  # 30 minutes
+  python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 100 --spectrograms-per-batch 600  # 10 minutes
+  python %(prog)s --mode specific --config my_times.json --spectrograms-per-batch 1800  # 30 minutes
   
   # Download with FLAC audio files
   python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 50 --download-flac
@@ -545,10 +475,11 @@ Examples:
                         help='Show detailed ONC API messages')
     
     # Duration parameter - NEW
-    parser.add_argument('--duration', 
+    parser.add_argument('--spectrograms-per-batch', 
                         type=int,
-                        help='Duration of each spectrogram in seconds (default: 300 = 5 minutes). ' +
-                             'Examples: 300=5min, 600=10min, 1800=30min, 3600=1hour')
+                        default=6,
+                        help='Number of 5-minute spectrograms to download per request (default: 6). ' +
+                             'Examples: 1=5min, 6=30min, 12=1hour')
     
     # Date/time options
     parser.add_argument('--start-date', 
@@ -597,7 +528,7 @@ Examples:
         # Collect any missing parameters interactively
         args = collect_missing_parameters(args, downloader)
         
-        print_status(f"Spectrogram Duration: {args.duration} seconds ({args.duration/60:.1f} minutes)", "INFO")
+        print_status(f"Spectrograms per batch: {args.spectrograms_per_batch} (Duration: {args.spectrograms_per_batch * 5} minutes)", "INFO")
         
         # Route to appropriate download function
         if args.mode == 'sampling':
@@ -664,11 +595,11 @@ def collect_missing_parameters(args, downloader):
             print_status("Threshold selection cancelled", "ERROR")
             sys.exit(1)
     
-    # Collect duration if not specified
-    if args.duration is None:
-        args.duration = prompt_for_duration()
-        if args.duration is None:
-            print_status("Duration selection cancelled", "ERROR")
+    # Collect spectrograms_per_batch if not specified
+    if args.spectrograms_per_batch is None:
+        args.spectrograms_per_batch = prompt_for_spectrograms_per_batch()
+        if args.spectrograms_per_batch is None:
+            print_status("Spectrograms_per_batch selection cancelled", "ERROR")
             sys.exit(1)
     
     # Ask about FLAC downloads if not specified (skip for check-deployments mode)
@@ -861,74 +792,82 @@ def prompt_for_threshold():
             print_status("Please enter a valid number", "WARNING")
 
 
-def prompt_for_duration():
+def prompt_for_spectrograms_per_batch():
     """
-    Prompt user for spectrogram duration.
-    
-    :return: Duration in seconds or None if cancelled
+    Prompt user for number of spectrograms per batch.
+    Returns the number of spectrograms, or None if cancelled.
     """
-    print_status("Spectrogram duration not specified", "INFO")
-    print("\nCommon duration options:")
-    print("  1. 300 seconds (5 minutes) - detailed analysis [DEFAULT]")
-    print("  2. 600 seconds (10 minutes) - balanced detail/coverage")
-    print("  3. 1800 seconds (30 minutes) - standard for many studies")
-    print("  4. 3600 seconds (1 hour) - long-term patterns")
-    print("  5. Custom duration")
+    print("\n" + "="*50)
+    print("SPECTROGRAMS PER BATCH SELECTION")
+    print("="*50)
+    print("Each spectrogram covers 5 minutes of data.")
+    print("Choose how many spectrograms to download per request:")
+    print()
+    print("1. 1 spectrogram  (5 minutes)")
+    print("2. 6 spectrograms (30 minutes) - Default")
+    print("3. 12 spectrograms (1 hour)")
+    print("4. 24 spectrograms (2 hours)")
+    print("5. Custom number")
+    print("6. Cancel")
+    print()
     
     while True:
         try:
-            choice = input("\nSelect duration option (1-5, or press Enter for default) or 'q' to quit: ").strip()
-            if choice.lower() == 'q':
+            choice = input("Enter your choice (1-6): ").strip()
+            
+            if choice == '6':
                 return None
-            
-            # Default to option 1 if user just presses Enter
-            if choice == '':
-                choice = '1'
-            
+                
             if choice == '1':
-                duration = 300
+                spectrograms_per_batch = 1
             elif choice == '2':
-                duration = 600
+                spectrograms_per_batch = 6
             elif choice == '3':
-                duration = 1800
+                spectrograms_per_batch = 12
             elif choice == '4':
-                duration = 3600
+                spectrograms_per_batch = 24
             elif choice == '5':
-                # Custom duration
+                # Custom number
                 while True:
                     try:
-                        custom_input = input("Enter custom duration in seconds (or 'q' to quit): ").strip()
-                        if custom_input.lower() == 'q':
+                        custom_input = input("Enter number of spectrograms (1-288 for up to 24 hours): ").strip()
+                        if not custom_input:
+                            print_status("Input cancelled", "WARNING")
                             return None
                         
-                        duration = int(custom_input)
-                        if duration <= 0:
-                            print_status("Duration must be positive", "WARNING")
+                        spectrograms_per_batch = int(custom_input)
+                        if spectrograms_per_batch <= 0:
+                            print_status("Number must be positive", "WARNING")
                             continue
-                        if duration > 86400:  # 24 hours
-                            print_status("Duration should not exceed 24 hours (86400 seconds)", "WARNING")
+                        if spectrograms_per_batch > 288:  # 24 hours worth
+                            print_status("Number should not exceed 288 (24 hours)", "WARNING")
                             confirm = input("Continue anyway? (y/n): ").strip().lower()
-                            if confirm != 'y':
+                            if confirm not in ['y', 'yes']:
                                 continue
                         break
                     except ValueError:
                         print_status("Please enter a valid number", "WARNING")
+                        continue
             else:
-                print_status("Please select 1-5 or press Enter for default", "WARNING")
+                print_status("Please enter a number between 1 and 6", "WARNING")
                 continue
             
-            minutes = duration / 60
+            minutes = spectrograms_per_batch * 5
             if minutes < 60:
-                duration_str = f"{minutes:.1f} minutes"
+                duration_str = f"{minutes} minutes"
             else:
                 hours = minutes / 60
                 duration_str = f"{hours:.1f} hours"
             
-            print_status(f"Selected duration: {duration} seconds ({duration_str})", "SUCCESS")
-            return duration
+            print_status(f"Selected: {spectrograms_per_batch} spectrograms ({duration_str})", "SUCCESS")
+            return spectrograms_per_batch
             
         except ValueError:
-            print_status("Please enter a valid option", "WARNING")
+            print_status("Please enter a valid number", "WARNING")
+            continue
+        except KeyboardInterrupt:
+            print_status("\nOperation cancelled by user", "WARNING")
+            return None
 
 
 def prompt_for_flac():

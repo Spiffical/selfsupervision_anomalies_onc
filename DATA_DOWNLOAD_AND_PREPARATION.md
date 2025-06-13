@@ -8,8 +8,8 @@ Complete guide for downloading Ocean Networks Canada spectrograms, FLAC audio fi
 - [⚙️ Setup](#️-setup)
 - [📥 Downloading Spectrograms](#-downloading-spectrograms)
 - [🎵 Downloading FLAC Audio Files](#-downloading-flac-audio-files)
+- [🏷️ Interactive Spectrogram Labeling Tool](#️-interactive-spectrogram-labeling-tool)
 - [🗂️ Creating HDF5 Datasets](#️-creating-hdf5-datasets)
-- [🏷️ Labels and Classification](#️-labels-and-classification)
 - [🔧 Advanced Options](#-advanced-options)
 - [🛠️ Troubleshooting](#️-troubleshooting)
 
@@ -20,13 +20,16 @@ Complete guide for downloading Ocean Networks Canada spectrograms, FLAC audio fi
 #    Now includes option to download FLAC files!
 python scripts/download_spectrograms.py
 
-# 2. Direct download with custom duration
-python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --check-deployments
+# 2. Direct download with custom batch size
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --spectrograms-per-batch 12 --check-deployments
 
 # 3. Download spectrograms WITH corresponding FLAC audio files
-python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --duration 600 --download-flac
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --spectrograms-per-batch 6 --download-flac
 
-# 4. Create HDF5 dataset
+# 4. Label your spectrograms using the interactive tool (recommended)
+cd tools/labeling && python run.py
+
+# 5. Create HDF5 dataset
 python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
 ```
 
@@ -68,7 +71,7 @@ python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/h
 | **Specific** | Exact timestamps from JSON | `--mode specific --config times.json` |
 | **Check** | View deployment info | `--mode check-deployments` |
 
-**📌 Note**: **Interactive mode** is simply a guided way to set up the intelligent sampling strategy. It prompts you for device, dates, threshold, and duration, then uses the same smart sampling algorithm described below.
+**📌 Note**: **Interactive mode** is simply a guided way to set up the intelligent sampling strategy. It prompts you for device, dates, threshold, and spectrograms per batch, then uses the same smart sampling algorithm described below.
 
 ### 🧠 Intelligent Sampling Strategy
 
@@ -76,34 +79,35 @@ The **sampling mode** (including **interactive mode**) uses a smart algorithm to
 
 **How it works:**
 1. **Data Availability Check**: Queries ONC API to find which days have data available
-2. **Optimal Day Spacing**: Calculates ideal `day_interval` to spread downloads evenly:
+2. **Request Calculation**: Determines number of requests needed based on `spectrograms_per_batch`:
    ```
-   day_interval = days_available / (target_files × 1.1 / spectrograms_per_day)
+   total_requests = ceil(threshold_num / spectrograms_per_batch)
    ```
-3. **Time Distribution**: Varies hourly start times to avoid clustering (0h, 1h, 2h, etc.)
-4. **Duplicate Prevention**: Automatically skips dates where files already exist
-5. **Adaptive Sampling**: If fewer days available, increases spectrograms per day
+3. **Optimal Day Spacing**: Distributes requests evenly across available days
+4. **Random Time Distribution**: Uses random hours (0-23) and minutes (0-59) for maximum temporal diversity
+5. **Duplicate Prevention**: Automatically skips dates where files already exist
+6. **Adaptive Sampling**: Handles both sparse sampling across many days and multiple requests per day
 
 **Benefits:**
 - **Even temporal coverage** across your entire date range
-- **Avoids clustering** in specific time periods
+- **Full 24-hour sampling** with random start times for maximum diversity
 - **Efficient API usage** by checking availability first
 - **Resume-friendly** by skipping existing downloads
 
-### ⏰ Duration Options
+### 📊 Spectrograms Per Batch
 
-Control spectrogram time windows with `--duration` (seconds):
+Control how many 5-minute spectrograms are downloaded per request with `--spectrograms-per-batch`:
 
-| Duration | Use Case | Trade-off |
-|----------|----------|-----------|
-| `300` (5min) | Detailed analysis | High temporal resolution |
-| `600` (10min) | Balanced approach | Good detail/coverage balance |
-| `1800` (30min) | Standard studies | Standard research window |
-| `3600` (1h) | Long-term patterns | More frequency resolution |
+| Batch Size | Duration |
+|------------|----------|
+| `1` | 5 minutes |
+| `6` | 30 minutes (default) |
+| `12` | 1 hour |
+| `36` | 3 hours |
 
 ```bash
-# Custom duration example
-python scripts/download_spectrograms.py --mode sampling --duration 600
+# Custom batch size example
+python scripts/download_spectrograms.py --mode sampling --spectrograms-per-batch 12
 ```
 
 ### 🚀 Deployment Validation
@@ -124,24 +128,28 @@ python scripts/download_spectrograms.py --check-deployments
 |-----------|-------------|---------|
 | `--mode` | Download mode | Interactive prompt |
 | `--device` | Hydrophone device code | Interactive selection |
-| `--duration` | Spectrogram duration (seconds) | 300 (5min) |
+| `--spectrograms-per-batch` | Number of 5-min spectrograms per request | 6 |
 | `--download-flac` | Also download FLAC audio files | False |
 | `--check-deployments` | Validate deployment periods | Recommended |
 | `--start-date` | Start date (YYYY MM DD) | Prompted |
+| `--end-date` | End date (YYYY MM DD) | Prompted |
 | `--threshold` | Number of spectrograms | Prompted |
 
 ### 📁 File Organization
 
-Downloads are organized by device, method, dates, and duration:
+Downloads are organized by device, method, and date range:
 
 ```
-data/mat/DEVICE/METHOD_DATES_DURATION/
-├── processed/     # Downloaded spectrograms
-├── rejects/       # Quality-filtered files
-└── flac/          # FLAC audio files (if --download-flac used)
+data/
+└── DEVICE/
+    └── sampling_YYYY-MM-DD_to_YYYY-MM-DD/
+        ├── mat/
+        │   ├── processed/     # Downloaded spectrograms
+        │   └── rejects/       # Quality-filtered files
+        └── flac/              # FLAC audio files (if --download-flac used)
 ```
 
-**Example:** `data/mat/ICLISTENHF6020/sampling_2021-01-01_to_2021-01-31_5min/`
+**Example:** `data/ICLISTENHF6020/sampling_2021-01-01_to_2021-01-31/`
 
 ### 📝 Specific Times Config
 
@@ -172,33 +180,57 @@ python scripts/download_spectrograms.py --mode sampling --download-flac
 **File Organization**: FLAC files saved in `flac/` subdirectory alongside spectrograms  
 **Performance**: 10-50x larger than spectrograms; start with small downloads (--threshold 5-10)
 
+
+
+## 🏷️ Interactive Spectrogram Labeling Tool
+
+For efficient manual annotation of spectrograms, use the interactive Dash-based labeling application:
+
+### ✨ Features
+- **Visual spectrogram display** with integrated audio playbook
+- **Customizable labeling categories** for anomaly detection  
+- **Pagination and navigation** for large datasets
+- **Automatic audio-spectrogram matching** based on timestamps
+- **Label persistence** with JSON export
+- **Dual view modes** (grid and detailed modal)
+- **Intelligent caching** for optimal performance
+
+### 🚀 Quick Start
+```bash
+# Configure paths in config.yaml, then run:
+cd tools/labeling
+python run.py
+```
+
+**For complete setup and usage instructions, see: [tools/labeling/README.md](tools/labeling/README.md)**
+
 ## 🗂️ Creating HDF5 Datasets
 
 Convert downloaded spectrograms into ML-ready HDF5 datasets with flexible labeling.
 
 ```bash
 # Basic usage
-python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
+python scripts/create_h5_dataset.py data/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
 
 # Multiple devices
-python scripts/create_h5_dataset.py data/mat/DEVICE1/ data/mat/DEVICE2/ --output datasets/multi_device.h5
+python scripts/create_h5_dataset.py data/DEVICE1/ data/DEVICE2/ --output datasets/multi_device.h5
 ```
 
 ### 📂 Supported Structures
-- **Enhanced**: `data/mat/DEVICE/METHOD_DATES/processed/*.mat` (recommended)
+- **Enhanced**: `data/DEVICE/METHOD_DATES/mat/processed/*.mat` (recommended)
 - **Flat**: `folder/*.mat` + `folder/labels.json`
 - **Nested**: Any structure with `.mat` files
 
-## 🏷️ Labels and Classification
+### 🏷️ Labels and Classification
 
-### 📍 Label File Placement
+#### 📍 Label File Placement
 Place `labels.json` files at any level (checked in order):
-1. **Method**: `data/mat/DEVICE/METHOD_DATES/labels.json` (highest priority)
-2. **Device**: `data/mat/DEVICE/labels.json`  
+1. **Method**: `data/DEVICE/METHOD_DATES/labels.json` (highest priority)
+2. **Device**: `data/DEVICE/labels.json`  
 3. **Folder**: `your_folder/labels.json`
 4. **Automatic**: Folder-based rules (if no JSON entry found)
 
-### 📝 Label Format
+#### 📝 Label Format
 ```json
 {
   "spectrogram_20210115_120000.mat": ["ship_noise", "anomaly"],
@@ -207,7 +239,7 @@ Place `labels.json` files at any level (checked in order):
 }
 ```
 
-### 🤖 Automatic Labeling
+#### 🤖 Automatic Labeling
 
 **When automatic labeling is used:**
 - Files **without** entries in any `labels.json` file
@@ -220,7 +252,7 @@ Place `labels.json` files at any level (checked in order):
 
 **Note:** If a file has an entry in any `labels.json` file (even an empty list `[]`), automatic labeling is **not** applied.
 
-**💡 Labeling App**: A dedicated annotation tool will be included soon!
+**💡 Labeling App**: Use the interactive labeling tool in `tools/labeling/` for manual annotation!
 
 ## 🔧 Advanced Options
 
@@ -232,7 +264,7 @@ python scripts/create_h5_dataset.py data/ --output datasets/custom.h5 --batch-si
 python scripts/create_h5_dataset.py data/enhanced/ data/flat/ --output datasets/mixed.h5
 
 # Download with custom settings
-python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --duration 1800 --threshold 200 --check-deployments
+python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --spectrograms-per-batch 12 --threshold 200 --check-deployments
 ```
 
 ### 📊 HDF5 Output
@@ -243,14 +275,16 @@ python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 
 
 ### 🔄 Complete Workflow
 ```bash
-# 1. Download with custom duration
-python scripts/download_spectrograms.py --mode sampling --duration 600 --check-deployments
+# 1. Download with custom batch size
+python scripts/download_spectrograms.py --mode sampling --spectrograms-per-batch 12 --check-deployments
 
-# 2. Add custom labels (optional)
-echo '{"spec_001.mat": ["ship_noise"]}' > data/mat/DEVICE/METHOD/labels.json
+# 2. Label your data using the interactive tool (recommended)
+cd tools/labeling && python run.py
+# OR manually create labels file:
+# echo '{"spec_001.mat": ["ship_noise"]}' > data/DEVICE/METHOD/labels.json
 
 # 3. Create HDF5 dataset
-python scripts/create_h5_dataset.py data/mat/DEVICE/ --output datasets/my_data.h5
+python scripts/create_h5_dataset.py data/DEVICE/ --output datasets/my_data.h5
 ```
 
 ## 🛠️ Troubleshooting

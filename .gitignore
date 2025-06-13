@@ -11,7 +11,7 @@ wandb/
 # onc_dataset.log # Will be in logs/
 
 # New entries
-data/
+/data/
 logs/
 
 # Existing specific experiment output (keeping for now, but consider more general patterns)

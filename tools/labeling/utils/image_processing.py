@@ -58,32 +58,74 @@ def load_spectrogram_cached(filename):
     return None
 
 @cached(image_cache)
-def generate_image_cached(filename, colormap='default'):
-    logger.info(f"Generating image for {filename} with {colormap} colormap")
+def generate_image_cached(filename, colormap='default', y_axis_scale='linear'):
+    logger.info(f"Generating image for {filename} with {colormap} colormap and {y_axis_scale} y-axis")
     spectrogram = load_spectrogram_cached(filename)
     if spectrogram is None:
         return None
-    fig, ax = plt.subplots(figsize=(2, 2))
+    
+    fig, ax = plt.subplots(figsize=(2, 2), facecolor='none')
     if colormap == 'hydrophone':
         cmap_array = colmap_hyd_py(36, 3)
         cmap = mcolors.ListedColormap(cmap_array)
     else:
         cmap = 'viridis'
     
-    ax.imshow(spectrogram['psd'], 
-              aspect='auto', 
-              origin='lower', 
-              cmap=cmap,
-              vmin=40,    # Match zmin from modal
-              vmax=140)   # Match zmax from modal
+    psd = spectrogram['psd']
+    freq = spectrogram['freq']/1000  # Convert to kHz
+    time = spectrogram['time']
+    
+    # Convert Julian days to minutes for x-axis
+    time_minutes = (time - time[0]) * 24 * 60
+    
+    if y_axis_scale == 'log':
+        # For logarithmic scaling, we need to be more careful with frequency handling
+        # Filter out any zero or negative frequencies first
+        valid_freq_mask = freq > 0
+        if not np.any(valid_freq_mask):
+            # Fallback to linear if no valid frequencies for log scale
+            im = ax.imshow(psd, 
+                          extent=[time_minutes[0], time_minutes[-1], freq[0], freq[-1]],
+                          aspect='auto', 
+                          origin='lower', 
+                          cmap=cmap,
+                          vmin=40, vmax=140)
+        else:
+            # Use only valid frequency range
+            freq_for_plot = freq[valid_freq_mask]
+            psd_for_plot = psd[valid_freq_mask, :]
+            
+            # Ensure minimum frequency is reasonable for log scale (at least 0.1 kHz)
+            min_freq = max(freq_for_plot[0], 0.1)
+            freq_for_plot = np.maximum(freq_for_plot, min_freq)
+            
+            im = ax.pcolormesh(time_minutes, freq_for_plot, psd_for_plot, 
+                              cmap=cmap, vmin=40, vmax=140, shading='auto')
+            ax.set_yscale('log')
+            ax.set_ylim(min_freq, freq_for_plot[-1])
+            ax.set_xlim(time_minutes[0], time_minutes[-1])
+    else:
+        # Linear scaling - use imshow for consistency with existing behavior
+        im = ax.imshow(psd, 
+                      extent=[time_minutes[0], time_minutes[-1], freq[0], freq[-1]],
+                      aspect='auto', 
+                      origin='lower', 
+                      cmap=cmap,
+                      vmin=40,    # Match zmin from modal
+                      vmax=140)   # Match zmax from modal
+    
     ax.axis('off')
+    # Remove all whitespace/padding around the image
+    ax.set_position([0, 0, 1, 1])
+    
     buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, 
+                facecolor='none', edgecolor='none', dpi=72)
     plt.close(fig)
     data = base64.b64encode(buf.getbuffer()).decode("utf8")
     return f"data:image/png;base64,{data}"
 
-def create_spectrogram_figure(spectrogram_data, colormap_value):
+def create_spectrogram_figure(spectrogram_data, colormap_value, y_axis_scale='linear'):
     if spectrogram_data is None:
         return go.Figure()
         
@@ -103,11 +145,22 @@ def create_spectrogram_figure(spectrogram_data, colormap_value):
     else:
         colorscale = 'Viridis'
 
+    # Handle y-axis scaling
+    if y_axis_scale == 'log':
+        # For logarithmic scaling, ensure we don't have zero or negative frequencies
+        freq_for_plot = np.maximum(freq, 0.001)  # Set minimum frequency to avoid log(0)
+        y_axis_type = 'log'
+        y_axis_title = 'Frequency (kHz) - Log Scale'
+    else:
+        freq_for_plot = freq
+        y_axis_type = 'linear'
+        y_axis_title = 'Frequency (kHz)'
+
     fig = go.Figure()
     fig.add_trace(go.Heatmap(
         z=psd,
         x=time_minutes,
-        y=freq,
+        y=freq_for_plot,
         colorscale=colorscale,
         zmin=40,
         zmax=140,
@@ -117,17 +170,64 @@ def create_spectrogram_figure(spectrogram_data, colormap_value):
         )
     ))
     
+    # Configure y-axis based on scale type
+    if y_axis_scale == 'log':
+        # For log scale, determine appropriate tick values based on actual data range
+        freq_min = np.min(freq_for_plot)
+        freq_max = np.max(freq_for_plot)
+        
+        # Define potential tick values
+        all_tick_values = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
+        all_tick_labels = ['0.1', '0.2', '0.5', '1', '2', '5', '10', '20', '50', '100']
+        
+        # Filter tick values to only include those within the data range
+        valid_ticks = []
+        valid_labels = []
+        for tick_val, tick_label in zip(all_tick_values, all_tick_labels):
+            if freq_min <= tick_val <= freq_max:
+                valid_ticks.append(tick_val)
+                valid_labels.append(tick_label)
+        
+        # Ensure we have at least a few ticks by extending the range slightly if needed
+        if len(valid_ticks) < 3:
+            # Add ticks slightly outside the range
+            for tick_val, tick_label in zip(all_tick_values, all_tick_labels):
+                if tick_val < freq_min and tick_val >= freq_min * 0.5:
+                    valid_ticks.insert(0, tick_val)
+                    valid_labels.insert(0, tick_label)
+                elif tick_val > freq_max and tick_val <= freq_max * 2:
+                    valid_ticks.append(tick_val)
+                    valid_labels.append(tick_label)
+        
+        # Set the range to just slightly beyond the actual data range
+        log_min = np.log10(max(freq_min * 0.8, 0.1))
+        log_max = np.log10(min(freq_max * 1.2, 100))
+        
+        yaxis_config = dict(
+            title=y_axis_title,
+            showgrid=True,
+            type=y_axis_type,
+            tickmode='array',
+            tickvals=valid_ticks,
+            ticktext=valid_labels,
+            range=[log_min, log_max]
+        )
+    else:
+        # For linear scale, use automatic formatting
+        yaxis_config = dict(
+            title=y_axis_title,
+            showgrid=True,
+            tickformat='.0f',
+            type=y_axis_type
+        )
+
     fig.update_layout(
         xaxis=dict(
             title='Time (minutes)',
             showgrid=True,
             tickformat='.2f'
         ),
-        yaxis=dict(
-            title='Frequency (kHz)',
-            showgrid=True,
-            tickformat='.0f'
-        ),
+        yaxis=yaxis_config,
         margin=dict(l=50, r=20, t=20, b=50),
         autosize=True,
     )

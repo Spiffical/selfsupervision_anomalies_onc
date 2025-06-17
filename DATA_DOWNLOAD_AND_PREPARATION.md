@@ -53,7 +53,7 @@ python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/h
    ```
 
 2. **Configure ONC API token:**
-   Edit `.env` file:
+   Create/edit `.env` file:
    ```
    ONC_TOKEN=your_actual_onc_token_here
    DATA_DIR=./data

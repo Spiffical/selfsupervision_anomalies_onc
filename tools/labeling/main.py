@@ -7,21 +7,44 @@ import os
 from config import AUDIO_FOLDER, ENABLE_AUDIO
 from utils.audio_matching import create_audio_spectrogram_mapping, get_representative_audio_file
 
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[
+        dbc.themes.BOOTSTRAP,
+        'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap',
+        'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css'
+    ]
+)
 
 # Global variable to store audio mapping
 audio_mapping = {}
 
+def get_repo_root():
+    """Find the repository root by looking for setup.py or .git"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Walk up the directory tree
+    while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
+        # Check for common repo indicators
+        if any(os.path.exists(os.path.join(current_dir, indicator)) 
+               for indicator in ['setup.py', '.git', 'README.md']):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    
+    # Fallback to current working directory if repo root not found
+    return os.getcwd()
+
 def resolve_path(path):
     """
-    Resolve a path that might be relative to the current working directory.
+    Resolve a path that might be relative to the repository root.
     If the path is already absolute, return it as-is.
     """
     if not path or os.path.isabs(path):
         return path
     
-    # Resolve relative to current working directory (where user runs the command)
-    return os.path.abspath(path)
+    # Resolve relative to repository root
+    repo_root = get_repo_root()
+    return os.path.join(repo_root, path)
 
 def create_app(args):
     global audio_mapping
@@ -36,7 +59,7 @@ def create_app(args):
         audio_folder = args['audio_folder'] if isinstance(args, dict) else getattr(args, 'audio_folder', AUDIO_FOLDER)
         
         if audio_folder:
-            # Resolve paths relative to current working directory
+            # Resolve paths relative to repository root
             resolved_folder = resolve_path(folder)
             resolved_audio_folder = resolve_path(audio_folder)
             
@@ -52,7 +75,7 @@ def create_app(args):
         if not ENABLE_AUDIO or not AUDIO_FOLDER:
             abort(404)
         
-        # Resolve the audio folder path relative to current working directory
+        # Resolve the audio folder path relative to repository root
         resolved_audio_folder = resolve_path(AUDIO_FOLDER)
         
         # Find the full path to the audio file

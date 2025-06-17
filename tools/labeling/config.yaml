@@ -2,14 +2,15 @@
 
 # Data paths
 data:
-  folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/mat/processed"  # Path to folder containing spectrogram files
-  audio_folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/flac"   # Path to folder containing audio files (.flac)
-  output_file: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/labels.json"        # Path to output file for saving labeled filenames
+  folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/mat/processed"  # Path to folder containing spectrogram files
+  audio_folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/flac"   # Path to folder containing audio files (.flac)
+  output_file: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/labels.json"        # Path to output file for saving labeled filenames
 
 # Display settings
 display:
   target_dim: [512, 512]           # Target dimensions [height, width] for reshaping the data
   specs_per_page: 25               # Number of spectrograms to display per page
+  y_axis_scale: "linear"           # Y-axis scaling: "linear" or "log" (logarithmic like mel spectrograms)
 
 # Audio settings
 audio:

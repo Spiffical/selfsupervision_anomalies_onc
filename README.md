@@ -60,8 +60,8 @@ The repository is organized as follows:
 ### Dependencies
 
 *   Python 3.8+
-*   PyTorch (see `requirements.txt` for version, compatible with CUDA if available)
-*   Other Python packages are listed in `requirements.txt`.
+*   PyTorch (see `requirements-base.txt` for version, compatible with CUDA if available)
+*   Other Python packages are listed in `requirements-base.txt` and `requirements-mamba.txt`.
 
 ### Installation Steps
 
@@ -87,15 +87,108 @@ The repository is organized as follows:
     ```
 
 3.  **Install Python packages:**
+
+    **Option A: Automatic Installation (Recommended)**
     ```bash
-    pip install -r requirements.txt
+    ./install_deps.sh
     ```
+    
+    **Option B: Conda-based Installation (Alternative)**
+    ```bash
+    ./install_deps_conda.sh
+    ```
+    
+    **Option C: Manual Step-by-Step Installation**
+    ```bash
+    # Step 1: Install base dependencies (including PyTorch)
+    pip install -r requirements-base.txt
+    
+    # Step 2: Install mamba-related packages that depend on PyTorch
+    pip install -r requirements-mamba.txt
+    
+    # Step 3: Install additional packages for evaluation
+    pip install seaborn
+    ```
+
+    > **Note**: Dependencies are split into separate files because some packages (`causal_conv1d`, `mamba_ssm`) require PyTorch to be installed first during their build process. The automatic installation script (Option A) will detect your system and install appropriate packages.
 
 4.  **Install the project package:**
     This step makes the `ssamba` module importable in your environment.
     ```bash
     pip install .
     ```
+
+### Platform Compatibility & Troubleshooting
+
+**⚠️ Important: SSAMBA Model Requirements**
+The self-supervised SSAMBA model (`run_amba_spectrogram.py`) requires `causal_conv1d` and `mamba_ssm` packages, which have strict requirements:
+- **Linux OS only** (Windows/macOS not supported)
+- **NVIDIA GPU** with CUDA support
+- **CUDA toolkit** (nvcc) installed
+
+**✅ What Works on All Platforms (including macOS)**
+- Supervised learning (`run_supervised.py`)
+- Model evaluation (`eval/evaluate_model.py`) 
+- Data download and processing tools
+- All analysis and visualization scripts
+
+<details>
+<summary><strong>📱 Platform-Specific Installation Instructions</strong></summary>
+
+**macOS Users:**
+```bash
+# Use the standard installation - CUDA packages will be automatically skipped
+./install_deps.sh
+```
+You'll get a CPU-only installation that supports most functionality except the SSAMBA model.
+
+**Linux with NVIDIA GPU:**
+```bash
+# Install CUDA toolkit first (if not already installed)
+conda install nvidia::cuda-toolkit=12.1
+
+# Then run the installation
+./install_deps.sh
+```
+
+**Linux without GPU:**
+The installation script will automatically detect the absence of CUDA and install CPU-compatible packages only.
+
+</details>
+
+<details>
+<summary><strong>🔧 Troubleshooting CUDA Installation Issues</strong></summary>
+
+If you encounter `bare_metal_version` errors or "NVCC not found":
+
+**Install CUDA Toolkit:**
+```bash
+# Option 1: Using conda (recommended)
+conda install nvidia::cuda-toolkit=12.1
+
+# Option 2: Manual installation
+# Follow CUDA installation guide for your Linux distribution
+# Then retry: pip install -r requirements-mamba.txt
+```
+
+**Alternative Installation Methods:**
+```bash
+# Try installing without build isolation
+pip install causal_conv1d --no-build-isolation
+pip install mamba_ssm --no-build-isolation
+
+# Or force CPU-only installation
+pip install -r requirements-cpu.txt
+```
+
+**Check Your Setup:**
+```bash
+# Verify CUDA is available
+nvcc --version
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+</details>
 
 ## Data
 

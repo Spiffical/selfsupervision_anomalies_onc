@@ -4,17 +4,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 spectrogram_cache = LRUCache(maxsize=400)
-image_cache = LRUCache(maxsize=400)
+image_cache = LRUCache(maxsize=800)  # Increased to handle 4 versions per image (2 colormaps × 2 y-axis scales)
 
 from config import SPECS_PER_PAGE
 
-def preload_page_images(mat_files, start_idx, end_idx):
+def preload_page_images(mat_files, start_idx, end_idx, y_axis_scale='linear'):
     from .image_processing import generate_image_cached
     for file in mat_files[start_idx:end_idx]:
         filename = os.path.basename(file)
-        # Preload both colormap versions
-        generate_image_cached(filename, 'default')
-        generate_image_cached(filename, 'hydrophone')
+        # Preload all combinations of colormap and y-axis scaling
+        for colormap in ['default', 'hydrophone']:
+            for y_scale in ['linear', 'log']:
+                generate_image_cached(filename, colormap, y_scale)
 
 def preload_next_page_images(current_page, total_pages, mat_files):
     next_page = current_page + 1

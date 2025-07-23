@@ -1,0 +1,17 @@
+# WARNING: These packages require CUDA toolkit and NVIDIA GPU
+# They will NOT work on macOS or CPU-only systems
+# See README.md troubleshooting section for alternatives
+
+# Mamba-related packages that need PyTorch + CUDA pre-installed
+# Only install these if you have:
+# - Linux OS
+# - NVIDIA GPU 
+# - CUDA toolkit (nvcc) installed
+causal_conv1d>=1.5.0
+mamba_ssm
+
+# Audio processing tools (may work without CUDA)
+s3prl==0.4.15
+
+# Ocean Networks Canada specific
+onc>=2.3.0 

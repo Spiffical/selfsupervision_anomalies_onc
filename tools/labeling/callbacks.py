@@ -21,12 +21,13 @@ def register_callbacks(app):
     Input('prev-page', 'n_clicks'),
     Input('next-page', 'n_clicks'),
     Input('global-colormap-toggle', 'value'),
+    Input('global-y-axis-toggle', 'value'),
     Input('go-to-page', 'n_clicks'),
     State('file-data', 'data'),
     State('current-page', 'data'),
     State('page-input', 'value'),
     )
-    def update_page(prev_clicks, next_clicks, use_hydrophone_colormap, go_to_page_clicks, file_data, current_page, page_input):
+    def update_page(prev_clicks, next_clicks, use_hydrophone_colormap, use_log_y_axis, go_to_page_clicks, file_data, current_page, page_input):
         # Initialize current_page if None
         if current_page is None:
             current_page = 0
@@ -92,28 +93,74 @@ def register_callbacks(app):
         for i in range(0, len(current_page_filenames), items_per_row):
             row_children = []
             for filename in current_page_filenames[i:i+items_per_row]:
-                # Both colormap versions are now preloaded, so this should be fast
-                image_src = generate_image_cached(filename, 'hydrophone' if use_hydrophone_colormap else 'default')
+                # All combinations are preloaded, so this should be fast
+                colormap = 'hydrophone' if use_hydrophone_colormap else 'default'
+                y_scale = 'log' if use_log_y_axis else 'linear'
+                image_src = generate_image_cached(filename, colormap, y_scale)
                 if image_src is None:
                     continue
 
-                image = html.Img(
-                    src=image_src,
-                    id={'type': 'spectrogram-image', 'filename': filename},
-                    style={'width': '100%', 'cursor': 'pointer'}
-                )
+                # Filename display
+                filename_display = html.Div([
+                    html.H6(filename, style={
+                        'font-size': '12px',
+                        'font-weight': '600',
+                        'color': '#495057',
+                        'margin': '0',
+                        'text-align': 'center',
+                        'word-break': 'break-word'
+                    })
+                ], style={
+                    'background': 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)',
+                    'padding': '8px 10px',
+                    'border-radius': '8px 8px 0 0',
+                    'border-bottom': '1px solid #dee2e6'
+                })
+
+                # Image with hover effect
+                image_container = html.Div([
+                    html.Img(
+                        src=image_src,
+                        id={'type': 'spectrogram-image', 'filename': filename},
+                                                 className='spectrogram-image',
+                         style={
+                             'width': '100%',
+                             'cursor': 'pointer',
+                             'border-radius': '0'
+                         }
+                    )
+                ], style={
+                    'position': 'relative',
+                    'overflow': 'hidden',
+                    'background': '#f8f9fa'
+                })
 
                 labels_for_file = label_data.get(filename, [])
 
+                # Enhanced checkboxes with better styling
                 checkboxes = []
                 for label in AVAILABLE_LABELS:
                     is_checked = label in labels_for_file
-                    checkbox = dbc.Checkbox(
-                        id={'type': 'label-checkbox', 'filename': filename, 'label': label},
-                        label=label,
-                        value=is_checked,
-                        className='mb-1'
-                    )
+                    checkbox = html.Div([
+                        dbc.Checkbox(
+                            id={'type': 'label-checkbox', 'filename': filename, 'label': label},
+                            label='',
+                            value=is_checked,
+                            style={'margin-right': '8px'}
+                        ),
+                        html.Label(label, style={
+                            'font-size': '12px',
+                            'font-weight': '500',
+                            'color': '#495057',
+                            'margin': '0',
+                            'cursor': 'pointer'
+                        })
+                    ], style={
+                        'display': 'flex',
+                        'align-items': 'center',
+                        'margin-bottom': '6px',
+                        'padding': '2px 0'
+                    })
                     checkboxes.append(checkbox)
 
                 # Create audio player for this spectrogram
@@ -122,16 +169,41 @@ def register_callbacks(app):
                     matching_audio_files = find_matching_audio_files(filename, AUDIO_FOLDER)
                     if matching_audio_files:
                         representative_audio = get_representative_audio_file(matching_audio_files)
-                        audio_player = create_audio_player(representative_audio, filename, 
-                                                         player_id=f"grid-{hash(filename) % 10000}")
+                        audio_player = html.Div([
+                            html.Hr(style={'margin': '10px 0 8px 0', 'border-color': '#e9ecef'}),
+                            create_audio_player(representative_audio, filename, 
+                                               player_id=f"grid-{hash(filename) % 10000}")
+                        ])
 
-                # Build card content
-                card_content = [image]
+                # Labels section with better styling
+                labels_section = html.Div([
+                    html.Div(checkboxes, style={'padding': '0'})
+                ], style={
+                    'padding': '12px',
+                    'background': 'white'
+                })
+
+                # Build card content with improved structure
+                card_content = [
+                    filename_display,
+                    image_container,
+                    labels_section
+                ]
+                
                 if audio_player:
-                    card_content.append(audio_player)
-                card_content.append(html.Div(checkboxes, style={'padding': '5px'}))
+                    card_content.insert(-1, audio_player)
 
-                card = dbc.Card(card_content, style={'margin-bottom': '20px'})
+                card = dbc.Card(
+                    card_content, 
+                    style={
+                        'margin-bottom': '20px',
+                        'border-radius': '12px',
+                        'box-shadow': '0 4px 15px rgba(0, 0, 0, 0.08)',
+                        'border': '1px solid #e9ecef',
+                        'transition': 'all 0.3s ease',
+                        'overflow': 'hidden'
+                    }
+                )
 
                 col = dbc.Col(card, width=2)
                 row_children.append(col)
@@ -153,22 +225,24 @@ def register_callbacks(app):
     Output('current-filename', 'data'),
     Output('modal-image-graph', 'figure'),
     Output('modal-colormap-toggle', 'value'),
+    Output('modal-y-axis-toggle', 'value'),
     Output('modal-header', 'children'),
     Output('modal-audio-player', 'children'),
     Input({'type': 'spectrogram-image', 'filename': ALL}, 'n_clicks'),
     Input('close-modal', 'n_clicks'),
     State('global-colormap-toggle', 'value'),
+    State('global-y-axis-toggle', 'value'),
     prevent_initial_call=True
     )
-    def display_image_modal(n_clicks_list, close_clicks, global_colormap):
+    def display_image_modal(n_clicks_list, close_clicks, global_colormap, global_y_axis):
         ctx = dash.callback_context
         if not ctx.triggered:
-            return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
         triggered_id = ctx.triggered_id
         
         if triggered_id == 'close-modal':
-            return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
         # Check if any of the image clicks are non-zero
         if isinstance(triggered_id, dict) and triggered_id.get('type') == 'spectrogram-image':
@@ -178,7 +252,8 @@ def register_callbacks(app):
                 spectrogram = load_spectrogram_cached(filename)
                 if spectrogram is not None:
                     colormap = 'hydrophone' if global_colormap else 'default'
-                    fig = create_spectrogram_figure(spectrogram, colormap)
+                    y_axis_scale = 'log' if global_y_axis else 'linear'
+                    fig = create_spectrogram_figure(spectrogram, colormap, y_axis_scale)
                     
                     # Create audio player for modal
                     modal_audio_player = html.Div()
@@ -204,37 +279,41 @@ def register_callbacks(app):
                                          style={'color': 'gray', 'font-style': 'italic'})
                             ])
                     
-                    return True, filename, fig, colormap, f"Spectrogram: {filename}", modal_audio_player
+                    return True, filename, fig, colormap, y_axis_scale, f"Spectrogram: {filename}", modal_audio_player
 
-        return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     @app.callback(
     Output('modal-image-graph', 'figure', allow_duplicate=True),
     Input('modal-colormap-toggle', 'value'),
+    Input('modal-y-axis-toggle', 'value'),
     State('current-filename', 'data'),
     prevent_initial_call=True
     )
-    def update_modal_figure_colormap(colormap_value, current_filename):
+    def update_modal_figure_options(colormap_value, y_axis_value, current_filename):
         if not current_filename:
             return dash.no_update
         spectrogram = load_spectrogram_cached(current_filename)
         if spectrogram is None:
             return dash.no_update
-        fig = create_spectrogram_figure(spectrogram, colormap_value)
+        fig = create_spectrogram_figure(spectrogram, colormap_value, y_axis_value)
         return fig
 
     @app.callback(
     Output({'type': 'spectrogram-image', 'filename': ALL}, 'src'),
     Input('global-colormap-toggle', 'value'),
+    Input('global-y-axis-toggle', 'value'),
     State({'type': 'spectrogram-image', 'filename': ALL}, 'id'),
     prevent_initial_call=True
     )
-    def update_all_spectrograms(use_hydrophone_colormap, image_ids):
+    def update_all_spectrograms(use_hydrophone_colormap, use_log_y_axis, image_ids):
         updated_images = []
         for image_id in image_ids:
             filename = image_id['filename']
-            # Both colormap versions are now preloaded, so this should be fast
-            image_src = generate_image_cached(filename, 'hydrophone' if use_hydrophone_colormap else 'default')
+            # All combinations are preloaded, so this should be fast
+            colormap = 'hydrophone' if use_hydrophone_colormap else 'default'
+            y_scale = 'log' if use_log_y_axis else 'linear'
+            image_src = generate_image_cached(filename, colormap, y_scale)
             updated_images.append(image_src if image_src is not None else dash.no_update)
         return updated_images
 
@@ -266,3 +345,47 @@ def register_callbacks(app):
         save_labels(OUTPUT_FILE, label_update, remove=not checked)
 
         return ''
+
+    # Initialize audio players when page content changes
+    app.clientside_callback(
+        """
+        function(page_content) {
+            if (window.dash_clientside && window.dash_clientside.namespace) {
+                setTimeout(function() {
+                    window.dash_clientside.namespace.initializeAudioPlayers();
+                }, 100);
+            }
+            return '';
+        }
+        """,
+        Output('dummy-output', 'children', allow_duplicate=True),
+        [Input('page-content', 'children')],
+        prevent_initial_call=True
+    )
+
+    # Initialize audio players when modal content changes
+    app.clientside_callback(
+        """
+        function(modal_audio_content) {
+            if (window.dash_clientside && window.dash_clientside.namespace) {
+                setTimeout(function() {
+                    window.dash_clientside.namespace.initializeAudioPlayers();
+                }, 150);
+            }
+            return '';
+        }
+        """,
+        Output('dummy-output', 'children', allow_duplicate=True),
+        [Input('modal-audio-player', 'children')],
+        prevent_initial_call=True
+    )
+
+    # Handle slider seeking - using a simple pattern-matching callback
+    @app.callback(
+        Output({'type': 'slider-dummy', 'id': ALL}, 'children'),
+        [Input({'type': 'time-slider', 'id': ALL}, 'value')],
+        prevent_initial_call=True
+    )
+    def handle_slider_seeking(slider_values):
+        """Handle time slider seeking via clientside JavaScript"""
+        return ['' for _ in slider_values]

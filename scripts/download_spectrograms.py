@@ -175,12 +175,12 @@ class VerboseSpectrogramDownloader:
                 self.downloader.process_spectrograms(filetype)
 
 
-def load_config():
+def load_config(data_dir_override=None):
     """Load configuration from .env file"""
     load_dotenv()
     
     onc_token = os.getenv('ONC_TOKEN')
-    data_dir = os.getenv('DATA_DIR', './data')
+    data_dir = data_dir_override or os.getenv('DATA_DIR', './data')
     
     if not onc_token or onc_token == 'your_onc_api_token_here':
         raise ValueError("Please set your ONC_TOKEN in the .env file")
@@ -441,6 +441,9 @@ Examples:
   # Download with FLAC audio files
   python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 50 --download-flac
   python %(prog)s --mode range --device ICLISTENHF6020 --start-date 2020 10 2 --end-date 2020 10 5 --download-flac
+  
+  # Custom data directory
+  python %(prog)s --mode sampling --device ICLISTENHF6020 --start-date 2020 10 2 --threshold 50 --data-dir /path/to/custom/data
         """
     )
     
@@ -452,6 +455,9 @@ Examples:
     
     parser.add_argument('--device', 
                         help='Device code (e.g., ICLISTENHF6020). Will prompt if not provided.')
+    
+    parser.add_argument('--data-dir',
+                        help='Override data directory from config file (parent directory for downloads)')
     
     parser.add_argument('--filetype', 
                         choices=['png', 'mat'], 
@@ -520,7 +526,7 @@ Examples:
     
     try:
         # Load configuration and setup
-        onc_token, data_dir = load_config()
+        onc_token, data_dir = load_config(data_dir_override=args.data_dir)
         downloader = VerboseSpectrogramDownloader(onc_token, data_dir, verbose=args.verbose)
         
         print_header("ONC SPECTROGRAM DOWNLOADER")

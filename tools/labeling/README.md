@@ -10,6 +10,9 @@ This is a Dash application for visualizing and labeling spectrograms with integr
 - **Dual View Modes**: 
   - Grid view with audio players under each spectrogram
   - Detailed modal view with enhanced audio controls when clicking on spectrograms
+- **Customizable Display Options**:
+  - **Colormap Selection**: Switch between default (Viridis) and hydrophone-specific colormaps
+  - **Y-Axis Scaling**: Toggle between linear and logarithmic frequency scaling (useful for mel-like spectrograms)
 - **Intelligent Audio Matching**: Automatically matches audio files to spectrograms based on timestamps in filenames.
 - **Caching Mechanism**:
     - Limited Cache Size: Caches up to 400 images to optimize performance.
@@ -62,6 +65,7 @@ data:
 display:
   target_dim: [512, 512]           # Target dimensions [height, width] for reshaping the data
   specs_per_page: 50               # Number of spectrograms to display per page
+  y_axis_scale: "linear"           # Y-axis scaling: "linear" or "log" (logarithmic like mel spectrograms)
 
 # Audio settings
 audio:
@@ -125,6 +129,16 @@ audio:
 Or use the command line flag: `--disable_audio`
 
 ## Usage
+
+### Display Options
+
+The application provides several display customization options:
+
+- **Global Colormap Toggle**: Use the switch in the top-right corner to toggle between default (Viridis) and Oceans3.0 colormaps for all spectrograms (both thumbnails and detailed views)
+- **Global Y-Axis Scale Toggle**: Use the switch in the top-right corner to toggle between linear and logarithmic frequency scaling for all spectrograms (both thumbnails and detailed views)
+- **Individual Controls**: When viewing a spectrogram in the detailed modal view, you can adjust both colormap and y-axis scaling independently using the radio buttons above the spectrogram
+
+The logarithmic y-axis scaling is particularly useful for acoustic data where you want to emphasize lower frequencies, similar to mel spectrograms. This scaling affects both the small thumbnail images in the grid view and the detailed spectrogram view in the modal.
 
 ### Using Configuration File Only
 

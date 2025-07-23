@@ -2,19 +2,53 @@ import argparse
 import yaml
 import os
 
+def get_repo_root():
+    """Find the repository root by looking for setup.py or .git"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Walk up the directory tree
+    while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
+        # Check for primary repo indicators first (.git, setup.py)
+        primary_indicators = ['.git', 'setup.py']
+        if any(os.path.exists(os.path.join(current_dir, indicator)) 
+               for indicator in primary_indicators):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    
+    # If no primary indicators found, start over and look for README.md
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
+        if os.path.exists(os.path.join(current_dir, 'README.md')):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    
+    # Fallback to current working directory if repo root not found
+    return os.getcwd()
+
 def resolve_path(path):
     """
-    Resolve a path that might be relative to the current working directory.
+    Resolve a path that might be relative to the repository root.
     If the path is already absolute, return it as-is.
     """
     if not path or os.path.isabs(path):
         return path
     
-    # Resolve relative to current working directory (where user runs the command)
-    return os.path.abspath(path)
+    # Resolve relative to repository root
+    repo_root = get_repo_root()
+    return os.path.join(repo_root, path)
 
 def load_config_file(config_path='config.yaml'):
     """Load configuration from YAML file"""
+    # If config_path is relative, look for it in the script's directory first
+    if not os.path.isabs(config_path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_relative_config = os.path.join(script_dir, config_path)
+        
+        # Try script directory first
+        if os.path.exists(script_relative_config):
+            config_path = script_relative_config
+        # Otherwise use the original path (relative to cwd)
+    
     if not os.path.exists(config_path):
         return {}
     
@@ -49,6 +83,7 @@ def get_config():
     
     target_dim = args.target_dim or config.get('display', {}).get('target_dim', [512, 512])
     specs_per_page = args.specs_per_page or config.get('display', {}).get('specs_per_page', 25)
+    y_axis_scale = config.get('display', {}).get('y_axis_scale', 'linear')
     
     available_labels = args.available_labels or config.get('labels', {}).get('available', ["Rain", "Engine Noise", "Unknown Features"])
     
@@ -71,7 +106,7 @@ def get_config():
     if not output_file:
         raise ValueError("Output file must be specified in config file or command line")
     
-    # Resolve paths relative to current working directory
+    # Resolve paths relative to repository root
     folder = resolve_path(folder)
     audio_folder = resolve_path(audio_folder) if audio_folder else None
     output_file = resolve_path(output_file)
@@ -82,6 +117,7 @@ def get_config():
         'output_file': output_file,
         'target_dim': tuple(target_dim),
         'specs_per_page': specs_per_page,
+        'y_axis_scale': y_axis_scale,
         'available_labels': available_labels,
         'enable_audio': enable_audio,
         'auto_match_audio': auto_match_audio,
@@ -98,6 +134,7 @@ AUDIO_FOLDER = ARGS['audio_folder']
 OUTPUT_FILE = ARGS['output_file']
 TARGET_DIM = ARGS['target_dim']
 SPECS_PER_PAGE = ARGS['specs_per_page']
+Y_AXIS_SCALE = ARGS['y_axis_scale']
 AVAILABLE_LABELS = ARGS['available_labels']
 ENABLE_AUDIO = ARGS['enable_audio']
 AUTO_MATCH_AUDIO = ARGS['auto_match_audio']

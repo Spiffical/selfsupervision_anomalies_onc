@@ -1,0 +1,51 @@
+# Dataset Configuration for Underwater Acoustic Anomaly Detection
+# ================================================================
+
+# Dataset metadata
+dataset:
+  name: "ONC Underwater Acoustic Anomalies"
+  version: "1.0"
+  description: "Multi-location underwater acoustic spectrogram data with anomaly labels"
+  source: "Ocean Networks Canada (ONC)"
+  created_by: "Anomaly Detection Pipeline"
+
+# Anomaly label definitions
+# These are the possible anomaly types that can be detected in underwater acoustic data
+anomaly_labels:
+  - "Anomaly"           # Generic anomaly marker
+  - "Data Gap"          # Missing or corrupted data segments
+  - "Dropout"           # Signal dropouts or interruptions  
+  - "Engine Noise"      # Ship engines and mechanical noise
+  - "Rain"              # Surface rain/weather effects
+  - "Sensitivity"       # Hydrophone sensitivity issues
+  - "Tonal"             # Tonal sounds (marine life, equipment)
+  - "Unknown Feature"   # Unidentified acoustic features
+
+# Label encoding settings
+label_encoding:
+  normal_label: "normal"  # Label for normal/background sounds
+  separator: ";"          # Separator for multiple labels in text format
+  max_string_length: 100  # Maximum length for label strings in H5 file
+
+# Spectrogram processing settings
+spectrogram:
+  target_size: [512, 512]  # [height, width] - frequency x time bins
+  expected_shape: [854, 1000]  # [height, width] - expected raw spectrogram shape from .mat files
+  channels: 1              # Number of channels (1 for grayscale)
+  data_type: "float32"     # Data type for spectrogram values
+  
+# Data source patterns for hydrophone identification
+hydrophone_patterns:
+  iclistenhf: "ICLISTENHF[0-9]+"
+  jasco: "JASCOAMARHYDROPHONE[A-Z0-9]+"
+  
+# File processing settings
+processing:
+  batch_size: 100          # Batch size for memory-efficient processing
+  max_workers: null        # Number of worker processes (null = auto-detect)
+  
+# Output settings  
+output:
+  compression: "gzip"      # HDF5 compression method
+  compression_level: 6     # Compression level (0-9)
+  chunk_size: [100, 512, 512, 1]  # HDF5 chunk size for spectrograms 

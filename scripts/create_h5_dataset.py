@@ -14,10 +14,11 @@ from functools import partial
 from sklearn.model_selection import train_test_split
 import logging
 
-# Add the parent directory to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-
-from src.ssamba.utils.data import defaults # type: ignore
+# Import configuration utilities
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils', 'data'))
+from config_utils import load_config
 
 # Add after other imports
 logging.basicConfig(
@@ -76,8 +77,10 @@ def process_single_file(mat_file, label_data, target_dim):
     tuple or None
         (data, label_vector, source, label_str) if successful, None if file is empty or invalid
     """
+    # Load configuration
+    config = load_config()
     filename = os.path.basename(mat_file)
-    EXPECTED_SHAPE = (854, 1000)
+    EXPECTED_SHAPE = tuple(config.expected_shape)
     
     try:
         mat_data = sio.loadmat(mat_file)
@@ -115,7 +118,7 @@ def process_single_file(mat_file, label_data, target_dim):
         data = data[..., np.newaxis]
     
     # Create binary label vector and store string labels
-    label_vector = np.zeros(len(defaults.anomalies), dtype=np.int8)
+    label_vector = np.zeros(len(config.anomaly_labels), dtype=np.int8)
     label_strings = []
     
     if filename in label_data:
@@ -125,14 +128,14 @@ def process_single_file(mat_file, label_data, target_dim):
             # Normalize "unknown features" to "unknown feature"
             if label == "unknown features":
                 label = "unknown feature"
-            # Convert defaults.anomalies to lowercase for comparison
-            if label in [a.lower() for a in defaults.anomalies]:
+            # Convert config.anomaly_labels to lowercase for comparison
+            if label in [a.lower() for a in config.anomaly_labels]:
                 # Find the index in the original list using case-insensitive matching
-                label_idx = next(i for i, a in enumerate(defaults.anomalies) if a.lower() == label)
+                label_idx = next(i for i, a in enumerate(config.anomaly_labels) if a.lower() == label)
                 label_vector[label_idx] = 1
-                # Use the original case from defaults.anomalies for consistency
-                label_strings.append(defaults.anomalies[label_idx])
-                logging.info(f"Processing file {filename} with anomaly: {defaults.anomalies[label_idx]}")
+                # Use the original case from config.anomaly_labels for consistency
+                label_strings.append(config.anomaly_labels[label_idx])
+                logging.info(f"Processing file {filename} with anomaly: {config.anomaly_labels[label_idx]}")
     
     if not label_strings:
         label_strings.append('normal')
@@ -160,6 +163,9 @@ def process_batch(mat_files, label_data, target_dim, hf, num_workers=None):
     num_workers : int, optional
         Number of worker processes to use
     """
+    # Load configuration
+    config = load_config()
+    
     if num_workers is None:
         num_workers = cpu_count()
     
@@ -192,10 +198,21 @@ def process_batch(mat_files, label_data, target_dim, hf, num_workers=None):
 
     # Save to HDF5 file
     if 'spectrograms' not in hf:
-        hf.create_dataset('spectrograms', data=data_array, maxshape=(None,) + data_array.shape[1:], chunks=True, compression='gzip')
-        hf.create_dataset('labels', data=labels_array, maxshape=(None, len(defaults.anomalies)), chunks=True, compression='gzip')
-        hf.create_dataset('sources', data=source_array, maxshape=(None,), chunks=True, compression='gzip')
-        hf.create_dataset('label_strings', data=label_strings_array, maxshape=(None,), chunks=True, compression='gzip')
+        # Use config settings for compression and chunking
+        compression_opts = {'compression': config.compression}
+        if config.compression in ['gzip', 'lzf', 'szip']:
+            compression_opts['compression_opts'] = config.compression_level
+        
+        chunk_size = tuple(config.chunk_size)
+        
+        hf.create_dataset('spectrograms', data=data_array, maxshape=(None,) + data_array.shape[1:], 
+                         chunks=chunk_size, **compression_opts)
+        hf.create_dataset('labels', data=labels_array, maxshape=(None, len(config.anomaly_labels)), 
+                         chunks=True, **compression_opts)
+        hf.create_dataset('sources', data=source_array, maxshape=(None,), 
+                         chunks=True, **compression_opts)
+        hf.create_dataset('label_strings', data=label_strings_array, maxshape=(None,), 
+                         chunks=True, **compression_opts)
     else:
         hf['spectrograms'].resize((hf['spectrograms'].shape[0] + data_array.shape[0]), axis=0)
         hf['spectrograms'][-data_array.shape[0]:] = data_array
@@ -328,7 +345,7 @@ def find_mat_files_and_labels(folder):
     
     return mat_files, labels
 
-def create_or_update_h5(h5_filename, data_folders, batch_size=10, target_dim=None):
+def create_or_update_h5(h5_filename, data_folders, batch_size=None, target_dim=None):
     """
     Creates or updates HDF5 file using JSON label files in data folders.
     
@@ -338,7 +355,15 @@ def create_or_update_h5(h5_filename, data_folders, batch_size=10, target_dim=Non
     3. Flat: folder/*.mat + folder/labels.json
     4. Recursive: any nested structure with .mat files and labels.json
     """
+    # Load configuration and set defaults
+    config = load_config()
+    if batch_size is None:
+        batch_size = config.batch_size
+    if target_dim is None:
+        target_dim = tuple(config.target_size)
+    
     logging.info(f"Starting dataset creation: {h5_filename}")
+    logging.info(f"Using batch_size: {batch_size}, target_dim: {target_dim}")
     os.makedirs(os.path.dirname(h5_filename), exist_ok=True)
 
     # Collect all mat files and labels from all folders
@@ -385,23 +410,32 @@ def create_or_update_h5(h5_filename, data_folders, batch_size=10, target_dim=Non
 
     # Process all files in batches into a single 'data' group
     with h5py.File(h5_filename, 'a') as hf:
+        # Save configuration metadata to H5 file (only on first creation)
+        if 'anomaly_label_names' not in hf:
+            config = load_config()
+            config.save_metadata_to_h5(hf)
+            logging.info("Saved configuration metadata to H5 file")
+        
         for i in tqdm(range(0, len(all_mat_files), batch_size), desc="Processing batches"):
             batch_files = all_mat_files[i:i + batch_size]
             process_batch(batch_files, all_labels, target_dim, hf)
 
 if __name__ == '__main__':
+    # Load config to get defaults for argument parser
+    config = load_config()
+    
     parser = argparse.ArgumentParser(description='Create HDF5 dataset from labeled spectrograms.')
     
     parser.add_argument('--h5_filename', type=str, required=True,
                       help='Path to output HDF5 file')
     parser.add_argument('--data_folders', type=str, nargs='+', required=True,
                       help='Folders containing a "matfiles" subfolder and labels.json file')
-    parser.add_argument('--batch_size', type=int, default=10,
-                      help='Files to process per batch')
+    parser.add_argument('--batch_size', type=int, default=config.batch_size,
+                      help=f'Files to process per batch (default: {config.batch_size})')
     parser.add_argument('--target_dim', type=int, nargs=2,
-                      help='Target dimensions (height width) for reshaping')
-    parser.add_argument('--num_workers', type=int, default=None,
-                      help='Number of worker processes to use (defaults to number of CPU cores)')
+                      help=f'Target dimensions (height width) for reshaping (default: {config.target_size})')
+    parser.add_argument('--num_workers', type=int, default=config.max_workers,
+                      help='Number of worker processes to use (defaults from config or CPU cores)')
 
     args = parser.parse_args()
     target_dim = tuple(args.target_dim) if args.target_dim else None

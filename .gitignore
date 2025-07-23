@@ -17,3 +17,7 @@ logs/
 # Existing specific experiment output (keeping for now, but consider more general patterns)
 pretrain_joint/
 # label_analysis.json # Will be in logs/
+dataset_structure_documentation.md
+.gitignore
+hydrophone_locations.txt
+dataset_structure_documentation.txt

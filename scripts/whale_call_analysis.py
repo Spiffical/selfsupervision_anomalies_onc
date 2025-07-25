@@ -682,8 +682,7 @@ class FinWhaleCallAnalyzer:
                 
                 if needs_prev_file or needs_next_file:
                     print_status(f"Need stitching: prev={needs_prev_file}, next={needs_next_file}, start={desired_start:.1f}s, end={desired_end:.1f}s, audio_dur={audio_duration:.1f}s", "INFO")
-                    # Derive audio directory from output_dir
-                    audio_dir = output_dir.parent / "audio"
+                    # Use the same audio_dir that was passed to this method
                     call_audio = self._stitch_audio_files(call, desired_start, desired_end, context_duration, audio_dir)
                     if call_audio is None:
                         print_status(f"⚠️ Skipping call: unable to stitch adjacent files", "WARNING")

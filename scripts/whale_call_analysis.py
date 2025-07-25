@@ -29,8 +29,14 @@ Usage Examples:
   # Generate visualization plots only (no .mat files)
   python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --png-only --sample-size 50
   
-  # Process entire dataset efficiently: MAT files only, cleanup audio after
+  # Process entire dataset efficiently: MAT files only, cleanup audio after (parallel incremental mode)
   python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --cleanup-audio
+  
+  # Use more workers for faster processing (if you have good bandwidth/CPU)
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --cleanup-audio --workers 8
+  
+  # Use batch mode if you need the old processing method
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --sample-size 50 --batch-mode --cleanup-audio
 """
 
 import os
@@ -38,6 +44,8 @@ import sys
 import argparse
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for thread safety
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,7 +56,12 @@ import logging
 import soundfile as sf
 import yaml
 import scipy.io
+import concurrent.futures
+import threading
 from dotenv import load_dotenv
+
+# Thread lock for matplotlib operations
+_plot_lock = threading.Lock()
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -62,7 +75,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def print_status(message: str, status: str = "INFO"):
-    """Print formatted status messages"""
+    """Print formatted status messages (thread-safe)"""
     status_symbols = {
         "INFO": "ℹ️",
         "SUCCESS": "✅", 
@@ -71,7 +84,8 @@ def print_status(message: str, status: str = "INFO"):
         "PROGRESS": "🔄"
     }
     symbol = status_symbols.get(status, "ℹ️")
-    print(f"{symbol} {message}")
+    # Thread-safe printing
+    print(f"{symbol} {message}", flush=True)
 
 def print_header(title: str):
     """Print formatted section header"""
@@ -900,6 +914,234 @@ class FinWhaleCallAnalyzer:
         print_status(f"🗑️ Cleaned up {deleted_count} audio files, freed {total_size_mb:.1f} MB", "SUCCESS")
         return deleted_count
     
+    def _process_single_file_group(self, 
+                                 clip_id: str, 
+                                 calls_in_file: pd.DataFrame,
+                                 output_dir: Path,
+                                 audio_dir: Path,
+                                 win_dur: float,
+                                 overlap: float,
+                                 freq_range: Tuple[float, float],
+                                 ml_context: Optional[float],
+                                 cleanup_audio: bool,
+                                 file_num: int,
+                                 total_files: int) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]], float]:
+        """
+        Process a single audio file and its associated calls.
+        
+        Returns:
+            Tuple of (spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb)
+        """
+        thread_id = threading.current_thread().name
+        print_status(f"🔄 [{thread_id}] Processing file {file_num}/{total_files}: {clip_id} ({len(calls_in_file)} calls)", "PROGRESS")
+        
+        spectrogram_files = {}
+        failed_calls = []
+        actual_dimensions = None
+        file_size_cleaned_mb = 0
+        
+        # Check if file already exists
+        audio_file_path = audio_dir / clip_id
+        file_already_existed = audio_file_path.exists()
+        
+        # Download if needed (with thread-safe ONC client handling)
+        if not file_already_existed:
+            download_success = False
+            max_retries = 2
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    # Create a temporary ONC client for this thread to avoid conflicts
+                    temp_onc = ONC(self.onc.token)
+                    temp_onc.outPath = str(audio_dir)
+                    
+                    if attempt > 0:
+                        print_status(f"🔄 [{thread_id}] Retry {attempt}/{max_retries} downloading: {clip_id}", "INFO")
+                    
+                    result = temp_onc.getFile(clip_id)
+                    if not audio_file_path.exists():
+                        if attempt == max_retries:
+                            print_status(f"❌ [{thread_id}] Failed to download after {max_retries + 1} attempts: {clip_id}", "WARNING")
+                        continue
+                    
+                    # Validate the downloaded file
+                    try:
+                        import soundfile as sf
+                        with sf.SoundFile(audio_file_path) as f:
+                            duration = len(f) / f.samplerate
+                        print_status(f"✓ [{thread_id}] Downloaded: {clip_id} ({duration:.1f}s, {f.samplerate}Hz)")
+                        download_success = True
+                        break
+                    except Exception as e:
+                        print_status(f"❌ [{thread_id}] Downloaded file is corrupted: {clip_id} - {e}", "WARNING")
+                        # Delete corrupted file
+                        try:
+                            audio_file_path.unlink()
+                        except:
+                            pass
+                        if attempt == max_retries:
+                            print_status(f"❌ [{thread_id}] File corrupted after {max_retries + 1} attempts: {clip_id}", "WARNING")
+                        continue
+                        
+                except Exception as e:
+                    print_status(f"❌ [{thread_id}] Error downloading {clip_id} (attempt {attempt + 1}): {e}", "WARNING")
+                    if attempt == max_retries:
+                        break
+                    continue
+            
+            if not download_success:
+                # Mark all calls in this file as failed
+                for _, call in calls_in_file.iterrows():
+                    call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+                    failed_calls.append({
+                        'clip_id': clip_id,
+                        'call_id': call_id,
+                        'reason': 'Audio file download/validation failed after retries'
+                    })
+                return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
+        else:
+            # Validate existing file
+            try:
+                import soundfile as sf
+                with sf.SoundFile(audio_file_path) as f:
+                    duration = len(f) / f.samplerate
+                print_status(f"✓ [{thread_id}] Using existing: {clip_id} ({duration:.1f}s, {f.samplerate}Hz)")
+            except Exception as e:
+                print_status(f"❌ [{thread_id}] Existing file is corrupted: {clip_id} - {e}", "WARNING")
+                # Mark all calls in this file as failed
+                for _, call in calls_in_file.iterrows():
+                    call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+                    failed_calls.append({
+                        'clip_id': clip_id,
+                        'call_id': call_id,
+                        'reason': f'Existing file corrupted: {str(e)}'
+                    })
+                # Delete corrupted file
+                try:
+                    audio_file_path.unlink()
+                except:
+                    pass
+                return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
+        
+        # Process all calls in this audio file
+        try:
+            file_spectrograms, file_failed, file_dimensions = self.create_custom_spectrograms(
+                calls_in_file, {clip_id: str(audio_file_path)}, output_dir,
+                win_dur=win_dur, overlap=overlap, freq_range=freq_range, ml_context=ml_context
+            )
+            
+            # Collect results
+            spectrogram_files.update(file_spectrograms)
+            failed_calls.extend(file_failed)
+            if file_dimensions is not None:
+                actual_dimensions = file_dimensions
+                
+        except Exception as e:
+            print_status(f"❌ [{thread_id}] Error processing spectrograms for {clip_id}: {e}", "WARNING")
+            # Mark all calls as failed
+            for _, call in calls_in_file.iterrows():
+                call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+                failed_calls.append({
+                    'clip_id': clip_id,
+                    'call_id': call_id,
+                    'reason': f'Spectrogram processing error: {str(e)}'
+                })
+        
+        # Cleanup audio file if requested
+        if cleanup_audio and audio_file_path.exists():
+            try:
+                file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
+                audio_file_path.unlink()
+                file_size_cleaned_mb = file_size_mb
+                print_status(f"🗑️ [{thread_id}] Cleaned up: {clip_id} ({file_size_mb:.1f} MB)")
+            except Exception as e:
+                print_status(f"⚠️ [{thread_id}] Failed to cleanup {clip_id}: {e}", "WARNING")
+        
+        return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
+    
+    def process_calls_incrementally(self,
+                                  whale_calls: pd.DataFrame,
+                                  output_dir: Path,
+                                  win_dur: float = 2.0,
+                                  overlap: float = 0.5,
+                                  freq_range: Tuple[float, float] = (10, 1000),
+                                  ml_context: Optional[float] = None,
+                                  cleanup_audio: bool = False,
+                                  max_workers: int = 2) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]]]:
+        """
+        Process whale calls incrementally with parallel processing.
+        Downloads, processes, and cleans up audio files in parallel for efficiency.
+        
+        Returns:
+            Tuple of (spectrogram_files, failed_calls, actual_dimensions)
+        """
+        print_header("PROCESSING CALLS INCREMENTALLY (PARALLEL)")
+        
+        # Group calls by audio file to process efficiently
+        file_groups = list(whale_calls.groupby('Clip ID'))
+        total_files = len(file_groups)
+        total_calls = len(whale_calls)
+        
+        print_status(f"📊 Processing {total_calls:,} calls across {total_files:,} audio files")
+        print_status(f"⚡ Using {max_workers} parallel workers")
+        if cleanup_audio:
+            print_status("🧹 Audio cleanup enabled: files will be deleted after processing")
+        
+        spectrogram_files = {}
+        failed_calls = []
+        actual_dimensions = None
+        total_size_cleaned = 0
+        
+        audio_dir = output_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use ThreadPoolExecutor for parallel processing
+        # Note: Each audio file is processed by exactly one worker to avoid race conditions
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Worker") as executor:
+            # Submit all file processing tasks (one worker per audio file)
+            future_to_file = {}
+            for i, (clip_id, calls_in_file) in enumerate(file_groups, 1):
+                future = executor.submit(
+                    self._process_single_file_group,
+                    clip_id, calls_in_file, output_dir, audio_dir,
+                    win_dur, overlap, freq_range, ml_context, cleanup_audio,
+                    i, total_files
+                )
+                future_to_file[future] = (clip_id, i)
+            
+            # Collect results as they complete
+            completed_files = 0
+            for future in concurrent.futures.as_completed(future_to_file):
+                clip_id, file_num = future_to_file[future]
+                completed_files += 1
+                
+                try:
+                    file_spectrograms, file_failed, file_dimensions, file_size_cleaned_mb = future.result()
+                    
+                    # Collect results
+                    spectrogram_files.update(file_spectrograms)
+                    failed_calls.extend(file_failed)
+                    if actual_dimensions is None and file_dimensions is not None:
+                        actual_dimensions = file_dimensions
+                    total_size_cleaned += file_size_cleaned_mb
+                    
+                    # Progress update
+                    calls_completed = sum(len(sg) for sg in file_spectrograms.values() if sg)
+                    print_status(f"📈 Progress: {completed_files}/{total_files} files completed ({completed_files/total_files*100:.1f}%)")
+                    
+                except Exception as e:
+                    print_status(f"❌ Error processing file group for {clip_id}: {e}", "ERROR")
+                    # The individual file handler should have already marked calls as failed
+        
+        # Summary
+        print_status(f"✅ Processed {len(spectrogram_files)} spectrograms successfully")
+        if failed_calls:
+            print_status(f"⚠️ Failed to process {len(failed_calls)} calls", "WARNING")
+        if cleanup_audio and total_size_cleaned > 0:
+            print_status(f"🧹 Total space cleaned: {total_size_cleaned:.1f} MB", "SUCCESS")
+        
+        return spectrogram_files, failed_calls, actual_dimensions
+    
     def create_analysis_report(self,
                              whale_calls: pd.DataFrame,
                              downloaded_files: Dict[str, str],
@@ -1096,6 +1338,10 @@ def main():
                        help='Skip ONC spectrogram download')
     parser.add_argument('--cleanup-audio', action='store_true',
                        help='Delete WAV files after processing to save disk space')
+    parser.add_argument('--batch-mode', action='store_true',
+                       help='Use old batch processing method (download all, then process all)')
+    parser.add_argument('--workers', type=int, default=2,
+                       help='Number of parallel workers for processing (default: 2, increase if you have good bandwidth/CPU)')
     
     args = parser.parse_args()
     
@@ -1149,12 +1395,8 @@ def main():
         whale_calls.to_csv(calls_file, index=False)
         print_status(f"Sampled calls saved: {calls_file}")
         
-        # Download audio files
-        downloaded_files = {}
-        if not args.skip_download:
-            downloaded_files = analyzer.download_whale_call_audio(whale_calls, output_dir)
-        
         # Override output formats if specified
+        original_formats = None
         if args.mat_only:
             print_status("🔬 MAT-only mode: Generating .mat files for ML", "INFO")
             # Temporarily override config
@@ -1162,34 +1404,56 @@ def main():
             analyzer.config.setdefault('custom_spectrograms', {})['output_formats'] = {'matlab': True, 'plots': False}
         elif args.png_only:
             print_status("🖼️ PNG-only mode: Generating visualization plots", "INFO")
+            original_formats = analyzer.config.get('custom_spectrograms', {}).get('output_formats', {})
             analyzer.config.setdefault('custom_spectrograms', {})['output_formats'] = {'matlab': False, 'plots': True}
         
-        # Create custom spectrograms
+        # Choose processing method
         custom_spectrograms = {}
         failed_calls = []
         actual_dimensions = None
-        if downloaded_files:
-            custom_spectrograms, failed_calls, actual_dimensions = analyzer.create_custom_spectrograms(
-                whale_calls, downloaded_files, output_dir,
-                win_dur=args.win_dur,
-                overlap=args.overlap,
-                freq_range=tuple(args.freq_range),
-                ml_context=args.ml_context if args.ml_context != 40.0 else None
-            )
+        downloaded_files = {}
+        
+        if not args.skip_download:
+            if args.batch_mode:
+                # Old batch method: download all, then process all
+                print_status("📦 Using batch processing mode", "INFO")
+                downloaded_files = analyzer.download_whale_call_audio(whale_calls, output_dir)
+                if downloaded_files:
+                    custom_spectrograms, failed_calls, actual_dimensions = analyzer.create_custom_spectrograms(
+                        whale_calls, downloaded_files, output_dir,
+                        win_dur=args.win_dur,
+                        overlap=args.overlap,
+                        freq_range=tuple(args.freq_range),
+                        ml_context=args.ml_context if args.ml_context != 40.0 else None
+                    )
+                    # Clean up after batch processing if requested
+                    if args.cleanup_audio:
+                        deleted_count = analyzer.cleanup_audio_files(downloaded_files)
+                        print_status(f"🧹 Audio cleanup: {deleted_count} files deleted", "INFO")
+            else:
+                # New incremental method: download -> process -> cleanup as we go
+                print_status("🔄 Using incremental processing mode (memory efficient)", "INFO")
+                custom_spectrograms, failed_calls, actual_dimensions = analyzer.process_calls_incrementally(
+                    whale_calls, output_dir,
+                    win_dur=args.win_dur,
+                    overlap=args.overlap,
+                    freq_range=tuple(args.freq_range),
+                    ml_context=args.ml_context if args.ml_context != 40.0 else None,
+                    cleanup_audio=args.cleanup_audio,
+                    max_workers=args.workers
+                )
+                # For report compatibility, simulate downloaded_files
+                unique_clips = whale_calls['Clip ID'].unique()
+                downloaded_files = {clip_id: f"processed_{clip_id}" for clip_id in unique_clips}
         
         # Restore original formats if overridden
-        if args.mat_only or args.png_only:
+        if original_formats is not None:
             analyzer.config.setdefault('custom_spectrograms', {})['output_formats'] = original_formats
         
         # Download ONC spectrograms for comparison
         onc_spectrograms = {}
         if not args.skip_onc_spectrograms:
             onc_spectrograms = analyzer.download_onc_spectrograms(whale_calls, output_dir)
-        
-        # Clean up audio files if requested
-        if args.cleanup_audio and downloaded_files:
-            deleted_count = analyzer.cleanup_audio_files(downloaded_files)
-            print_status(f"🧹 Audio cleanup: {deleted_count} files deleted", "INFO")
         
         # Create analysis report
         analyzer.create_analysis_report(

@@ -8,6 +8,8 @@ import os
 import numpy as np
 import scipy.io
 import scipy.signal
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for thread safety
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import soundfile as sf
@@ -15,6 +17,10 @@ import librosa
 from pathlib import Path
 from typing import Union, Tuple, List, Optional
 import logging
+import threading
+
+# Thread lock for matplotlib operations (shared across instances)
+_plot_lock = threading.Lock()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -154,40 +160,42 @@ class SpectrogramGenerator:
         Returns:
             matplotlib Figure object
         """
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        # Create meshgrid for pcolor
-        T, F = np.meshgrid(times, frequencies)
-        
-        # Plot spectrogram
-        pcm = ax.pcolor(T, F, power_db_norm, 
-                       cmap=self.colormap, 
-                       shading='auto',
-                       vmin=self.clim[0], 
-                       vmax=self.clim[1])
-        
-        # Set frequency limits
-        ax.set_ylim(self.freq_lims)
-        
-        # Set log scale if requested
-        if self.log_freq:
-            ax.set_yscale('log')
-        
-        # Labels and title
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Frequency [Hz]')
-        ax.set_title(title)
-        
-        # Colorbar
-        cbar = plt.colorbar(pcm, ax=ax)
-        cbar.set_label('PSD re max [dB]')
-        
-        # Save if requested
-        if save_path:
-            save_path = Path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Spectrogram plot saved: {save_path}")
+        # Use thread lock for all matplotlib operations
+        with _plot_lock:
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Create meshgrid for pcolor
+            T, F = np.meshgrid(times, frequencies)
+            
+            # Plot spectrogram
+            pcm = ax.pcolor(T, F, power_db_norm, 
+                           cmap=self.colormap, 
+                           shading='auto',
+                           vmin=self.clim[0], 
+                           vmax=self.clim[1])
+            
+            # Set frequency limits
+            ax.set_ylim(self.freq_lims)
+            
+            # Set log scale if requested
+            if self.log_freq:
+                ax.set_yscale('log')
+            
+            # Labels and title
+            ax.set_xlabel('Time [s]')
+            ax.set_ylabel('Frequency [Hz]')
+            ax.set_title(title)
+            
+            # Colorbar
+            cbar = plt.colorbar(pcm, ax=ax)
+            cbar.set_label('PSD re max [dB]')
+            
+            # Save if requested
+            if save_path:
+                save_path = Path(save_path)
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                plt.savefig(save_path, dpi=300, bbox_inches='tight')
+                logger.info(f"Spectrogram plot saved: {save_path}")
         
         return fig
     

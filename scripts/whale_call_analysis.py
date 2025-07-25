@@ -14,26 +14,23 @@ Features:
 
 Usage Examples:
 
-  # Interactive mode (recommended)
-  python scripts/whale_call_analysis.py
-  
   # Sample 10 calls and create comparison spectrograms
-  python scripts/whale_call_analysis.py --sample-size 10 --output-dir whale_analysis
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --sample-size 10 --output-dir whale_analysis
   
   # Generate ML dataset: .mat files only for entire filtered dataset
-  python scripts/whale_call_analysis.py --process-all --mat-only --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --skip-onc-spectrograms --cleanup-audio
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --skip-onc-spectrograms --cleanup-audio
   
   # Focus on specific device and date range
-  python scripts/whale_call_analysis.py --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --sample-size 20
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --sample-size 20
   
   # High-quality calls only with custom spectrogram parameters
-  python scripts/whale_call_analysis.py --sample-size 15 --min-duration 5.0 --freq-range 10 500 --win-dur 1.0
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --sample-size 15 --min-duration 5.0 --freq-range 10 500 --win-dur 1.0
   
   # Generate visualization plots only (no .mat files)
-  python scripts/whale_call_analysis.py --png-only --sample-size 50
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --png-only --sample-size 50
   
   # Process large dataset efficiently: MAT files only, cleanup audio after
-  python scripts/whale_call_analysis.py --process-all --mat-only --cleanup-audio --device ICLISTENHF1353
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --cleanup-audio --device ICLISTENHF1353
 """
 
 import os
@@ -88,11 +85,10 @@ class FinWhaleCallAnalyzer:
     ONC API downloads, and custom spectrogram generation.
     """
     
-    def __init__(self, onc_token: str, data_dir: str = "./data", config_path: str = "./config/dataset_config.yaml"):
-        """Initialize the analyzer with ONC credentials and data directory"""
+    def __init__(self, onc_token: str, excel_file: str, config_path: str = "./config/dataset_config.yaml"):
+        """Initialize the analyzer with ONC credentials and Excel file path"""
         self.onc = ONC(onc_token)
-        self.data_dir = Path(data_dir)
-        self.excel_file = self.data_dir / "finwhales" / "FinWhale20Hz_CallLibrary_Rannankari.xlsx"
+        self.excel_file = Path(excel_file)
         
         # Load configuration
         self.config = self.load_config(config_path)
@@ -101,8 +97,8 @@ class FinWhaleCallAnalyzer:
         self.whale_data = None
         self.load_whale_data()
         
-        # Initialize components
-        self.downloader = SpectrogramDownloader(onc_token, str(data_dir))
+        # Initialize components (use current directory as base for downloads)
+        self.downloader = SpectrogramDownloader(onc_token, ".")
         self.spectrogram_generator = None
     
     def load_config(self, config_path: str) -> dict:
@@ -914,7 +910,7 @@ class FinWhaleCallAnalyzer:
         report = {
             "dataset_metadata": {
                 "creation_date": datetime.now().isoformat(),
-                "source_library": "FinWhale20Hz_CallLibrary_Rannankari.xlsx",
+                "source_library": str(self.excel_file),
                 "total_calls_analyzed": len(whale_calls),
                 "successful_spectrograms": len(custom_spectrograms),
                 "failed_spectrograms": len(failed_calls) if failed_calls else 0,
@@ -1070,11 +1066,11 @@ def main():
     parser.add_argument('--overlap', type=float, default=0.9,
                        help='Overlap ratio for spectrograms (default: from config, fallback: 0.9)')
     
-    # Output options
+    # Input/Output options
+    parser.add_argument('--excel-file', type=str, required=True,
+                       help='Path to Excel file containing whale call library (e.g., data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx)')
     parser.add_argument('--output-dir', type=str, default='whale_call_analysis',
                        help='Output directory for results (default: whale_call_analysis)')
-    parser.add_argument('--data-dir', type=str, default='./data',
-                       help='Data directory containing whale call library (default: ./data)')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml',
                        help='Path to configuration file (default: ./config/dataset_config.yaml)')
     parser.add_argument('--mat-only', action='store_true',
@@ -1108,8 +1104,12 @@ def main():
     try:
         print_header("FIN WHALE CALL ANALYSIS TOOL")
         
-        # Initialize analyzer with config path
-        analyzer = FinWhaleCallAnalyzer(onc_token, args.data_dir, args.config)
+        # Validate Excel file exists
+        if not Path(args.excel_file).exists():
+            raise FileNotFoundError(f"Excel file not found: {args.excel_file}")
+        
+        # Initialize analyzer with Excel file path
+        analyzer = FinWhaleCallAnalyzer(onc_token, args.excel_file, args.config)
         
         # Create output directory
         output_dir = Path(args.output_dir)

@@ -8,6 +8,7 @@ Complete guide for downloading Ocean Networks Canada spectrograms, FLAC audio fi
 - [⚙️ Setup](#️-setup)
 - [📥 Downloading Spectrograms](#-downloading-spectrograms)
 - [🎵 Downloading FLAC Audio Files](#-downloading-flac-audio-files)
+- [🎶 Custom Spectrogram Generation](#-custom-spectrogram-generation)
 - [🏷️ Interactive Spectrogram Labeling Tool](#️-interactive-spectrogram-labeling-tool)
 - [🗂️ Creating HDF5 Datasets](#️-creating-hdf5-datasets)
 - [🔧 Advanced Options](#-advanced-options)
@@ -26,10 +27,13 @@ python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 
 # 3. Download spectrograms WITH corresponding FLAC audio files
 python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --spectrograms-per-batch 6 --download-flac
 
-# 4. Label your spectrograms using the interactive tool (recommended)
+# 4. Generate custom spectrograms from FLAC files (NEW!)
+python scripts/generate_spectrograms.py --input-dir data/ICLISTENHF6020/flac/ --win-dur 2.0
+
+# 5. Label your spectrograms using the interactive tool (recommended)
 cd tools/labeling && python run.py
 
-# 5. Create HDF5 dataset
+# 6. Create HDF5 dataset
 python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
 ```
 
@@ -37,6 +41,7 @@ python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/h
 
 - **🤖 Smart Interactive Mode**: Guided setup that uses the intelligent sampling strategy and includes FLAC audio option
 - **🎵 FLAC Audio Download**: Download corresponding raw audio files alongside spectrograms
+- **🎶 Custom Spectrogram Generation**: Create spectrograms with any duration/parameters from FLAC files
 - **🚀 Deployment Validation**: Ensures hydrophones were deployed during requested periods  
 - **📊 Device Discovery**: Browse available hydrophones with deployment information
 - **⏰ Date Validation**: Checks dates fall within active deployment periods
@@ -180,7 +185,116 @@ python scripts/download_spectrograms.py --mode sampling --download-flac
 **File Organization**: FLAC files saved in `flac/` subdirectory alongside spectrograms  
 **Performance**: 10-50x larger than spectrograms; start with small downloads (--threshold 5-10)
 
+## 🎶 Custom Spectrogram Generation
 
+Generate custom spectrograms from your downloaded FLAC/WAV audio files with configurable parameters. This functionality translates MATLAB spectrogram code to Python, allowing you to create spectrograms with different durations, frequency ranges, and analysis parameters.
+
+### ✨ Features
+- **Multiple audio formats**: FLAC, WAV, MP3, M4A support
+- **Configurable parameters**: Window duration, overlap, frequency limits
+- **MATLAB compatibility**: Outputs .mat files with same structure as MATLAB
+- **High-quality plots**: PNG visualizations with customizable colormaps
+- **Batch processing**: Process entire directories efficiently
+- **Project integration**: Works seamlessly with downloaded FLAC files
+
+### 🚀 Quick Start
+
+```bash
+# Interactive mode (recommended)
+python scripts/generate_spectrograms.py
+
+# Process FLAC files from ONC downloads
+python scripts/generate_spectrograms.py --input-dir data/ICLISTENHF6020/flac/
+
+# Custom parameters for longer spectrograms  
+python scripts/generate_spectrograms.py \
+  --input-dir data/DEVICE/flac/ \
+  --win-dur 2.0 \
+  --overlap 0.75 \
+  --freq-min 5 \
+  --freq-max 20000
+```
+
+### 🎛️ Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--win-dur` | Window duration in seconds | 1.0 |
+| `--overlap` | Overlap ratio (0-1) | 0.5 |
+| `--freq-min` | Minimum frequency (Hz) | 10 |
+| `--freq-max` | Maximum frequency (Hz) | 10000 |
+| `--colormap` | Matplotlib colormap | turbo |
+| `--clim-min` | Color scale minimum (dB) | -60 |
+| `--clim-max` | Color scale maximum (dB) | 0 |
+
+### 📁 Output Structure
+
+Custom spectrograms are saved parallel to FLAC directories:
+
+```
+data/
+└── DEVICE/
+    └── sampling_YYYY-MM-DD_to_YYYY-MM-DD/
+        ├── flac/                    # Downloaded audio files
+        └── custom_spectrograms/     # Generated spectrograms
+            ├── audio1.mat           # MATLAB data files
+            ├── audio1.png           # PNG visualizations
+            ├── audio2.mat
+            └── audio2.png
+```
+
+### ⚙️ Configuration
+
+Parameters can be configured in `config/dataset_config.yaml`:
+
+```yaml
+custom_spectrograms:
+  window_duration: 1.0     # Window duration in seconds
+  overlap: 0.5             # Overlap ratio (0-1)
+  frequency_limits:
+    min: 10                # Minimum frequency (Hz)
+    max: 10000             # Maximum frequency (Hz)
+  colormap: "turbo"        # Matplotlib colormap
+  color_limits:
+    min: -60               # Color scale minimum (dB)
+    max: 0                 # Color scale maximum (dB)
+  log_frequency: true      # Use log frequency scale
+```
+
+### 🔬 Use Cases
+
+**Different Analysis Requirements:**
+- **High time resolution**: `--win-dur 0.5 --overlap 0.75` for transient events
+- **High frequency resolution**: `--win-dur 4.0 --overlap 0.9` for tonal analysis  
+- **Low-frequency focus**: `--freq-min 1 --freq-max 1000` for whale calls
+- **Wideband analysis**: `--freq-min 1 --freq-max 50000` for full spectrum
+
+**Custom Duration Spectrograms:**
+Unlike ONC's fixed 5-minute spectrograms, you can create any duration by adjusting window parameters to analyze longer or shorter audio segments.
+
+### 💻 Programmatic Usage
+
+```python
+from utils.audio import SpectrogramGenerator
+
+# Create generator with custom parameters
+generator = SpectrogramGenerator(
+    win_dur=2.0,           # 2 second windows
+    overlap=0.75,          # 75% overlap
+    freq_lims=(5, 20000),  # 5 Hz to 20 kHz
+    colormap='viridis'
+)
+
+# Process a directory
+results = generator.process_directory(
+    input_dir="data/DEVICE/flac/",
+    save_dir="data/DEVICE/custom_spectrograms/",
+    save_mat=True,
+    save_plot=True
+)
+```
+
+See `examples/generate_custom_spectrograms_example.py` for complete examples.
 
 ## 🏷️ Interactive Spectrogram Labeling Tool
 

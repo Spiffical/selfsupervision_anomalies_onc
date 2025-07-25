@@ -43,6 +43,34 @@ hydrophone_patterns:
 processing:
   batch_size: 100          # Batch size for memory-efficient processing
   max_workers: null        # Number of worker processes (null = auto-detect)
+
+# Custom spectrogram generation settings
+custom_spectrograms:
+  window_duration: 1.0     # Window duration in seconds (whale-optimized for freq resolution)
+  overlap: 0.9           # Overlap ratio between adjacent windows (whale-optimized for time resolution)
+  frequency_limits:        # Frequency limits for whale call analysis [Hz]
+    min: 5
+    max: 100
+  colormap: "viridis"      # Matplotlib colormap name (whale-optimized)
+  color_limits:            # Color axis limits [dB] (whale-optimized)
+    min: -40
+    max: 0
+  log_frequency: false     # Use linear frequency scale (whale-optimized)
+  output_formats:          # Which formats to generate
+    matlab: true           # Generate .mat files
+    plots: true            # Generate .png plots
+
+# Temporal context settings for ML training
+temporal_context:
+  context_duration: 40.0   # Total duration in seconds for ML training context
+  padding_method: "centered" # How to position the call within context ("centered", "start", "end")
+  multi_file_stitching: true # Enable stitching across file boundaries
+  exact_duration_enforcement: true # Ensure exact duration via padding/trimming
+  supported_extensions:    # Audio file extensions to process
+    - ".wav"
+    - ".flac" 
+    - ".mp3"
+    - ".m4a"
   
 # Output settings  
 output:

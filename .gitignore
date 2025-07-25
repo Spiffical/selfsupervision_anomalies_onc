@@ -18,6 +18,8 @@ logs/
 pretrain_joint/
 # label_analysis.json # Will be in logs/
 dataset_structure_documentation.md
-.gitignore
 hydrophone_locations.txt
 dataset_structure_documentation.txt
+output/
+scripts/test_mat_files.py
+whale_call_analysis/

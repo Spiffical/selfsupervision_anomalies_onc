@@ -17,8 +17,8 @@ Usage Examples:
   # Sample 10 calls and create comparison spectrograms
   python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --sample-size 10 --output-dir whale_analysis
   
-  # Generate ML dataset: .mat files only for entire filtered dataset
-  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --skip-onc-spectrograms --cleanup-audio
+  # Generate ML dataset: .mat files only for entire unfiltered dataset  
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --skip-onc-spectrograms --cleanup-audio
   
   # Focus on specific device and date range
   python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --device ICLISTENHF1353 --start-date 2018-07-01 --end-date 2018-08-01 --sample-size 20
@@ -29,8 +29,8 @@ Usage Examples:
   # Generate visualization plots only (no .mat files)
   python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --png-only --sample-size 50
   
-  # Process large dataset efficiently: MAT files only, cleanup audio after
-  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --cleanup-audio --device ICLISTENHF1353
+  # Process entire dataset efficiently: MAT files only, cleanup audio after
+  python scripts/whale_call_analysis.py --excel-file data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx --process-all --mat-only --cleanup-audio
 """
 
 import os
@@ -235,12 +235,17 @@ class FinWhaleCallAnalyzer:
             if len(filtered_data) > 0:
                 print_status(f"📅 Filtered date range: {filtered_data['Date (UTC)'].min().date()} to {filtered_data['Date (UTC)'].max().date()}")
                 print_status(f"🎛️ Devices in filtered data: {filtered_data['device_code'].nunique()}")
+        elif sample_size is None:
+            print_status(f"📊 No filters applied: processing entire dataset ({len(filtered_data):,} calls)")
         
         # Handle sample size
         if sample_size is None:
             # Process entire dataset
             sample_size = len(filtered_data)
-            print_status(f"🚀 Processing entire filtered dataset: {sample_size:,} calls", "INFO")
+            if len(filtered_data) == len(self.whale_data):
+                print_status(f"🚀 Processing entire unfiltered dataset: {sample_size:,} calls", "INFO")
+            else:
+                print_status(f"🚀 Processing entire filtered dataset: {sample_size:,} calls", "INFO")
         elif len(filtered_data) < sample_size:
             print_status(f"Only {len(filtered_data)} calls available, sampling all", "WARNING")
             sample_size = len(filtered_data)
@@ -1046,7 +1051,7 @@ def main():
     parser.add_argument('--sample-size', type=int, default=20,
                        help='Number of whale calls to analyze (default: 20). Use --process-all to process entire dataset')
     parser.add_argument('--process-all', action='store_true',
-                       help='Process the entire filtered dataset (ignores --sample-size)')
+                       help='Process the entire unfiltered dataset (ignores all filtering arguments and --sample-size)')
     parser.add_argument('--device', type=str,
                        help='Filter by specific device code (e.g., ICLISTENHF1353)')
     parser.add_argument('--start-date', type=str,
@@ -1117,21 +1122,27 @@ def main():
         
         # Handle --process-all option
         if args.process_all:
-            print_status("🚀 Processing entire filtered dataset (--process-all enabled)", "INFO")
-            effective_sample_size = None  # Will be handled in sample_calls
+            print_status("🚀 Processing entire dataset (--process-all enabled, ignoring all filters)", "INFO")
+            whale_calls = analyzer.sample_calls(
+                sample_size=None,
+                device_filter=None,
+                start_date=None,
+                end_date=None,
+                min_duration=0.0,
+                max_duration=float('inf'),
+                freq_range=None
+            )
         else:
-            effective_sample_size = args.sample_size
-        
-        # Sample whale calls
-        whale_calls = analyzer.sample_calls(
-            sample_size=effective_sample_size,
-            device_filter=args.device,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            min_duration=args.min_duration,
-            max_duration=args.max_duration,
-            freq_range=tuple(args.freq_range)
-        )
+            # Sample whale calls with specified filters
+            whale_calls = analyzer.sample_calls(
+                sample_size=args.sample_size,
+                device_filter=args.device,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                min_duration=args.min_duration,
+                max_duration=args.max_duration,
+                freq_range=tuple(args.freq_range)
+            )
         
         # Save sampled calls
         calls_file = output_dir / "sampled_calls.csv"

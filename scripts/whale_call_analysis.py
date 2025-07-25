@@ -376,7 +376,7 @@ class FinWhaleCallAnalyzer:
         print_status(f"Successfully downloaded {len(downloaded_files)}/{len(unique_clips)} audio files", "SUCCESS")
         return downloaded_files
 
-    def _stitch_audio_files(self, call: pd.Series, desired_start: float, desired_end: float, context_duration: float) -> Optional[np.ndarray]:
+    def _stitch_audio_files(self, call: pd.Series, desired_start: float, desired_end: float, context_duration: float, audio_dir: Path) -> Optional[np.ndarray]:
         """
         Stitch audio files when context window spans multiple files.
         
@@ -409,7 +409,7 @@ class FinWhaleCallAnalyzer:
             return None
         
         # Load current file
-        current_path = Path("whale_call_analysis") / "audio" / current_filename
+        current_path = audio_dir / current_filename
         current_audio, sample_rate = sf.read(current_path)
         current_duration = len(current_audio) / sample_rate
         
@@ -419,7 +419,7 @@ class FinWhaleCallAnalyzer:
         if desired_start < 0:
             prev_timestamp = current_timestamp - pd.Timedelta(seconds=300)  # ONC files are 5min (300s)
             prev_filename = f"{device_code}_{prev_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
-            prev_path = Path("whale_call_analysis") / "audio" / prev_filename
+            prev_path = audio_dir / prev_filename
             
             if prev_path.exists():
                 prev_audio, _ = sf.read(prev_path)
@@ -434,7 +434,7 @@ class FinWhaleCallAnalyzer:
                 print_status(f"📎 Stitched {len(prev_segment)/sample_rate:.1f}s from previous file: {prev_filename}", "INFO")
             else:
                 # Download previous file if it doesn't exist
-                if not self._download_adjacent_file(device_code, prev_timestamp):
+                if not self._download_adjacent_file(device_code, prev_timestamp, audio_dir):
                     return None
                 
                 if prev_path.exists():
@@ -460,7 +460,7 @@ class FinWhaleCallAnalyzer:
         if desired_end > current_duration:
             next_timestamp = current_timestamp + pd.Timedelta(seconds=300)  # ONC files are 5min (300s)
             next_filename = f"{device_code}_{next_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
-            next_path = Path("whale_call_analysis") / "audio" / next_filename
+            next_path = audio_dir / next_filename
             
             if next_path.exists():
                 next_audio, _ = sf.read(next_path)
@@ -474,7 +474,7 @@ class FinWhaleCallAnalyzer:
                 print_status(f"📎 Stitched {len(next_segment)/sample_rate:.1f}s from next file: {next_filename}", "INFO")
             else:
                 # Download next file if it doesn't exist
-                if not self._download_adjacent_file(device_code, next_timestamp):
+                if not self._download_adjacent_file(device_code, next_timestamp, audio_dir):
                     return None
                 
                 if next_path.exists():
@@ -503,13 +503,12 @@ class FinWhaleCallAnalyzer:
         
         return None
     
-    def _download_adjacent_file(self, device_code: str, timestamp: pd.Timestamp) -> bool:
+    def _download_adjacent_file(self, device_code: str, timestamp: pd.Timestamp, audio_dir: Path) -> bool:
         """Download an adjacent audio file if needed."""
         filename = f"{device_code}_{timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
         
-        # Set output path to whale_call_analysis/audio
+        # Set output path to the provided audio directory
         original_output_path = self.onc.outPath
-        audio_dir = Path("whale_call_analysis") / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
         self.onc.outPath = str(audio_dir)
         
@@ -683,7 +682,9 @@ class FinWhaleCallAnalyzer:
                 
                 if needs_prev_file or needs_next_file:
                     print_status(f"Need stitching: prev={needs_prev_file}, next={needs_next_file}, start={desired_start:.1f}s, end={desired_end:.1f}s, audio_dur={audio_duration:.1f}s", "INFO")
-                    call_audio = self._stitch_audio_files(call, desired_start, desired_end, context_duration)
+                    # Derive audio directory from output_dir
+                    audio_dir = output_dir.parent / "audio"
+                    call_audio = self._stitch_audio_files(call, desired_start, desired_end, context_duration, audio_dir)
                     if call_audio is None:
                         print_status(f"⚠️ Skipping call: unable to stitch adjacent files", "WARNING")
                         failed_calls.append({
@@ -1047,15 +1048,16 @@ class FinWhaleCallAnalyzer:
                     'reason': f'Spectrogram processing error: {str(e)}'
                 })
         
-        # Cleanup audio file if requested
-        if cleanup_audio and audio_file_path.exists():
-            try:
-                file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
-                audio_file_path.unlink()
-                file_size_cleaned_mb = file_size_mb
-                print_status(f"🗑️ [{thread_id}] Cleaned up: {clip_id} ({file_size_mb:.1f} MB)")
-            except Exception as e:
-                print_status(f"⚠️ [{thread_id}] Failed to cleanup {clip_id}: {e}", "WARNING")
+        finally:
+            # Always cleanup audio file if requested, regardless of processing success/failure
+            if cleanup_audio and audio_file_path.exists():
+                try:
+                    file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
+                    audio_file_path.unlink()
+                    file_size_cleaned_mb = file_size_mb
+                    print_status(f"🗑️ [{thread_id}] Cleaned up: {clip_id} ({file_size_mb:.1f} MB)")
+                except Exception as e:
+                    print_status(f"⚠️ [{thread_id}] Failed to cleanup {clip_id}: {e}", "WARNING")
         
         return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
     

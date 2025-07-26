@@ -23,3 +23,6 @@ dataset_structure_documentation.txt
 output/
 scripts/test_mat_files.py
 whale_call_analysis/
+scripts/analyze_excel_data.py
+excel_analysis/device_distribution.png
+excel_analysis/timing_distributions.png

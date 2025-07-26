@@ -115,6 +115,37 @@ class FinWhaleCallAnalyzer:
         self.downloader = SpectrogramDownloader(onc_token, ".")
         self.spectrogram_generator = None
     
+    def _create_safe_call_id(self, clip_id, call):
+        """
+        Create a safe call ID, handling NaN values in timing data
+        
+        Args:
+            clip_id: The audio clip ID
+            call: The call row from the DataFrame
+            
+        Returns:
+            str: Safe call ID or None if timing data is invalid
+        """
+        begin_time_raw = call['begin time (s)']
+        end_time_raw = call['end time (s)']
+        
+        # Check for NaN values
+        if pd.isna(begin_time_raw) or pd.isna(end_time_raw):
+            return None
+            
+        try:
+            begin_time = float(begin_time_raw)
+            end_time = float(end_time_raw)
+            
+            # Validate that times are reasonable
+            if begin_time < 0 or end_time < 0 or begin_time >= end_time:
+                return None
+                
+            call_id = f"{clip_id}_{begin_time:.1f}s_{end_time:.1f}s"
+            return call_id.replace('.wav', '').replace(':', '-').replace(' ', '_')
+        except (ValueError, TypeError):
+            return None
+    
     def load_config(self, config_path: str) -> dict:
         """Load configuration from YAML file"""
         try:
@@ -147,17 +178,63 @@ class FinWhaleCallAnalyzer:
         # Convert dates and times
         self.whale_data['Date (UTC)'] = pd.to_datetime(self.whale_data['Date (UTC)'])
         
-        # Clean duration and timing columns 
-        numeric_cols = ['Duration (s)', 'begin time (s)', 'end time (s)', 'low freq', 'high freq', 'peak freq']
-        for col in numeric_cols:
+        def convert_time_to_seconds(series):
+            """Convert time format (MM:SS.ms) to seconds"""
+            # First try direct numeric conversion
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            
+            # For failed conversions, try time format conversion
+            failed_mask = numeric_series.isna()
+            if failed_mask.any():
+                failed_indices = series[failed_mask].index
+                for idx in failed_indices:
+                    val = series.loc[idx]
+                    try:
+                        if hasattr(val, 'hour'):
+                            # Convert time object: treat hour as minutes, minute as seconds, second as centiseconds
+                            # So 3:54:24 = 3 minutes + 54 seconds + 24/100 seconds = 234.24 seconds
+                            total_seconds = val.hour * 60 + val.minute + val.second / 100.0
+                            if hasattr(val, 'microsecond'):
+                                total_seconds += val.microsecond / 1e6
+                            numeric_series.loc[idx] = total_seconds
+                        elif isinstance(val, str):
+                            # Try parsing as time format MM:SS:ms
+                            time_parts = val.split(':')
+                            if len(time_parts) == 3:
+                                minutes, seconds, milliseconds = map(float, time_parts)
+                                total_seconds = minutes * 60 + seconds + milliseconds / 100.0
+                                numeric_series.loc[idx] = total_seconds
+                    except:
+                        pass  # Keep as NaN if conversion fails
+            
+            return numeric_series
+        
+        # Clean duration and timing columns with proper time conversion
+        timing_cols = ['begin time (s)', 'end time (s)', 'Duration (s)']
+        for col in timing_cols:
+            if col in self.whale_data.columns:
+                self.whale_data[col] = convert_time_to_seconds(self.whale_data[col])
+        
+        # Clean frequency columns normally
+        freq_cols = ['low freq', 'high freq', 'peak freq']
+        for col in freq_cols:
             if col in self.whale_data.columns:
                 self.whale_data[col] = pd.to_numeric(self.whale_data[col], errors='coerce')
         
         # Filter for valid 20 Hz calls (handle whitespace in Call Category)
         mask = (
             (self.whale_data['device_code'].notna()) &
-            (self.whale_data['Clip ID'].str.endswith('.wav'))
+            (self.whale_data['Clip ID'].str.endswith('.wav')) &
+            (self.whale_data['begin time (s)'].notna()) &
+            (self.whale_data['end time (s)'].notna()) &
+            (self.whale_data['begin time (s)'] >= 0) &
+            (self.whale_data['end time (s)'] >= 0) &
+            (self.whale_data['begin time (s)'] < self.whale_data['end time (s)'])
         )
+        
+        invalid_timing_count = len(self.whale_data) - mask.sum()
+        if invalid_timing_count > 0:
+            print_status(f"Filtered out {invalid_timing_count} calls with invalid timing data", "WARNING")
         
         self.whale_data = self.whale_data[mask].copy()
         print_status(f"Filtered to {len(self.whale_data)} valid 20 Hz fin whale calls")
@@ -643,8 +720,35 @@ class FinWhaleCallAnalyzer:
             audio_path = downloaded_files[clip_id]
             
             try:
+                # Validate timing data first
+                begin_time_raw = call['begin time (s)']
+                end_time_raw = call['end time (s)']
+                
+                # Skip calls with invalid timing data
+                if pd.isna(begin_time_raw) or pd.isna(end_time_raw):
+                    print_status(f"⚠️ Skipping call with invalid timing data: begin={begin_time_raw}, end={end_time_raw}", "WARNING")
+                    failed_calls.append({
+                        'clip_id': clip_id,
+                        'call_id': f"{clip_id}_invalid_timing",
+                        'reason': f'Invalid timing data: begin={begin_time_raw}, end={end_time_raw}'
+                    })
+                    continue
+                
+                begin_time = float(begin_time_raw)
+                end_time = float(end_time_raw)
+                
+                # Validate that times are reasonable
+                if begin_time < 0 or end_time < 0 or begin_time >= end_time:
+                    print_status(f"⚠️ Skipping call with unreasonable timing: begin={begin_time:.1f}s, end={end_time:.1f}s", "WARNING")
+                    failed_calls.append({
+                        'clip_id': clip_id,
+                        'call_id': f"{clip_id}_invalid_timing",
+                        'reason': f'Unreasonable timing: begin={begin_time:.1f}s, end={end_time:.1f}s'
+                    })
+                    continue
+                
                 # Create output filename with call timing info
-                call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s"
+                call_id = f"{clip_id}_{begin_time:.1f}s_{end_time:.1f}s"
                 call_id = call_id.replace('.wav', '').replace(':', '-').replace(' ', '_')
                 
                 # Set output file paths for different formats
@@ -657,10 +761,6 @@ class FinWhaleCallAnalyzer:
                 
                 # Load audio and extract call segment
                 audio_data, sample_rate = self.spectrogram_generator.load_audio(audio_path)
-                
-                # Extract the specific call segment with ML-optimized context
-                begin_time = float(call['begin time (s)'])
-                end_time = float(call['end time (s)'])
                 call_duration = end_time - begin_time
                 
                 # ML Context: Use command line override, then config, then default
@@ -993,7 +1093,9 @@ class FinWhaleCallAnalyzer:
             if not download_success:
                 # Mark all calls in this file as failed
                 for _, call in calls_in_file.iterrows():
-                    call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+                    call_id = self._create_safe_call_id(clip_id, call)
+                    if call_id is None:
+                        call_id = f"{clip_id}_invalid_timing"
                     failed_calls.append({
                         'clip_id': clip_id,
                         'call_id': call_id,
@@ -1011,7 +1113,9 @@ class FinWhaleCallAnalyzer:
                 print_status(f"❌ [{thread_id}] Existing file is corrupted: {clip_id} - {e}", "WARNING")
                 # Mark all calls in this file as failed
                 for _, call in calls_in_file.iterrows():
-                    call_id = f"{clip_id}_{call['begin time (s)']:.1f}s_{call['end time (s)']:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+                    call_id = self._create_safe_call_id(clip_id, call)
+                    if call_id is None:
+                        call_id = f"{clip_id}_invalid_timing"
                     failed_calls.append({
                         'clip_id': clip_id,
                         'call_id': call_id,

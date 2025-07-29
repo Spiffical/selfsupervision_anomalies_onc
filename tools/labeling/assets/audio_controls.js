@@ -3,11 +3,8 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
     namespace: {
         // Initialize audio players when page loads
         initializeAudioPlayers: function() {
-            console.log('Initializing audio players...');
-            
-            // Find all audio elements and set up event listeners
+            // Optimized initialization - minimal logging, fast DOM queries
             const audioElements = document.querySelectorAll('audio[id$="-audio"]');
-            console.log('Found', audioElements.length, 'audio elements');
             
             audioElements.forEach(function(audio) {
                 const playerId = audio.id.replace('-audio', '');
@@ -17,20 +14,11 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 const currentTimeEl = document.getElementById(playerId + '-current-time');
                 const durationEl = document.getElementById(playerId + '-duration');
                 
-                console.log('Setting up player:', playerId, {
-                    playBtn: !!playBtn,
-                    playIcon: !!playIcon,
-                    timeSlider: !!timeSlider,
-                    currentTimeEl: !!currentTimeEl,
-                    durationEl: !!durationEl
-                });
-                
                 if (!audio.hasEventListeners) {
                     audio.hasEventListeners = true;
                     
                     // Update duration when metadata is loaded
                     audio.addEventListener('loadedmetadata', function() {
-                        console.log('Metadata loaded for', playerId, 'duration:', audio.duration);
                         if (durationEl && audio.duration) {
                             const minutes = Math.floor(audio.duration / 60);
                             const seconds = Math.floor(audio.duration % 60);
@@ -55,7 +43,6 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                     
                     // Reset play button when audio ends
                     audio.addEventListener('ended', function() {
-                        console.log('Audio ended for', playerId);
                         if (playIcon) {
                             playIcon.className = 'fas fa-play';
                         }
@@ -63,14 +50,12 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                     
                     // Handle play/pause events
                     audio.addEventListener('play', function() {
-                        console.log('Audio started playing:', playerId);
                         if (playIcon) {
                             playIcon.className = 'fas fa-pause';
                         }
                     });
                     
                     audio.addEventListener('pause', function() {
-                        console.log('Audio paused:', playerId);
                         if (playIcon) {
                             playIcon.className = 'fas fa-play';
                         }
@@ -93,27 +78,21 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                         e.preventDefault();
                         e.stopPropagation();
                         
-                        console.log('Play button clicked for', playerId, 'paused:', audio.paused, 'ended:', audio.ended);
-                        
                         if (audio.paused) {
                             // If audio has ended, reset it to the beginning
                             if (audio.ended) {
-                                console.log('Resetting ended audio for playback');
                                 audio.currentTime = 0;
                             }
                             
                             // Pause all other audio players first
                             audioElements.forEach(function(otherAudio) {
                                 if (otherAudio !== audio && !otherAudio.paused) {
-                                    console.log('Pausing other audio:', otherAudio.id);
                                     otherAudio.pause();
                                 }
                             });
                             
                             // Play this audio
-                            audio.play().then(function() {
-                                console.log('Successfully started playing:', playerId);
-                            }).catch(function(error) {
+                            audio.play().catch(function(error) {
                                 console.error('Error playing audio:', playerId, error);
                             });
                         } else {

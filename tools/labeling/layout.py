@@ -80,6 +80,20 @@ def create_layout(args):
             'width': '200px'
         }),
         
+        # debounce timers for display settings to prevent rapid updates
+        dcc.Interval(
+            id='colormap-debounce-timer',
+            interval=200,  # 200ms delay
+            max_intervals=1,
+            disabled=True
+        ),
+        dcc.Interval(
+            id='y-axis-debounce-timer', 
+            interval=200,  # 200ms delay
+            max_intervals=1,
+            disabled=True
+        ),
+        
         # Modal
         create_modal(),
         

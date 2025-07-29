@@ -1,17 +1,67 @@
-from dash.dependencies import Input, Output, State, ALL
-from dash import callback_context, html
 import dash
-from utils.image_processing import generate_image_cached, create_spectrogram_figure
-from utils.file_operations import load_labels, save_labels
-from utils.caching import preload_page_images, preload_next_page_images, log_cache_usage
-from utils.audio_matching import find_matching_audio_files, get_representative_audio_file
-from components.audio_player import create_audio_player
+from dash import html, dcc, Input, Output, State, callback, ALL, MATCH, callback_context
 import dash_bootstrap_components as dbc
-import threading
 import os
+import json
 import glob
+import threading
+from dash.exceptions import PreventUpdate
+
 from config import FOLDER, OUTPUT_FILE, SPECS_PER_PAGE, AVAILABLE_LABELS, ENABLE_AUDIO, AUDIO_FOLDER
-from utils.image_processing import load_spectrogram_cached
+from utils.file_operations import load_labels, save_labels
+from utils.image_processing import generate_image_cached, load_spectrogram_cached, create_spectrogram_figure
+from utils.audio_matching import find_matching_audio_files, get_representative_audio_file
+from utils.caching import preload_page_images, preload_next_page_images, log_cache_usage
+from components.audio_player import create_audio_player
+from components.hierarchical_selector import create_hierarchical_selector
+
+
+# Remove duplicate - use the one from caching.py
+
+
+# Remove duplicate - use the one from caching.py
+
+
+# Remove duplicate - use the one from caching.py
+
+
+def create_label_badges(labels, filename):
+    """Create badge display for current labels"""
+    if not labels:
+        return html.Div(
+            "No labels selected",
+            style={'color': '#6c757d', 'font-style': 'italic', 'font-size': '0.8em'}
+        )
+    
+    badges = []
+    for label in labels:
+        badge = dbc.Badge(
+            label,
+            color="primary", 
+            className="me-1 mb-1",
+            style={
+                'font-size': '0.7em', 
+                'padding': '3px 6px',
+                'max-width': '100%',  # Prevent overflow
+                'word-break': 'break-word',  # Break long words
+                'white-space': 'normal',  # Allow wrapping
+                'display': 'inline-block'  # Better wrapping behavior
+            }
+        )
+        badges.append(badge)
+    
+    return html.Div(
+        badges, 
+        style={
+            'display': 'flex', 
+            'flex-wrap': 'wrap', 
+            'gap': '2px',
+            'max-width': '100%',  # Constrain to container
+            'overflow': 'hidden',  # Hide any overflow
+            'align-items': 'flex-start'  # Better alignment when wrapping
+        }
+    )
+
 
 def register_callbacks(app):
     @app.callback(
@@ -20,14 +70,14 @@ def register_callbacks(app):
     Output('current-page', 'data'),
     Input('prev-page', 'n_clicks'),
     Input('next-page', 'n_clicks'),
-    Input('global-colormap-toggle', 'value'),
-    Input('global-y-axis-toggle', 'value'),
     Input('go-to-page', 'n_clicks'),
+    State('global-colormap-toggle', 'value'),
+    State('global-y-axis-toggle', 'value'),
     State('file-data', 'data'),
     State('current-page', 'data'),
     State('page-input', 'value'),
     )
-    def update_page(prev_clicks, next_clicks, use_hydrophone_colormap, use_log_y_axis, go_to_page_clicks, file_data, current_page, page_input):
+    def update_page(prev_clicks, next_clicks, go_to_page_clicks, use_hydrophone_colormap, use_log_y_axis, file_data, current_page, page_input):
         # Initialize current_page if None
         if current_page is None:
             current_page = 0
@@ -122,12 +172,12 @@ def register_callbacks(app):
                     html.Img(
                         src=image_src,
                         id={'type': 'spectrogram-image', 'filename': filename},
-                                                 className='spectrogram-image',
-                         style={
-                             'width': '100%',
-                             'cursor': 'pointer',
-                             'border-radius': '0'
-                         }
+                        className='spectrogram-image',
+                        style={
+                            'width': '100%',
+                            'cursor': 'pointer',
+                            'border-radius': '0'
+                        }
                     )
                 ], style={
                     'position': 'relative',
@@ -135,33 +185,40 @@ def register_callbacks(app):
                     'background': '#f8f9fa'
                 })
 
+                # Get labels for this file
                 labels_for_file = label_data.get(filename, [])
 
-                # Enhanced checkboxes with better styling
-                checkboxes = []
-                for label in AVAILABLE_LABELS:
-                    is_checked = label in labels_for_file
-                    checkbox = html.Div([
-                        dbc.Checkbox(
-                            id={'type': 'label-checkbox', 'filename': filename, 'label': label},
-                            label='',
-                            value=is_checked,
-                            style={'margin-right': '8px'}
-                        ),
-                        html.Label(label, style={
-                            'font-size': '12px',
-                            'font-weight': '500',
-                            'color': '#495057',
-                            'margin': '0',
-                            'cursor': 'pointer'
-                        })
-                    ], style={
-                        'display': 'flex',
-                        'align-items': 'center',
-                        'margin-bottom': '6px',
-                        'padding': '2px 0'
-                    })
-                    checkboxes.append(checkbox)
+                # Lightweight label selector - only show if clicked
+                labels_section = html.Div([
+                    # Dynamic labels display (will show badges)
+                    html.Div(
+                        id={'type': 'current-labels-display', 'filename': filename},
+                        children=create_label_badges(labels_for_file, filename),
+                        style={'margin': '0 0 8px 0', 'min-height': '24px'}
+                    ),
+                    # Toggle button for hierarchical selector
+                    dbc.Button(
+                        "Edit Labels", 
+                        id={'type': 'expand-labels', 'filename': filename},
+                        size="sm", 
+                        color="outline-primary",
+                        style={'font-size': '0.7em'}
+                    ),
+                    # Placeholder for expanded selector (will be populated on click)
+                    html.Div(
+                        id={'type': 'label-selector-container', 'filename': filename},
+                        style={'margin-top': '8px'}
+                    ),
+                    # Hidden store to track if selector is expanded
+                    dcc.Store(
+                        id={'type': 'selector-expanded', 'filename': filename},
+                        data=False
+                    )
+                ], style={
+                    'padding': '12px',
+                    'background': 'white',
+                    'border-top': '1px solid #e9ecef'
+                })
 
                 # Create audio player for this spectrogram
                 audio_player = None
@@ -174,14 +231,6 @@ def register_callbacks(app):
                             create_audio_player(representative_audio, filename, 
                                                player_id=f"grid-{hash(filename) % 10000}")
                         ])
-
-                # Labels section with better styling
-                labels_section = html.Div([
-                    html.Div(checkboxes, style={'padding': '0'})
-                ], style={
-                    'padding': '12px',
-                    'background': 'white'
-                })
 
                 # Build card content with improved structure
                 card_content = [
@@ -235,7 +284,7 @@ def register_callbacks(app):
     prevent_initial_call=True
     )
     def display_image_modal(n_clicks_list, close_clicks, global_colormap, global_y_axis):
-        ctx = dash.callback_context
+        ctx = callback_context
         if not ctx.triggered:
             return False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
@@ -299,51 +348,129 @@ def register_callbacks(app):
         fig = create_spectrogram_figure(spectrogram, colormap_value, y_axis_value)
         return fig
 
+    # debounced callbacks for display settings
     @app.callback(
-    Output({'type': 'spectrogram-image', 'filename': ALL}, 'src'),
-    Input('global-colormap-toggle', 'value'),
-    Input('global-y-axis-toggle', 'value'),
-    State({'type': 'spectrogram-image', 'filename': ALL}, 'id'),
-    prevent_initial_call=True
+        Output('colormap-debounce-timer', 'n_intervals'),
+        Output('colormap-debounce-timer', 'disabled'),
+        Input('global-colormap-toggle', 'value'),
+        prevent_initial_call=True
     )
-    def update_all_spectrograms(use_hydrophone_colormap, use_log_y_axis, image_ids):
+    def reset_colormap_timer(colormap_value):
+        return 0, False
+    
+    @app.callback(
+        Output('y-axis-debounce-timer', 'n_intervals'),
+        Output('y-axis-debounce-timer', 'disabled'),
+        Input('global-y-axis-toggle', 'value'),
+        prevent_initial_call=True
+    )
+    def reset_y_axis_timer(y_axis_value):
+        return 0, False
+
+    # simplified debounced update for debugging
+    @app.callback(
+        Output({'type': 'spectrogram-image', 'filename': ALL}, 'src'),
+        Input('colormap-debounce-timer', 'n_intervals'),
+        Input('y-axis-debounce-timer', 'n_intervals'),
+        State('global-colormap-toggle', 'value'),
+        State('global-y-axis-toggle', 'value'),
+        State({'type': 'spectrogram-image', 'filename': ALL}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_all_spectrograms_simple(colormap_timer, y_axis_timer, use_hydrophone_colormap, use_log_y_axis, image_ids):
+        import time as time_module
+        start_time = time_module.time()
+        
+        # only update when at least one timer has actually fired
+        if (colormap_timer is None or colormap_timer < 1) and (y_axis_timer is None or y_axis_timer < 1):
+            return [dash.no_update] * len(image_ids) if image_ids else []
+            
+        print(f"🔄 Updating {len(image_ids)} spectrograms...")
+        
+        colormap = 'hydrophone' if use_hydrophone_colormap else 'default'
+        y_scale = 'log' if use_log_y_axis else 'linear'
+        
         updated_images = []
         for image_id in image_ids:
             filename = image_id['filename']
-            # All combinations are preloaded, so this should be fast
-            colormap = 'hydrophone' if use_hydrophone_colormap else 'default'
-            y_scale = 'log' if use_log_y_axis else 'linear'
             image_src = generate_image_cached(filename, colormap, y_scale)
             updated_images.append(image_src if image_src is not None else dash.no_update)
+        
+        end_time = time_module.time()
+        total_time = (end_time - start_time) * 1000
+        print(f"✅ Updated {len(image_ids)} spectrograms in {total_time:.1f}ms")
+        
         return updated_images
 
+    # New callback for handling hierarchical label updates
     @app.callback(
-    Output('dummy-output', 'children'),
-    Input({'type': 'label-checkbox', 'filename': ALL, 'label': ALL}, 'value'),
+        Output('dummy-output', 'children'),
+        Input({'type': 'selected-labels-store', 'filename': ALL}, 'data'),
+        State({'type': 'selected-labels-store', 'filename': ALL}, 'id'),
+        prevent_initial_call=True
     )
-    def update_labels(_):
-        ctx = dash.callback_context
+    def update_hierarchical_labels(labels_data_list, store_ids):
+        """Handle updates from the hierarchical label selector"""
+        ctx = callback_context
         if not ctx.triggered:
             return ''
-        trigger = ctx.triggered[0]
-        prop_id = trigger['prop_id']
-        value = trigger['value']
-
-        if value is None:
-            return ''
-        import json
-        id_str, prop_name = prop_id.rsplit('.', 1)
-        id_dict = json.loads(id_str)
-        filename = id_dict['filename']
-        label = id_dict['label']
-        checked = value
-
-        # Create a single-entry dictionary for this update
-        label_update = {filename: label}
         
-        # Use the new remove parameter based on checkbox state
-        save_labels(OUTPUT_FILE, label_update, remove=not checked)
-
+        # find which store was updated
+        trigger_info = ctx.triggered[0]
+        prop_id = trigger_info['prop_id']
+        
+        if not prop_id or 'selected-labels-store' not in prop_id:
+            return ''
+        
+        # More robust parsing of the component ID
+        try:
+            # Extract the component ID part before the property name
+            if '.data' in prop_id:
+                id_str = prop_id.replace('.data', '')
+            else:
+                return ''
+            
+            # Find the matching store ID from the states
+            filename = None
+            for store_id in store_ids:
+                if store_id and 'filename' in store_id:
+                    # Compare the serialized ID
+                    import json
+                    serialized_id = json.dumps(store_id, separators=(',', ':'))
+                    if serialized_id == id_str:
+                        filename = store_id['filename']
+                        break
+            
+            if not filename:
+                return ''
+            
+        except Exception as e:
+            print(f"Error parsing component ID: {e}")
+            return ''
+        
+        # get the current labels for this file
+        current_labels = trigger_info['value'] or []
+        
+        # load existing label data
+        existing_data = load_labels(OUTPUT_FILE)
+        existing_labels = existing_data.get(filename, [])
+        
+        # determine which labels to add and remove
+        existing_set = set(existing_labels)
+        current_set = set(current_labels)
+        
+        # add new labels
+        labels_to_add = current_set - existing_set
+        if labels_to_add:
+            for label in labels_to_add:
+                save_labels(OUTPUT_FILE, {filename: label}, remove=False)
+        
+        # remove old labels
+        labels_to_remove = existing_set - current_set
+        if labels_to_remove:
+            for label in labels_to_remove:
+                save_labels(OUTPUT_FILE, {filename: label}, remove=True)
+        
         return ''
 
     # Initialize audio players when page content changes
@@ -379,6 +506,48 @@ def register_callbacks(app):
         [Input('modal-audio-player', 'children')],
         prevent_initial_call=True
     )
+    
+    # Toggle hierarchical selector when "Edit Labels" is clicked
+    @app.callback(
+        [Output({'type': 'label-selector-container', 'filename': MATCH}, 'children'),
+         Output({'type': 'selector-expanded', 'filename': MATCH}, 'data'),
+         Output({'type': 'expand-labels', 'filename': MATCH}, 'children')],
+        Input({'type': 'expand-labels', 'filename': MATCH}, 'n_clicks'),
+        [State({'type': 'expand-labels', 'filename': MATCH}, 'id'),
+         State({'type': 'selector-expanded', 'filename': MATCH}, 'data')],
+        prevent_initial_call=True
+    )
+    def toggle_label_selector(n_clicks, button_id, is_expanded):
+        if not n_clicks:
+            raise PreventUpdate
+            
+        filename = button_id['filename']
+        
+        # Toggle the expanded state
+        new_expanded_state = not is_expanded
+        
+        if new_expanded_state:
+            # Load current labels for this file and show hierarchical selector
+            label_data = load_labels(OUTPUT_FILE)
+            selected_labels = label_data.get(filename, [])
+            return create_hierarchical_selector(filename, selected_labels), True, "Collapse"
+        else:
+                         # Hide hierarchical selector
+             return [], False, "Edit Labels"
+
+    # Update badge display when labels change
+    @app.callback(
+        Output({'type': 'current-labels-display', 'filename': MATCH}, 'children'),
+        Input({'type': 'selected-labels-store', 'filename': MATCH}, 'data'),
+        State({'type': 'current-labels-display', 'filename': MATCH}, 'id'),
+        prevent_initial_call=False
+    )
+    def update_label_badges(selected_labels, display_id):
+        filename = display_id['filename']
+        labels = selected_labels or []
+        return create_label_badges(labels, filename)
+
+    # Removed redundant hierarchical selector audio callback - main page callback handles this
 
     # Handle slider seeking - using a simple pattern-matching callback
     @app.callback(

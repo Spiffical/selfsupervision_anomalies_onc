@@ -2,9 +2,9 @@
 
 # Data paths
 data:
-  folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/mat/processed"  # Path to folder containing spectrogram files
-  audio_folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/flac"   # Path to folder containing audio files (.flac)
-  output_file: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-10-09/labels.json"        # Path to output file for saving labeled filenames
+  folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/mat/processed"  # Path to folder containing spectrogram files
+  audio_folder: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/flac"   # Path to folder containing audio files (.flac)
+  output_file: "data/ICLISTENHF6406/sampling_2023-10-10_to_2024-08-07/labels.json"        # Path to output file for saving labeled filenames
 
 # Display settings
 display:
@@ -17,15 +17,35 @@ audio:
   enable: true                     # Whether to enable audio playback
   auto_match: true                 # Whether to automatically match audio files to spectrograms
 
-# Labeling options
+# Labeling options - Now using hierarchical system
 labels:
-  available:                       # Labels available for selection
+  # Enable hierarchical labeling system (set to false to use old flat system)
+  use_hierarchical: true
+  
+  # Legacy flat labels (for backward compatibility when use_hierarchical is false)
+  available:                       
     - "Rain"
     - "Engine Noise"
     - "Unknown Features"
     - "Biological Sounds"
     - "Ambient Noise"
 
+  # Hierarchical labeling configuration
+  hierarchical:
+    # Support for partial path selection (allows stopping at any level)
+    allow_partial_paths: true
+    
+    # Search configuration
+    search:
+      enable: true                 # Enable search functionality
+      placeholder: "Search labels..." # Placeholder text for search box
+      
+    # UI configuration
+    ui:
+      max_tree_height: "400px"     # Maximum height of the tree view
+      show_breadcrumbs: true       # Show breadcrumb navigation for selected items
+      collapsible_nodes: true      # Allow expanding/collapsing tree nodes
+      
 # Cache settings
 cache:
   max_size: 400                    # Maximum number of images to cache

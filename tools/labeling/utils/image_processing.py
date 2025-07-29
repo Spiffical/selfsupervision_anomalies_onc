@@ -57,14 +57,25 @@ def load_spectrogram_cached(filename):
         logger.error(f"Error loading {mat_file}: {e}")
     return None
 
-@cached(image_cache)
 def generate_image_cached(filename, colormap='default', y_axis_scale='linear'):
-    logger.info(f"Generating image for {filename} with {colormap} colormap and {y_axis_scale} y-axis")
+    # check if in cache first
+    cache_key = (filename, colormap, y_axis_scale)
+    if cache_key in image_cache:
+        return image_cache[cache_key]
+    else:
+        result = _generate_image(filename, colormap, y_axis_scale)
+        image_cache[cache_key] = result
+        return result
+
+def _generate_image(filename, colormap='default', y_axis_scale='linear'):
+    import time as time_module
+    start_time = time_module.time()
+    
     spectrogram = load_spectrogram_cached(filename)
     if spectrogram is None:
         return None
     
-    fig, ax = plt.subplots(figsize=(2, 2), facecolor='none')
+    fig, ax = plt.subplots(figsize=(1.5, 1.5), facecolor='none')  # smaller figures for thumbnails
     if colormap == 'hydrophone':
         cmap_array = colmap_hyd_py(36, 3)
         cmap = mcolors.ListedColormap(cmap_array)
@@ -79,31 +90,26 @@ def generate_image_cached(filename, colormap='default', y_axis_scale='linear'):
     time_minutes = (time - time[0]) * 24 * 60
     
     if y_axis_scale == 'log':
-        # For logarithmic scaling, we need to be more careful with frequency handling
-        # Filter out any zero or negative frequencies first
+        # OPTIMIZED log scaling: use imshow with pre-transformed data
         valid_freq_mask = freq > 0
         if not np.any(valid_freq_mask):
-            # Fallback to linear if no valid frequencies for log scale
+            # Fallback to linear 
             im = ax.imshow(psd, 
                           extent=[time_minutes[0], time_minutes[-1], freq[0], freq[-1]],
-                          aspect='auto', 
-                          origin='lower', 
-                          cmap=cmap,
-                          vmin=40, vmax=140)
+                          aspect='auto', origin='lower', cmap=cmap, vmin=40, vmax=140)
         else:
-            # Use only valid frequency range
+            # Pre-filter data and use faster rendering
             freq_for_plot = freq[valid_freq_mask]
             psd_for_plot = psd[valid_freq_mask, :]
-            
-            # Ensure minimum frequency is reasonable for log scale (at least 0.1 kHz)
             min_freq = max(freq_for_plot[0], 0.1)
-            freq_for_plot = np.maximum(freq_for_plot, min_freq)
+            max_freq = freq_for_plot[-1]
             
-            im = ax.pcolormesh(time_minutes, freq_for_plot, psd_for_plot, 
-                              cmap=cmap, vmin=40, vmax=140, shading='auto')
+            # Simple approach: use imshow and set log scale (but with reduced complexity)
+            im = ax.imshow(psd_for_plot, 
+                          extent=[time_minutes[0], time_minutes[-1], min_freq, max_freq],
+                          aspect='auto', origin='lower', cmap=cmap, vmin=40, vmax=140)
             ax.set_yscale('log')
-            ax.set_ylim(min_freq, freq_for_plot[-1])
-            ax.set_xlim(time_minutes[0], time_minutes[-1])
+            ax.set_ylim(min_freq, max_freq)
     else:
         # Linear scaling - use imshow for consistency with existing behavior
         im = ax.imshow(psd, 
@@ -119,10 +125,14 @@ def generate_image_cached(filename, colormap='default', y_axis_scale='linear'):
     ax.set_position([0, 0, 1, 1])
     
     buf = BytesIO()
+    # ultra low dpi for thumbnails - these are tiny images anyway
     plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, 
                 facecolor='none', edgecolor='none', dpi=72)
     plt.close(fig)
     data = base64.b64encode(buf.getbuffer()).decode("utf8")
+    
+    # Performance monitoring removed - optimizations complete
+    
     return f"data:image/png;base64,{data}"
 
 def create_spectrogram_figure(spectrogram_data, colormap_value, y_axis_scale='linear'):

@@ -54,18 +54,25 @@ def create_audio_player(audio_file_path: Optional[str], spectrogram_filename: st
             html.I(className="fas fa-headphones", style={
                 'color': '#667eea',
                 'margin-right': '8px',
-                'font-size': '14px'
+                'font-size': '14px',
+                'flex-shrink': '0'  # Keep icon size fixed
             }),
-            html.Span(f"Audio: {audio_filename[:30]}{'...' if len(audio_filename) > 30 else ''}", style={
+            html.Span(f"Audio: {audio_filename}", style={
                 'font-size': '12px',
                 'font-weight': '500',
-                'color': '#495057'
+                'color': '#495057',
+                'overflow': 'hidden',
+                'text-overflow': 'ellipsis',
+                'white-space': 'nowrap',
+                'min-width': '0'  # Allow shrinking
             })
         ], style={
             'display': 'flex',
             'align-items': 'center',
             'margin-bottom': '8px',
-            'padding': '6px 0'
+            'padding': '6px 0',
+            'max-width': '100%',  # Constrain to container
+            'overflow': 'hidden'
         }),
         
         # Custom audio controls with time slider
@@ -140,8 +147,8 @@ def create_audio_player(audio_file_path: Optional[str], spectrogram_filename: st
         # Hidden HTML5 audio element for actual playback
         html.Audio(
             id=f'{player_id}-audio',
-            src=f'/audio/{audio_filename}',
-            preload='metadata',
+            src=f'/audio/{audio_filename}',  # Direct src instead of lazy loading
+            preload='metadata',  # Load metadata immediately
             style={'display': 'none'}
         ),
         
@@ -197,25 +204,33 @@ def create_audio_player_with_controls(audio_file_path: Optional[str], spectrogra
             html.I(className="fas fa-waveform-lines", style={
                 'color': '#667eea',
                 'margin-right': '10px',
-                'font-size': '16px'
+                'font-size': '16px',
+                'flex-shrink': '0'  # Keep icon size fixed
             }),
-            html.Span(f"{audio_filename[:35]}{'...' if len(audio_filename) > 35 else ''}", style={
+            html.Span(f"{audio_filename}", style={
                 'font-size': '14px',
                 'font-weight': '600',
-                'color': '#495057'
+                'color': '#495057',
+                'overflow': 'hidden',
+                'text-overflow': 'ellipsis',
+                'white-space': 'nowrap',
+                'min-width': '0'  # Allow shrinking
             })
         ], style={
             'display': 'flex',
             'align-items': 'center',
             'margin-bottom': '12px',
             'padding-bottom': '8px',
-            'border-bottom': '1px solid rgba(102, 126, 234, 0.2)'
+            'border-bottom': '1px solid rgba(102, 126, 234, 0.2)',
+            'max-width': '100%',  # Constrain to container
+            'overflow': 'hidden'
         }),
         
         # Audio element (hidden, controlled via JavaScript)
         html.Audio(
             id=f'{player_id}-audio',
-            src=f'/audio/{audio_filename}',
+            src=f'/audio/{audio_filename}',  # Direct src instead of lazy loading
+            preload='metadata',  # Load metadata immediately
             style={'display': 'none'}
         ),
         

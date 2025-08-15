@@ -66,7 +66,7 @@ echo "   To: \$SLURM_TMPDIR/ssamba_project"
 
 TRAINING_DATA_FILENAME=$(basename "$TRAINING_DATA_PATH")
 
-RUN_CMD="$SLURM_TMPDIR/ssamba_project/src/run_amba_spectrogram.sh \
+RUN_CMD="$SLURM_TMPDIR/ssamba_project/scripts/run_amba_spectrogram.sh \
     --python-script \"\$SLURM_TMPDIR/ssamba_project/src/run_amba_spectrogram.py\" \
     --dataset \"\$SLURM_TMPDIR/$TRAINING_DATA_FILENAME\" \
     --wandb-project \"$WANDB_PROJECT\" \

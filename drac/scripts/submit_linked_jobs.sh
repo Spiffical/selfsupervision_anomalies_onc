@@ -16,7 +16,8 @@
 set -euo pipefail
 
 NUM_JOBS=${NUM_JOBS:-5}
-JOB_SCRIPT="submit_amba_spectrogram.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JOB_SCRIPT="${SCRIPT_DIR}/submit_amba_spectrogram.sh"
 
 TRAINING_DATA_PATH=${1:-$HOME/projects/def-kmoran/merileo/ssl_hydrophones/data/h5/different_locations_incl_backgroundpipelinenormals_multilabel.h5}
 WANDB_PROJECT=${2:-"amba_spectrogram"}

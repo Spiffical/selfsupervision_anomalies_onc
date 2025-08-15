@@ -1,50 +1,37 @@
 #!/bin/bash
+set -euo pipefail
 
-# Detect if we're on DRAC cluster
-if [[ -n "$SLURM_JOB_ID" ]] || [[ "$HOSTNAME" == *"cedar"* ]] || [[ "$HOSTNAME" == *"graham"* ]] || [[ "$HOSTNAME" == *"narval"* ]] || [[ "$HOSTNAME" == *"beluga"* ]]; then
-    echo "🔧 Detected DRAC cluster environment"
-    IS_DRAC=true
-    
-    # Load necessary modules on DRAC
-    module load python/3.10
-    
-    # Activate DRAC virtual environment
-    source $HOME/ssamba/myenv/bin/activate
-    
-    # DRAC-specific environment variables
-    export TORCH_HOME=../../pretrained_models
-    export PYTHONPATH=$PYTHONPATH:$HOME/ssamba
-    export PYTHONPATH=$PYTHONPATH:$SCRATCH/ssamba_project/src
-    export PYTHONPATH=$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src
-    
-    # Load environment variables from DRAC location
-    if [ -f ~/ssamba/.env ]; then
-        export $(grep -v '^#' ~/ssamba/.env | xargs)
-    fi
-else
-    echo "💻 Detected local environment"
-    IS_DRAC=false
-    
-    # Activate local virtual environment (if it exists)
-    if [ -f ".venv/bin/activate" ]; then
-        source .venv/bin/activate
-    elif [ -f "venv/bin/activate" ]; then
-        source venv/bin/activate
-    fi
-    
-    # Load environment variables from local .env file
-    if [ -f .env ]; then
-        export $(grep -v '^#' .env | xargs)
-    fi
-fi
+# -------------------------------
+# Cluster detection (DRAC vs local)
+# -------------------------------
+detect_cluster() {
+  if [[ -n "${SLURM_CLUSTER_NAME:-}" ]]; then
+    echo "${SLURM_CLUSTER_NAME,,}"
+    return
+  fi
+  local n
+  n=$(scontrol show config 2>/dev/null | awk -F= '/^ClusterName/{gsub(/[[:space:]]/,"",$2); print tolower($2); exit}') || true
+  [[ -n "$n" ]] && { echo "$n"; return; }
+  if hostname | egrep -qi 'cedar|graham|narval|beluga|fir'; then
+    echo "drac"
+  else
+    echo "local"
+  fi
+}
 
-# Initialize variables with defaults
+CLUSTER="$(detect_cluster)"
+IS_DRAC=false
+[[ "$CLUSTER" != "local" ]] && IS_DRAC=true
+
+# -------------------------------
+# Defaults & CLI parsing
+# -------------------------------
 PYTHON_SCRIPT=""
 DATA_TRAIN_PATH=""
 WANDB_PROJECT="amba_spectrogram"
 WANDB_GROUP="default_experiment"
 TRAIN_RATIO=0.8
-RESUME="true"  # Default is to resume training if a checkpoint exists
+RESUME="true"              # default: resume if checkpoint exists
 EXP_DIR="/exp"
 TASK="pretrain_joint"
 MULTICLASS="false"
@@ -53,152 +40,173 @@ WANDB_ENTITY=""
 declare -a EXCLUDE_LABELS=()
 PRETRAINED_PATH=""
 DRY_RUN="false"
-MULTICLASS="false"
-NUM_CLASSES=""
+
+# Virtualenv (optional). If not set and not already in a venv, we will:
+# - on DRAC: default to $HOME/selfsupervision_anomalies_onc/myenv
+# - local: try ./.venv or ./venv
+VENV_PATH="${VENV_PATH:-}"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --python-script)
-            PYTHON_SCRIPT="$2"
-            shift 2
-            ;;
-        --dataset)
-            DATA_TRAIN_PATH="$2"
-            shift 2
-            ;;
-        --wandb-project)
-            WANDB_PROJECT="$2"
-            shift 2
-            ;;
-        --wandb-group)
-            WANDB_GROUP="$2"
-            shift 2
-            ;;
-        --train-ratio)
-            TRAIN_RATIO="$2"
-            shift 2
-            ;;
-        --resume)
-            # Only set RESUME to false if explicitly specified as false/False/FALSE
-            if [[ "${2,,}" == "false" ]]; then
-                RESUME="false"
-            fi
-            shift 2
-            ;;
-        --exp-dir)
-            EXP_DIR="$2"
-            shift 2
-            ;;
-        --task)
-            TASK="$2"
-            shift 2
-            ;;
-        --wandb-entity)
-            WANDB_ENTITY="$2"
-            shift 2
-            ;;
-        --exclude-label)
-            EXCLUDE_LABELS+=("$2")
-            shift 2
-            ;;
-        --pretrained-path)
-            PRETRAINED_PATH="$2"
-            shift 2
-            ;;
-        --dry-run)
-            DRY_RUN="true"
-            shift
-            ;;
-        --multiclass)
-            MULTICLASS="true"
-            shift
-            ;;
-        --num-classes|--num_classes)
-            NUM_CLASSES="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown argument: $1"
-            exit 1
-            ;;
-    esac
+  case "$1" in
+    --python-script)     PYTHON_SCRIPT="$2"; shift 2;;
+    --dataset)           DATA_TRAIN_PATH="$2"; shift 2;;
+    --wandb-project)     WANDB_PROJECT="$2"; shift 2;;
+    --wandb-group)       WANDB_GROUP="$2"; shift 2;;
+    --train-ratio)       TRAIN_RATIO="$2"; shift 2;;
+    --resume)            if [[ "${2,,}" == "false" ]]; then RESUME="false"; fi; shift 2;;
+    --exp-dir)           EXP_DIR="$2"; shift 2;;
+    --task)              TASK="$2"; shift 2;;
+    --wandb-entity)      WANDB_ENTITY="$2"; shift 2;;
+    --exclude-label)     EXCLUDE_LABELS+=("$2"); shift 2;;
+    --pretrained-path)   PRETRAINED_PATH="$2"; shift 2;;
+    --dry-run)           DRY_RUN="true"; shift;;
+    --multiclass)        MULTICLASS="true"; shift;;
+    --num-classes|--num_classes)
+                         NUM_CLASSES="$2"; shift 2;;
+    --venv|--venv-path)  VENV_PATH="$2"; shift 2;;
+    *) echo "Unknown argument: $1"; exit 1;;
+  esac
 done
 
-# Validate required arguments
+# -------------------------------
+# Validation
+# -------------------------------
 if [ -z "$PYTHON_SCRIPT" ]; then
-    echo "Error: --python-script is required"
-    exit 1
+  echo "Error: --python-script is required"
+  exit 1
 fi
 if [ -z "$DATA_TRAIN_PATH" ]; then
-    echo "Error: --dataset is required"
-    exit 1
+  echo "Error: --dataset is required"
+  exit 1
 fi
 
-# Set fixed parameters for experiment folder name (always use pretraining values)
+# -------------------------------
+# Environment setup (modules/venv)
+# Only activate if we're not already in a venv
+# -------------------------------
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  if $IS_DRAC; then
+    echo "🔧 Detected DRAC cluster environment"
+    # Load python module if available
+    if type module &>/dev/null; then
+      module load python/3.10
+    fi
+    # Choose venv path: CLI > env > default
+    VENV_PATH="${VENV_PATH:-$HOME/selfsupervision_anomalies_onc/myenv}"
+    if [[ -f "$VENV_PATH/bin/activate" ]]; then
+      echo "Activating venv: $VENV_PATH"
+      # shellcheck disable=SC1090
+      source "$VENV_PATH/bin/activate"
+    else
+      echo "Warning: venv not found at $VENV_PATH/bin/activate (continuing with current Python)"
+    fi
+
+    # DRAC-specific env
+    export TORCH_HOME="${TORCH_HOME:-../../pretrained_models}"
+    export PYTHONPATH="${PYTHONPATH:-}:$HOME/selfsupervision_anomalies_onc"
+    export PYTHONPATH="$PYTHONPATH:$SCRATCH/ssamba_project/src"
+    export PYTHONPATH="$PYTHONPATH:$SLURM_TMPDIR/ssamba_project/src"
+
+    # Load .env from DRAC home if present
+    if [ -f "$HOME/selfsupervision_anomalies_onc/.env" ]; then
+      # shellcheck disable=SC2046
+      export $(grep -v '^#' "$HOME/selfsupervision_anomalies_onc/.env" | xargs)
+    fi
+  else
+    echo "💻 Detected local environment"
+    # Local venv logic
+    if [[ -n "$VENV_PATH" && -f "$VENV_PATH/bin/activate" ]]; then
+      echo "Activating venv: $VENV_PATH"
+      # shellcheck disable=SC1090
+      source "$VENV_PATH/bin/activate"
+    elif [[ -f ".venv/bin/activate" ]]; then
+      echo "Activating venv: .venv"
+      # shellcheck disable=SC1091
+      source ".venv/bin/activate"
+    elif [[ -f "venv/bin/activate" ]]; then
+      echo "Activating venv: ./venv"
+      # shellcheck disable=SC1091
+      source "venv/bin/activate"
+    else
+      echo "Note: no virtual environment found/activated (continuing with current Python)"
+    fi
+
+    # Load .env from project root if present
+    if [ -f .env ]; then
+      # shellcheck disable=SC2046
+      export $(grep -v '^#' .env | xargs)
+    fi
+  fi
+else
+  echo "✅ A virtual environment is already active: $VIRTUAL_ENV (leaving it as-is)"
+fi
+
+# -------------------------------
+# Fixed parts of experiment naming
+# -------------------------------
 folder_mask_patch=300
 folder_batch_size=16
 folder_lr=1e-4
 folder_fstride=16
 folder_tstride=16
 
-# Print out the excluded labels
+# -------------------------------
+# Task-specific training params
+# -------------------------------
 echo "Excluded labels: ${EXCLUDE_LABELS[*]}"
 
-# Set task-specific parameters for actual training
 if [[ $TASK == *"pretrain"* ]]; then
-    # Pretraining parameters
-    mask_patch=300  # Number of patches to mask during pretraining
-    batch_size=2
-    lr=1e-4
-    lr_patience=2
-    epoch=200
-    freqm=0
-    timem=0
-    mixup=0
-    bal=none
-    fstride=16  # No overlap in pretraining
-    tstride=16  # No overlap in pretraining
-    main_metric="acc"
+  # Pretraining parameters
+  mask_patch=300
+  batch_size=2
+  lr=1e-4
+  lr_patience=2
+  epoch=200
+  freqm=0
+  timem=0
+  mixup=0
+  bal=none
+  fstride=16
+  tstride=16
+  main_metric="acc"
 else
-    # Finetuning parameters
-    mask_patch=0  # No masking in finetuning
-    batch_size=2
-    lr=5e-5
-    lr_patience=3
-    epoch=200
-    freqm=48
-    timem=192
-    mixup=0.5
-    bal=balanced
-    fstride=10  # Use overlap in finetuning
-    tstride=10  # Use overlap in finetuning
-    main_metric="auc"
+  # Finetuning parameters
+  mask_patch=0
+  batch_size=2
+  lr=5e-5
+  lr_patience=3
+  epoch=200
+  freqm=48
+  timem=192
+  mixup=0.5
+  bal=balanced
+  fstride=10
+  tstride=10
+  main_metric="auc"
 fi
 
-# Dataset parameters
+# -------------------------------
+# Dataset/model parameters
+# -------------------------------
 dataset=custom
-dataset_mean=51.506817  # Set to "none" to calculate from dataset
-dataset_std=13.638703   # Set to "none" to calculate from dataset
-target_length=512  # Your spectrogram time dimension
-num_mel_bins=512  # Your spectrogram frequency dimension
+dataset_mean=51.506817
+dataset_std=13.638703
+target_length=512
+num_mel_bins=512
 
-# Dataset split parameters
 train_ratio=$TRAIN_RATIO
 val_ratio=0.1
 split_seed=42
 
-# Model architecture
 model_size=base
 patch_size=16
 embed_dim=768
 depth=24
 
-# Patch parameters
 fshape=16
 tshape=16
 
-# Model configuration
 rms_norm='false'
 residual_in_fp32='false'
 fused_add_norm='false'
@@ -208,7 +216,6 @@ bimamba_type="v2"
 drop_path_rate=0.1
 stride=16
 channels=1
-num_classes="${NUM_CLASSES}"
 drop_rate=0.
 norm_epsilon=1e-5
 if_bidirectional='true'
@@ -220,46 +227,42 @@ if_devide_out='true'
 use_double_cls_token='false'
 use_middle_cls_token='false'
 
-# Modify experiment directory name to include excluded labels if any
+# -------------------------------
+# Experiment directory naming
+# -------------------------------
 exclude_labels_str=""
 if (( ${#EXCLUDE_LABELS[@]} > 0 )); then
-    # Join array elements with underscores, replacing spaces with underscores
-    labels_joined=""
-    for label in "${EXCLUDE_LABELS[@]}"; do
-        if [ -z "$labels_joined" ]; then
-            labels_joined="${label// /_}"
-        else
-            labels_joined="${labels_joined}_${label// /_}"
-        fi
-    done
-    exclude_labels_str="-excl${labels_joined}"
+  labels_joined=""
+  for label in "${EXCLUDE_LABELS[@]}"; do
+    if [ -z "$labels_joined" ]; then
+      labels_joined="${label// /_}"
+    else
+      labels_joined="${labels_joined}_${label// /_}"
+    fi
+  done
+  exclude_labels_str="-excl${labels_joined}"
 fi
 
-# Base experiment folder name - use pretraining parameters for consistent naming
-base_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-${dataset}-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}${exclude_labels_str}
-
+base_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-custom-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}${exclude_labels_str}
 echo "Base folder: $base_folder"
 
-# Create separate directories for pretraining and finetuning
 if [[ $TASK == *"pretrain"* ]]; then
-    # For pretraining, save in pretrain directory
-    exp_dir=${EXP_DIR}/pretrain/${base_folder}
+  exp_dir=${EXP_DIR}/pretrain/${base_folder}
 else
-    # For finetuning, save in finetune directory
-    exp_dir=${EXP_DIR}/finetune/${base_folder}
+  exp_dir=${EXP_DIR}/finetune/${base_folder}
 fi
+mkdir -p "${exp_dir}/models"
 
-# Create directories
-mkdir -p ${exp_dir}/models
-
-# Construct the Python command that would be executed
-PYTHON_CMD="python -W ignore $PYTHON_SCRIPT --use_wandb --wandb_entity \"${WANDB_ENTITY:-spencer-bialek}\" \
+# -------------------------------
+# Build Python command
+# -------------------------------
+PYTHON_CMD="python -W ignore \"$PYTHON_SCRIPT\" --use_wandb --wandb_entity \"${WANDB_ENTITY:-spencer-bialek}\" \
 --wandb_project ${WANDB_PROJECT} \
 --wandb_group ${WANDB_GROUP} \
---dataset ${dataset} \
+--dataset custom \
 --data-train \"$DATA_TRAIN_PATH\" \
---exp-dir $exp_dir \
-$([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
+--exp-dir \"$exp_dir\" \
+$([ -n "$PRETRAINED_PATH" ] && echo "--pretrained_path \"$PRETRAINED_PATH\"") \
 --dataset_mean ${dataset_mean} \
 --dataset_std ${dataset_std} \
 --train_ratio ${train_ratio} \
@@ -276,46 +279,44 @@ $([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
 --fused_add_norm ${fused_add_norm} --if_rope ${if_rope} --if_rope_residual ${if_rope_residual} \
 --bimamba_type ${bimamba_type} --use_middle_cls_token ${use_middle_cls_token} \
 --drop_path_rate ${drop_path_rate} --stride ${stride} --channels ${channels} \
-$( [ -n "$num_classes" ] && echo "--num_classes $num_classes" ) --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
+$( [ -n "$NUM_CLASSES" ] && echo "--num_classes $NUM_CLASSES" ) --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
 --use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
 --main_metric ${main_metric}"
 
-# Add exclude labels as a single argument with multiple values
+# Append exclude labels as a multi-value flag
 if [ ${#EXCLUDE_LABELS[@]} -gt 0 ]; then
-    PYTHON_CMD+=" --exclude_labels"
-    for label in "${EXCLUDE_LABELS[@]}"; do
-        PYTHON_CMD+=" \"$label\""
-    done
+  PYTHON_CMD+=" --exclude_labels"
+  for label in "${EXCLUDE_LABELS[@]}"; do
+    PYTHON_CMD+=" \"${label}\""
+  done
 fi
 
-# Add resume flag if needed (default behavior is to resume)
+# Resume flag
 if [ "$RESUME" != "false" ]; then
-    PYTHON_CMD+=" --resume"
+  PYTHON_CMD+=" --resume"
 fi
 
-# Add multiclass flag if enabled
+# Multiclass flag
 if [ "$MULTICLASS" = "true" ]; then
-    PYTHON_CMD+=" --multiclass"
+  PYTHON_CMD+=" --multiclass"
 fi
 
-# Print the command that would be executed
+# -------------------------------
+# Execute
+# -------------------------------
 echo "Python command that will be executed:"
 echo "$PYTHON_CMD"
 echo
 
-# If this is a dry run, exit here
 if [ "$DRY_RUN" = "true" ]; then
-    echo "Dry run completed. Exiting without executing."
-    exit 0
+  echo "Dry run completed. Exiting without executing."
+  exit 0
 fi
 
-# Set up additional environment variables if needed
-if [ "$IS_DRAC" = true ]; then
-    set -x  # Enable command echoing on DRAC for debugging
-fi
+# Extra debug on DRAC
+$IS_DRAC && set -x
 
-# Execute the Python command
-eval "$PYTHON_CMD" 
+eval "$PYTHON_CMD"

@@ -134,7 +134,7 @@ class AMBAModel(nn.Module):
             self.cls_token_num = 1
             self.original_num_patches = self.v.patch_embed.num_patches
             self.oringal_hw = int(self.original_num_patches ** 0.5)
-            self.original_embedding_dim = self.v.pos_embed.shape[2]
+            self.original_embedding_dim = self.v.embed_dim
 
             # SSL Pretraining Code
             self.softmax = nn.Softmax(dim=-1)
@@ -317,13 +317,18 @@ class AMBAModel(nn.Module):
             
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.v = audio_model.module.v
-            self.original_embedding_dim = self.v.pos_embed.shape[2]
+            self.original_embedding_dim = self.v.embed_dim
             self.cls_token_num = audio_model.module.cls_token_num
 
             # mlp head for fine-tuning
+            # Use num_classes from provided config (passed in from args)
+            out_dim = 1
+            if isinstance(vision_mamba_config, dict):
+                out_dim = int(vision_mamba_config.get('num_classes', 1))
+            print(f"[DEBUG] Finetune MLP head out_dim={out_dim}")
             self.mlp_head = nn.Sequential(
                 nn.LayerNorm(self.original_embedding_dim),
-                nn.Linear(self.original_embedding_dim, 1)  # Output single value for binary classification
+                nn.Linear(self.original_embedding_dim, out_dim)
             )
 
             f_dim, t_dim = self.get_shape(fstride, tstride, input_fdim, input_tdim, fshape, tshape)
@@ -905,7 +910,7 @@ class ASTModel(nn.Module):
 
             self.original_num_patches = self.v.patch_embed.num_patches
             self.oringal_hw = int(self.original_num_patches ** 0.5)
-            self.original_embedding_dim = self.v.pos_embed.shape[2]
+            self.original_embedding_dim = self.v.embed_dim
 
             # SSL Pretraining Code
             self.softmax = nn.Softmax(dim=-1)
@@ -1006,13 +1011,16 @@ class ASTModel(nn.Module):
             audio_model.load_state_dict(sd, strict=False)
 
             self.v = audio_model.module.v
-            self.original_embedding_dim = self.v.pos_embed.shape[2]
+            self.original_embedding_dim = self.v.embed_dim
             self.cls_token_num = audio_model.module.cls_token_num
 
             # mlp head for fine-tuning
+            out_dim = getattr(self, 'num_classes', None)
+            if out_dim is None:
+                out_dim = 1
             self.mlp_head = nn.Sequential(
                 nn.LayerNorm(self.original_embedding_dim),
-                nn.Linear(self.original_embedding_dim, 1)  # Output single value for binary classification
+                nn.Linear(self.original_embedding_dim, out_dim)
             )
 
             f_dim, t_dim = self.get_shape(fstride, tstride, input_fdim, input_tdim, fshape, tshape)

@@ -37,10 +37,12 @@ def calculate_binary_metrics(predictions, targets, threshold=0.5):
 class ValidationMetricsCollector:
     """Class to collect and process validation metrics."""
     
-    def __init__(self, task=None):
+    def __init__(self, task=None, multiclass=False, num_classes=2):
         """Initialize metrics collector."""
         self.reset()
         self.task = task
+        self.multiclass = multiclass
+        self.num_classes = num_classes
     
     def reset(self):
         """Reset all metrics."""
@@ -159,14 +161,25 @@ class ValidationMetricsCollector:
             print(f"Model output stats (raw logits):")
             print(f"min/max/mean: {predictions.min():.4f}/{predictions.max():.4f}/{predictions.mean():.4f}")
             
-            # Convert logits to probabilities for accuracy calculation
-            probabilities = torch.sigmoid(predictions)
-            print(f"Probabilities stats:")
-            print(f"min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+            # Handle different classification types
+            if self.multiclass:
+                # For multiclass, use softmax and argmax
+                probabilities = torch.softmax(predictions, dim=-1)
+                predicted_labels = torch.argmax(probabilities, dim=-1)
+                accuracy = (predicted_labels == labels).float().mean()
+                print(f"Probabilities shape: {probabilities.shape}")
+                print(f"Predicted classes: {predicted_labels[:10]}")  # First 10 predictions
+                print(f"Actual classes: {labels[:10]}")  # First 10 labels
+            else:
+                # For binary, use sigmoid and threshold
+                probabilities = torch.sigmoid(predictions)
+                predicted_labels = (probabilities >= 0.5).float()
+                accuracy = (predicted_labels == labels).float().mean()
+                print(f"Probabilities stats:")
+                print(f"min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                print(f"Predicted anomalies: {predicted_labels.sum().item()}/{len(predicted_labels)}")
+                print(f"Actual anomalies: {labels.sum().item()}/{len(predicted_labels)}")
             
-            # Calculate accuracy using thresholded probabilities
-            predicted_labels = (probabilities >= 0.5).float()
-            accuracy = (predicted_labels == labels).float().mean()
             self.acc_list.append(accuracy.item())
             
             # Store raw predictions and labels for later metric computation
@@ -174,8 +187,6 @@ class ValidationMetricsCollector:
             self.targets.append(labels.detach().cpu())
             
             print(f"Batch accuracy: {accuracy.item():.4f}")
-            print(f"Predicted anomalies: {predicted_labels.sum().item()}/{len(predicted_labels)}")
-            print(f"Actual anomalies: {labels.sum().item()}/{len(predicted_labels)}")
         
         # Store sources if provided
         if sources is not None:
@@ -269,7 +280,7 @@ class ValidationMetricsCollector:
         if self.task.startswith('pretrain_'):
             return metrics
             
-        # For finetuning tasks, compute binary classification metrics
+        # For finetuning tasks, compute classification metrics
         if len(self.predictions) > 0 and len(self.targets) > 0:
             try:
                 # Concatenate all predictions and targets
@@ -279,67 +290,168 @@ class ValidationMetricsCollector:
                 print(f"[DEBUG] Predictions shape: {all_predictions.shape}")
                 print(f"[DEBUG] Targets shape: {all_targets.shape}")
                 
-                # Convert logits to probabilities
-                probabilities = 1 / (1 + np.exp(-all_predictions))  # sigmoid
-                print(f"\n[DEBUG] Probabilities stats:")
-                print(f"[DEBUG] min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                if self.multiclass:
+                    # For multiclass classification
+                    probabilities = np.exp(all_predictions) / np.sum(np.exp(all_predictions), axis=1, keepdims=True)  # softmax
+                    predicted_classes = np.argmax(probabilities, axis=1)
+                    
+                    print(f"\n[DEBUG] Multiclass probabilities shape: {probabilities.shape}")
+                    print(f"[DEBUG] Predicted classes: {predicted_classes[:10]}")
+                    print(f"[DEBUG] Actual classes: {all_targets[:10]}")
+                    
+                    # For multiclass, calculate macro-averaged metrics
+                    try:
+                        metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities, multi_class='ovr', average='macro'))
+                        print(f"[DEBUG] AUC (macro): {metrics['auc']:.4f}")
+                    except Exception as e:
+                        print(f"[DEBUG] Could not calculate AUC: {e}")
+                        metrics['auc'] = 0.0
+                        
+                    # Calculate precision, recall, F2 using macro averaging
+                    try:
+                        metrics['precision'] = float(sklearn.metrics.precision_score(all_targets, predicted_classes, average='macro', zero_division=0))
+                        metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_classes, average='macro', zero_division=0))
+                        metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_classes, beta=2, average='macro', zero_division=0))
+                        print(f"[DEBUG] Precision (macro): {metrics['precision']:.4f}")
+                        print(f"[DEBUG] Recall (macro): {metrics['recall']:.4f}")
+                        print(f"[DEBUG] F2 (macro): {metrics['f2']:.4f}")
+                    except Exception as e:
+                        print(f"[DEBUG] Could not calculate metrics: {e}")
+                        metrics['precision'] = metrics['recall'] = metrics['f2'] = 0.0
+                        
+                    # Per-class metrics
+                    try:
+                        per_prec, per_rec, per_f2, per_support = sklearn.metrics.precision_recall_fscore_support(
+                            all_targets, predicted_classes, average=None, beta=2, zero_division=0
+                        )
+                        # Per-class AUC (one-vs-rest) where possible
+                        auc_per_class = []
+                        for c in range(probabilities.shape[1]):
+                            try:
+                                auc_c = sklearn.metrics.roc_auc_score((all_targets == c).astype(int), probabilities[:, c])
+                            except Exception:
+                                auc_c = 0.0
+                            auc_per_class.append(float(auc_c))
+                        metrics['per_class'] = {
+                            'precision': per_prec.tolist(),
+                            'recall': per_rec.tolist(),
+                            'f2': per_f2.tolist(),
+                            'support': per_support.tolist(),
+                            'auc': auc_per_class,
+                        }
+                    except Exception as e:
+                        print(f"[DEBUG] Failed per-class metrics: {e}")
+                        metrics['per_class'] = {}
+
+                    # For downstream confusion matrix use
+                    predicted_labels = predicted_classes
+
+                else:
+                    # For binary classification
+                    probabilities = 1 / (1 + np.exp(-all_predictions))  # sigmoid
+                    print(f"\n[DEBUG] Probabilities stats:")
+                    print(f"[DEBUG] min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                    
+                    # Calculate AUC using probabilities
+                    try:
+                        metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities))
+                        print(f"[DEBUG] AUC score: {metrics['auc']:.4f}")
+                    except Exception as e:
+                        print(f"[DEBUG] Warning: Failed to calculate AUC: {str(e)}")
+                        metrics['auc'] = 0.0
+                    
+                    # Calculate precision, recall, and F2 using thresholded probabilities
+                    predicted_labels = (probabilities >= 0.5).astype(int)
+                    metrics['precision'] = float(sklearn.metrics.precision_score(all_targets, predicted_labels))
+                    metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_labels))
+                    metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_labels, beta=2))
+                    
+                    print(f"[DEBUG] Precision: {metrics['precision']:.4f}")
+                    print(f"[DEBUG] Recall: {metrics['recall']:.4f}")
+                    print(f"[DEBUG] F2 score: {metrics['f2']:.4f}")
                 
-                # Calculate AUC using probabilities
+                # Print confusion matrix (binary or multiclass)
                 try:
-                    metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities))
-                    print(f"[DEBUG] AUC score: {metrics['auc']:.4f}")
+                    cm = sklearn.metrics.confusion_matrix(all_targets, predicted_labels)
+                    print("\n[DEBUG] Confusion Matrix:")
+                    print(cm)
                 except Exception as e:
-                    print(f"[DEBUG] Warning: Failed to calculate AUC: {str(e)}")
-                    metrics['auc'] = 0.0
-                
-                # Calculate precision, recall, and F2 using thresholded probabilities
-                predicted_labels = (probabilities >= 0.5).astype(int)
-                metrics['precision'] = float(sklearn.metrics.precision_score(all_targets, predicted_labels))
-                metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_labels))
-                metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_labels, beta=2))
-                
-                print(f"[DEBUG] Precision: {metrics['precision']:.4f}")
-                print(f"[DEBUG] Recall: {metrics['recall']:.4f}")
-                print(f"[DEBUG] F2 score: {metrics['f2']:.4f}")
-                
-                # Print confusion matrix
-                cm = sklearn.metrics.confusion_matrix(all_targets, predicted_labels)
-                print("\n[DEBUG] Confusion Matrix:")
-                print("[DEBUG] TN FP")
-                print("[DEBUG] FN TP")
-                print(f"[DEBUG] {cm}")
+                    print(f"[DEBUG] Could not compute confusion matrix: {e}")
                 
                 # Calculate per-hydrophone metrics if sources are available
                 if len(self.sources) > 0:
                     print("\n[DEBUG] Computing per-hydrophone metrics")
-                    hydrophone_metrics = defaultdict(lambda: {'count': 0, 'predictions': [], 'targets': []})
-                    
-                    # Group predictions by hydrophone
-                    for pred, target, source in zip(probabilities, all_targets, self.sources):
-                        hydrophone_metrics[source]['predictions'].append(pred)
-                        hydrophone_metrics[source]['targets'].append(target)
-                        hydrophone_metrics[source]['count'] += 1
-                    
-                    # Calculate metrics for each hydrophone
-                    for hydrophone, hyd_metrics in hydrophone_metrics.items():
-                        hyd_preds = np.array(hyd_metrics['predictions'])
-                        hyd_targets = np.array(hyd_metrics['targets'])
-                        hyd_pred_labels = (hyd_preds >= 0.5).astype(int)
-                        
-                        try:
-                            hyd_metrics['precision'] = float(sklearn.metrics.precision_score(hyd_targets, hyd_pred_labels))
-                            hyd_metrics['recall'] = float(sklearn.metrics.recall_score(hyd_targets, hyd_pred_labels))
-                            hyd_metrics['f2'] = float(sklearn.metrics.fbeta_score(hyd_targets, hyd_pred_labels, beta=2))
-                            hyd_metrics['auc'] = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_preds))
-                        except Exception as e:
-                            print(f"[DEBUG] Warning: Failed to calculate metrics for hydrophone {hydrophone}: {str(e)}")
-                            hyd_metrics.update({'precision': 0.0, 'recall': 0.0, 'f2': 0.0, 'auc': 0.0})
-                        
-                        # Convert predictions and targets lists to counts for memory efficiency
-                        hyd_metrics['predictions'] = len(hyd_metrics['predictions'])
-                        hyd_metrics['targets'] = sum(hyd_metrics['targets'])
-                    
-                    metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
+                    # For multiclass, compute metrics using class indices and probabilities
+                    if self.multiclass:
+                        hydrophone_metrics = defaultdict(lambda: {'count': 0, 'pred_classes': [], 'targets': [], 'probs': []})
+                        for idx, source in enumerate(self.sources):
+                            hydrophone_metrics[source]['pred_classes'].append(int(predicted_classes[idx]))
+                            hydrophone_metrics[source]['targets'].append(int(all_targets[idx]))
+                            hydrophone_metrics[source]['probs'].append(probabilities[idx])
+                            hydrophone_metrics[source]['count'] += 1
+
+                        for hydrophone, hyd_metrics in hydrophone_metrics.items():
+                            hyd_pred_classes = np.array(hyd_metrics['pred_classes'])
+                            hyd_targets = np.array(hyd_metrics['targets'])
+                            hyd_probs = np.array(hyd_metrics['probs'])  # shape (n_h, C)
+
+                            # Accuracy
+                            try:
+                                hyd_acc = float(sklearn.metrics.accuracy_score(hyd_targets, hyd_pred_classes))
+                            except Exception:
+                                hyd_acc = 0.0
+
+                            # Macro precision/recall/F2
+                            try:
+                                hyd_prec = float(sklearn.metrics.precision_score(hyd_targets, hyd_pred_classes, average='macro', zero_division=0))
+                                hyd_rec = float(sklearn.metrics.recall_score(hyd_targets, hyd_pred_classes, average='macro', zero_division=0))
+                                hyd_f2 = float(sklearn.metrics.fbeta_score(hyd_targets, hyd_pred_classes, beta=2, average='macro', zero_division=0))
+                            except Exception:
+                                hyd_prec = hyd_rec = hyd_f2 = 0.0
+
+                            # Macro AUC (one-vs-rest). Can fail if only one class present
+                            try:
+                                hyd_auc = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_probs, multi_class='ovr', average='macro'))
+                            except Exception as e:
+                                print(f"[DEBUG] Warning: AUC for hydrophone {hydrophone} could not be computed: {e}")
+                                hyd_auc = 0.0
+
+                            hydrophone_metrics[hydrophone] = {
+                                'count': hyd_metrics['count'],
+                                'accuracy': hyd_acc,
+                                'precision': hyd_prec,
+                                'recall': hyd_rec,
+                                'f2': hyd_f2,
+                                'auc': hyd_auc,
+                            }
+
+                        metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
+                    else:
+                        hydrophone_metrics = defaultdict(lambda: {'count': 0, 'predictions': [], 'targets': []})
+                        # Binary path (unchanged)
+                        for pred, target, source in zip(probabilities, all_targets, self.sources):
+                            hydrophone_metrics[source]['predictions'].append(pred)
+                            hydrophone_metrics[source]['targets'].append(target)
+                            hydrophone_metrics[source]['count'] += 1
+
+                        for hydrophone, hyd_metrics in hydrophone_metrics.items():
+                            hyd_preds = np.array(hyd_metrics['predictions'])
+                            hyd_targets = np.array(hyd_metrics['targets'])
+                            hyd_pred_labels = (hyd_preds >= 0.5).astype(int)
+                            try:
+                                hyd_metrics['precision'] = float(sklearn.metrics.precision_score(hyd_targets, hyd_pred_labels))
+                                hyd_metrics['recall'] = float(sklearn.metrics.recall_score(hyd_targets, hyd_pred_labels))
+                                hyd_metrics['f2'] = float(sklearn.metrics.fbeta_score(hyd_targets, hyd_pred_labels, beta=2))
+                                hyd_metrics['auc'] = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_preds))
+                            except Exception as e:
+                                print(f"[DEBUG] Warning: Failed to calculate metrics for hydrophone {hydrophone}: {str(e)}")
+                                hyd_metrics.update({'precision': 0.0, 'recall': 0.0, 'f2': 0.0, 'auc': 0.0})
+
+                            # Convert predictions and targets lists to counts for memory efficiency
+                            hyd_metrics['predictions'] = len(hyd_metrics['predictions'])
+                            hyd_metrics['targets'] = sum(hyd_metrics['targets'])
+
+                        metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
                     
             except Exception as e:
                 print(f"[DEBUG] Error computing metrics: {str(e)}")

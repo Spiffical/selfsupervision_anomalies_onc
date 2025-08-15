@@ -26,6 +26,8 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'tools', 'labeling'))
+
 def str2bool(v):
     if isinstance(v, bool):
         return v
@@ -122,16 +124,22 @@ def process_single_file(mat_file, label_data, target_dim):
     label_strings = []
     
     if filename in label_data:
-        for label in label_data[filename]:
+        file_labels = label_data[filename]
+        
+        # handle both old and new label formats
+        processed_labels = process_hierarchical_labels(file_labels, config)
+        
+        for label in processed_labels:
             # Convert label to lowercase for comparison
-            label = label.lower()
+            label_lower = label.lower()
             # Normalize "unknown features" to "unknown feature"
-            if label == "unknown features":
-                label = "unknown feature"
+            if label_lower == "unknown features":
+                label_lower = "unknown feature"
+            
             # Convert config.anomaly_labels to lowercase for comparison
-            if label in [a.lower() for a in config.anomaly_labels]:
+            if label_lower in [a.lower() for a in config.anomaly_labels]:
                 # Find the index in the original list using case-insensitive matching
-                label_idx = next(i for i, a in enumerate(config.anomaly_labels) if a.lower() == label)
+                label_idx = next(i for i, a in enumerate(config.anomaly_labels) if a.lower() == label_lower)
                 label_vector[label_idx] = 1
                 # Use the original case from config.anomaly_labels for consistency
                 label_strings.append(config.anomaly_labels[label_idx])
@@ -145,6 +153,79 @@ def process_single_file(mat_file, label_data, target_dim):
     label_str = ';'.join(label_strings)
     
     return data, label_vector, filename.encode('utf-8'), label_str.encode('utf-8')
+
+
+def process_hierarchical_labels(file_labels, config):
+    """
+    Process labels from either old or new format and return a list of labels
+    compatible with the dataset creation process.
+    
+    Args:
+        file_labels: List of labels (can be old flat format or new hierarchical format)
+        config: Dataset configuration
+    
+    Returns:
+        List of processed labels for dataset creation
+    """
+    try:
+        from utils.file_operations import get_backward_compatible_labels
+        
+        processed_labels = []
+        
+        for label in file_labels:
+            if isinstance(label, str):
+                if " > " in label:
+                    # new hierarchical format - extract leaf label for backward compatibility
+                    leaf_label = label.split(" > ")[-1]
+                    processed_labels.append(leaf_label)
+                    
+                    # also add intermediate levels if they map to known anomaly labels
+                    path_parts = label.split(" > ")
+                    for i in range(len(path_parts)):
+                        partial_label = path_parts[i]
+                        if partial_label.lower() in [a.lower() for a in config.anomaly_labels]:
+                            if partial_label not in processed_labels:
+                                processed_labels.append(partial_label)
+                else:
+                    # old flat format
+                    processed_labels.append(label)
+            else:
+                # handle other formats
+                processed_labels.append(str(label))
+        
+        return processed_labels
+        
+    except ImportError:
+        # fallback if hierarchical modules aren't available
+        logging.warning("Hierarchical label processing not available, using labels as-is")
+        return [str(label) for label in file_labels]
+
+
+def load_labels_with_hierarchical_support(label_file):
+    """
+    Load labels from JSON file with support for both old and new hierarchical formats.
+    """
+    if not os.path.exists(label_file):
+        return {}
+    
+    try:
+        with open(label_file, 'r') as f:
+            raw_data = json.load(f)
+        
+        # ensure consistent format
+        processed_data = {}
+        for filename, labels in raw_data.items():
+            if isinstance(labels, list):
+                processed_data[filename] = labels
+            else:
+                # handle single label case
+                processed_data[filename] = [labels]
+        
+        return processed_data
+        
+    except Exception as e:
+        logging.error(f"Error loading labels from {label_file}: {e}")
+        return {}
 
 def process_batch(mat_files, label_data, target_dim, hf, num_workers=None):
     """

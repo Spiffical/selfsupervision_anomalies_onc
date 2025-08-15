@@ -19,6 +19,8 @@ WANDB_ENTITY=""
 declare -a EXCLUDE_LABELS=()
 DRY_RUN="false"
 RESUME="true"
+MULTICLASS="false"
+NUM_CLASSES=2
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -62,6 +64,11 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             DRY_RUN="true"
             shift
+            ;;
+        --multiclass)
+            MULTICLASS="true"
+            NUM_CLASSES="$2"
+            shift 2
             ;;
         *)
             echo "Unknown argument: $1"
@@ -115,6 +122,10 @@ done
 
 if [ "$DRY_RUN" = "true" ]; then
     RUN_CMD+=" --dry-run"
+fi
+
+if [ "$MULTICLASS" = "true" ]; then
+    RUN_CMD+=" --multiclass \"$NUM_CLASSES\""
 fi
 
 # Print the final command that would be executed

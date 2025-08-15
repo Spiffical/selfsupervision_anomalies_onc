@@ -26,3 +26,13 @@ whale_call_analysis/
 scripts/analyze_excel_data.py
 excel_analysis/device_distribution.png
 excel_analysis/timing_distributions.png
+notebooks/test_results/high_confidence_anomalies.csv
+.gitignore
+notebooks/test_results/test_results.csv
+tools/labeling/test_backwards_compatibility.py
+tools/labeling/demo_legacy.json
+tools/labeling/demo_hierarchical.json
+mamba_ssm-2.2.5+cu11torch2.5-cp310-cp310-linux_x86_64.whl
+requirements_test.txt
+test_imports.py
+test_mamba.py

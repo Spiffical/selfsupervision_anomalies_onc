@@ -46,8 +46,12 @@ def create_model(args):
         'if_bimamba': args.if_bimamba
     }
     
-    # For binary classification tasks, ensure label_dim is 1
-    label_dim = 1 if args.task == 'ft_cls' and args.n_class == 2 else args.n_class
+    # Determine label dimension for supervised head
+    if getattr(args, 'multiclass', False):
+        label_dim = args.num_classes
+    else:
+        # Binary classification uses a single-logit head (BCEWithLogits)
+        label_dim = 1 if args.task == 'ft_cls' and args.n_class == 2 else args.n_class
     
     # For finetuning, try to find pretrained weights
     if 'pretrain' not in args.task:
@@ -244,6 +248,22 @@ def setup_training(model, args):
                         # Add 'module.' prefix if model is wrapped but state dict isn't
                         state_dict = {f'module.{k}': v for k, v in state_dict.items()}
                     
+                    # Remove classification head from pretrained weights ONLY for SSL-pretrained checkpoints
+                    # Detect SSL checkpoints via known keys and absence of finetune artifacts
+                    is_ssl_checkpoint = ('optimizer_state_dict' in checkpoint and 'scheduler_state_dict' in checkpoint)
+                    if is_ssl_checkpoint:
+                        head_keys = ['v.head.weight', 'v.head.bias']
+                        prefixed_head_keys = [
+                            f"module.{k}" if isinstance(model, nn.DataParallel) else k for k in head_keys
+                        ]
+                        removed_keys = []
+                        for hk in prefixed_head_keys:
+                            if hk in state_dict:
+                                removed_keys.append(hk)
+                                del state_dict[hk]
+                        if removed_keys:
+                            print(f"Removed head weights from checkpoint: {removed_keys}")
+
                     # Handle positional embedding resizing
                     pos_embed_key = 'module.v.pos_embed' if isinstance(model, nn.DataParallel) else 'v.pos_embed'
                     if pos_embed_key in state_dict:
@@ -316,6 +336,21 @@ def setup_training(model, args):
             elif isinstance(model, nn.DataParallel) and not list(state_dict.keys())[0].startswith('module.'):
                 state_dict = {f'module.{k}': v for k, v in state_dict.items()}
             
+            # Remove classification head from pretrained weights ONLY for SSL-pretrained checkpoints
+            is_ssl_checkpoint = ('optimizer_state_dict' in checkpoint and 'scheduler_state_dict' in checkpoint)
+            if is_ssl_checkpoint:
+                head_keys = ['v.head.weight', 'v.head.bias']
+                prefixed_head_keys = [
+                    f"module.{k}" if isinstance(model, nn.DataParallel) else k for k in head_keys
+                ]
+                removed_keys = []
+                for hk in prefixed_head_keys:
+                    if hk in state_dict:
+                        removed_keys.append(hk)
+                        del state_dict[hk]
+                if removed_keys:
+                    print(f"Removed head weights from checkpoint: {removed_keys}")
+
             # Handle positional embedding resizing
             pos_embed_key = 'module.v.pos_embed' if isinstance(model, nn.DataParallel) else 'v.pos_embed'
             if pos_embed_key in state_dict:
@@ -424,7 +459,20 @@ def training_loop(model, train_loader, optimizer, scheduler, metrics_tracker, tr
         else:
             output = model(audio_input, args.task)
             if isinstance(args.loss_fn, torch.nn.CrossEntropyLoss):
-                loss = args.loss_fn(output, torch.argmax(labels.long(), axis=1))
+                # For CE, labels must be class indices in [0, C-1] and dtype long
+                num_classes = output.size(1)
+                if labels is None:
+                    raise RuntimeError("Labels are None for CrossEntropyLoss")
+                if labels.dim() != 1:
+                    labels = labels.view(-1)
+                if labels.dtype != torch.long:
+                    labels = labels.long()
+                invalid_mask = (labels < 0) | (labels >= num_classes)
+                if torch.any(invalid_mask):
+                    unique_vals = torch.unique(labels.detach().cpu())
+                    print(f"[WARN] CE labels out of range. labels unique={unique_vals.tolist()}, num_classes={num_classes}")
+                    labels = torch.clamp(labels, 0, num_classes - 1)
+                loss = args.loss_fn(output, labels)
             else:
                 # For binary classification (BCE loss), squeeze the output to match target shape
                 if 'pretrain' not in args.task:
@@ -541,7 +589,19 @@ def validation_loop(model, val_loader, val_collector, args):
             else:
                 output = model(val_input, args.task)
                 if isinstance(args.loss_fn, torch.nn.CrossEntropyLoss):
-                    loss = args.loss_fn(output, torch.argmax(labels.long(), axis=1))
+                    num_classes = output.size(1)
+                    if labels is None:
+                        raise RuntimeError("Labels are None for CrossEntropyLoss")
+                    if labels.dim() != 1:
+                        labels = labels.view(-1)
+                    if labels.dtype != torch.long:
+                        labels = labels.long()
+                    invalid_mask = (labels < 0) | (labels >= num_classes)
+                    if torch.any(invalid_mask):
+                        unique_vals = torch.unique(labels.detach().cpu())
+                        print(f"[WARN] CE labels out of range (val). labels unique={unique_vals.tolist()}, num_classes={num_classes}")
+                        labels = torch.clamp(labels, 0, num_classes - 1)
+                    loss = args.loss_fn(output, labels)
                 else:
                     # For binary classification (BCE loss), squeeze the output to match target shape
                     if 'pretrain' not in args.task:

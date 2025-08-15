@@ -259,6 +259,7 @@ class MetricsTracker:
                             mpg_mse
                         )
                     else:
+                        # Finetuning table expects: Epoch, Hydrophone, Sample Count, Accuracy, Precision, Recall, F2, AUC
                         self.hydrophone_table.add_data(
                             epoch,
                             hydrophone,
@@ -266,7 +267,8 @@ class MetricsTracker:
                             metrics.get('accuracy', 0.0),
                             metrics.get('precision', 0.0),
                             metrics.get('recall', 0.0),
-                            metrics.get('f2', 0.0)
+                            metrics.get('f2', 0.0),
+                            metrics.get('auc', 0.0)
                         )
                 
                 # Log the updated table

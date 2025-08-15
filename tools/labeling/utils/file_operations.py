@@ -7,36 +7,49 @@ import tempfile
 lock_file = os.path.join(tempfile.gettempdir(), 'labels_lock.lock')
 file_lock = FileLock(lock_file)
 
-def load_labels(filename):
-    """Load labels from JSON file with support for both old and new formats"""
+def load_labels(filename, convert_to_hierarchical=True):
+    """
+    Load labels from JSON file with support for both old and new formats.
+    
+    Args:
+        filename: Path to JSON file
+        convert_to_hierarchical: If True, convert legacy labels to hierarchical format
+    """
     if not os.path.exists(filename):
         return {}
     
     with open(filename, 'r') as f:
         data = json.load(f)
     
-    # Convert old format to new format for consistency
-    converted_data = {}
+    # import here to avoid circular imports
+    try:
+        from hierarchical_labels import (
+            is_legacy_format, 
+            convert_legacy_to_hierarchical,
+            LEGACY_LABEL_MAPPING
+        )
+        hierarchical_support = True
+    except ImportError:
+        hierarchical_support = False
+    
+    # ensure all labels are in list format
+    normalized_data = {}
     for file_key, labels in data.items():
         if isinstance(labels, list):
-            converted_labels = []
-            for label in labels:
-                if isinstance(label, str):
-                    # check if it's already hierarchical format
-                    if " > " in label:
-                        converted_labels.append(label)
-                    else:
-                        # old format - keep as single item for backward compatibility
-                        converted_labels.append(label)
-                else:
-                    # handle other formats if needed
-                    converted_labels.append(str(label))
-            converted_data[file_key] = converted_labels
+            normalized_data[file_key] = labels
         else:
-            # handle non-list formats
-            converted_data[file_key] = [str(labels)]
+            normalized_data[file_key] = [str(labels)]
     
-    return converted_data
+    # detect format and convert if needed
+    if hierarchical_support and convert_to_hierarchical:
+        if is_legacy_format(normalized_data):
+            print(f"Detected legacy format in {filename}, converting to hierarchical...")
+            converted_data = {}
+            for file_key, labels in normalized_data.items():
+                converted_data[file_key] = convert_legacy_to_hierarchical(labels)
+            return converted_data
+    
+    return normalized_data
 
 
 def convert_old_labels_to_hierarchical(old_labels):
@@ -101,13 +114,17 @@ def get_backward_compatible_labels(hierarchical_labels):
     return flat_labels
 
 
-def save_labels(output_file, label_data, remove=False):
+def save_labels(output_file, label_data, remove=False, force_legacy_format=False):
     with file_lock:
         # First read existing data
         current_data = {}
-        if os.path.exists(output_file):
-            with open(output_file, 'r') as f:
-                current_data = json.load(f)
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            try:
+                with open(output_file, 'r') as f:
+                    current_data = json.load(f)
+            except json.JSONDecodeError:
+                # file is empty or corrupted, start fresh
+                current_data = {}
         
         # Process the label data - support both old and new formats
         for filename, labels in label_data.items():
@@ -146,6 +163,17 @@ def save_labels(output_file, label_data, remove=False):
                             current_data[filename].append(label)
                 else:
                     current_data[filename] = [labels] if not isinstance(labels, list) else labels
+        
+        # convert to legacy format if requested
+        if force_legacy_format:
+            try:
+                from hierarchical_labels import convert_hierarchical_to_legacy
+                legacy_data = {}
+                for filename, labels in current_data.items():
+                    legacy_data[filename] = convert_hierarchical_to_legacy(labels)
+                current_data = legacy_data
+            except ImportError:
+                pass  # no conversion available
         
         # Write back the merged data
         with open(output_file, 'w') as f:

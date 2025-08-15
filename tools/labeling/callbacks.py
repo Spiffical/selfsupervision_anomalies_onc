@@ -7,7 +7,7 @@ import glob
 import threading
 from dash.exceptions import PreventUpdate
 
-from config import FOLDER, OUTPUT_FILE, SPECS_PER_PAGE, AVAILABLE_LABELS, ENABLE_AUDIO, AUDIO_FOLDER
+from config import FOLDER, OUTPUT_FILE, SPECS_PER_PAGE, AVAILABLE_LABELS, ENABLE_AUDIO, AUDIO_FOLDER, LEGACY_LABELS
 from utils.file_operations import load_labels, save_labels
 from utils.image_processing import generate_image_cached, load_spectrogram_cached, create_spectrogram_figure
 from utils.audio_matching import find_matching_audio_files, get_representative_audio_file
@@ -125,8 +125,12 @@ def register_callbacks(app):
         current_page_files = mat_files[start_idx:end_idx]
         current_page_filenames = [os.path.basename(f) for f in current_page_files]
 
-        # Load labels directly from the JSON file
-        label_data = load_labels(OUTPUT_FILE)
+        # Load labels - prioritize legacy file if provided
+        if LEGACY_LABELS and os.path.exists(LEGACY_LABELS):
+            label_data = load_labels(LEGACY_LABELS, convert_to_hierarchical=True)
+            print(f"Loaded legacy labels from {LEGACY_LABELS}")
+        else:
+            label_data = load_labels(OUTPUT_FILE)
 
         page_info = f"Page {current_page + 1} of {total_pages}"
 
@@ -528,7 +532,10 @@ def register_callbacks(app):
         
         if new_expanded_state:
             # Load current labels for this file and show hierarchical selector
-            label_data = load_labels(OUTPUT_FILE)
+            if LEGACY_LABELS and os.path.exists(LEGACY_LABELS):
+                label_data = load_labels(LEGACY_LABELS, convert_to_hierarchical=True)
+            else:
+                label_data = load_labels(OUTPUT_FILE)
             selected_labels = label_data.get(filename, [])
             return create_hierarchical_selector(filename, selected_labels), True, "Collapse"
         else:

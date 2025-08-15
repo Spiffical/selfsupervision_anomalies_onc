@@ -34,7 +34,9 @@ def trainmask(audio_model, train_loader, test_loader, args):
     # Initialize metrics tracking
     metrics_tracker = MetricsTracker(args.exp_dir, args, use_wandb=args.use_wandb)
     train_meters = AverageMeterSet()
-    val_collector = ValidationMetricsCollector(task=args.task)
+    multiclass = getattr(args, 'multiclass', False)
+    num_classes = getattr(args, 'num_classes', 2)
+    val_collector = ValidationMetricsCollector(task=args.task, multiclass=multiclass, num_classes=num_classes)
     
     # Create model if not provided
     if audio_model is None:

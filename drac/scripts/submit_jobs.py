@@ -22,6 +22,8 @@ def submit_linked_jobs(
     train_ratio: float = 0.8,
     time_limit: str = "0-12:00:00",
     dry_run: bool = False,
+    multiclass: bool = False,
+    num_classes: int = 2,
 ) -> None:
     """Submit a series of linked jobs where each subsequent job depends on the previous one.
 
@@ -98,6 +100,9 @@ def submit_linked_jobs(
             for label in exclude_labels:
                 cmd.extend(["--exclude-label", label])
 
+        if multiclass:
+            cmd.extend(["--multiclass", str(num_classes)])
+
         if dry_run:
             cmd.extend(["--dry-run"])
 
@@ -139,6 +144,8 @@ def submit_training_size_experiments(
     task: str = "ft_cls",
     time_limit: str = "0-12:00:00",
     dry_run: bool = False,
+    multiclass: bool = False,
+    num_classes: int = 2,
 ) -> None:
     """Submit linked jobs for multiple training ratios.
 
@@ -168,6 +175,8 @@ def submit_training_size_experiments(
             train_ratio=ratio,
             time_limit=time_limit,
             dry_run=dry_run,
+            multiclass=multiclass,
+            num_classes=num_classes,
         )
 
 def main():
@@ -186,6 +195,7 @@ def main():
     parser.add_argument("--task", default="ft_cls", help="Training task type")
     parser.add_argument("--time-limit", default="0-12:00:00", help="Time limit for each job")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument("--multiclass", type=int, help="Enable multiclass with given number of classes")
 
     # Mode selection
     parser.add_argument("--mode", choices=["single", "multi"], default="single",
@@ -221,6 +231,8 @@ def main():
             train_ratio=args.train_ratio,
             time_limit=args.time_limit,
             dry_run=args.dry_run,
+            multiclass=bool(args.multiclass),
+            num_classes=int(args.multiclass) if args.multiclass else 2,
         )
     else:
         submit_training_size_experiments(
@@ -240,6 +252,8 @@ def main():
             task=args.task,
             time_limit=args.time_limit,
             dry_run=args.dry_run,
+            multiclass=bool(args.multiclass),
+            num_classes=int(args.multiclass) if args.multiclass else 2,
         )
 
 if __name__ == "__main__":

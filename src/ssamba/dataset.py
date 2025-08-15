@@ -23,7 +23,9 @@ class ONCSpectrogramDataset(Dataset):
         supervised: bool = True,
         ood: int = -1,
         amount: float = 1.0,
-        subsample_test: bool = True
+        subsample_test: bool = True,
+        multiclass: bool = False,
+        num_classes: int = 2
     ):
         self.data_path = data_path
         self.split = split
@@ -42,6 +44,9 @@ class ONCSpectrogramDataset(Dataset):
         self.amount = amount
         self.subsample_test = subsample_test
         self.test_seed = seed
+        self.multiclass = multiclass
+        self.num_classes = num_classes
+        self.label_to_index = {}  # Will be populated during dataset preparation
             
         self._prepare_dataset()
 
@@ -191,6 +196,10 @@ class ONCSpectrogramDataset(Dataset):
                     'is_excluded': False  # Default to False, will be set by exclude_anomaly_type if needed
                 })
             
+            # Build label mapping for multiclass
+            if self.multiclass:
+                self._build_label_mapping()
+            
             if self.subsample_test and self.split == 'test':
                 self.subsample()
 
@@ -201,10 +210,15 @@ class ONCSpectrogramDataset(Dataset):
         with h5py.File(self.data_path, 'r') as hf:
             data = hf['spectrograms'][sample['index']]
             
-            # Convert labels to binary (normal vs anomalous)
-            # For test set, excluded samples are still labeled as anomalous
-            labels = torch.tensor(float(sample['is_anomalous'])).float()
-            labels = torch.round(labels)  # Ensure binary values
+            # Handle labels based on classification type
+            if self.multiclass:
+                # For multiclass, convert labels to class indices
+                labels = self._get_multiclass_labels(sample['labels'])
+            else:
+                # Convert labels to binary (normal vs anomalous)
+                # For test set, excluded samples are still labeled as anomalous
+                labels = torch.tensor(float(sample['is_anomalous'])).float()
+                labels = torch.round(labels)  # Ensure binary values
         
         # Apply normalization
         data = self.normalise(data)
@@ -216,8 +230,11 @@ class ONCSpectrogramDataset(Dataset):
             mix_sample = self.sample_info[mix_idx]
             with h5py.File(self.data_path, 'r') as hf:
                 mix_data = hf['spectrograms'][mix_sample['index']]
-                mix_labels = torch.tensor(float(mix_sample['is_anomalous'])).float()
-                mix_labels = torch.round(mix_labels)  # Ensure binary values
+                if self.multiclass:
+                    mix_labels = self._get_multiclass_labels(mix_sample['labels'])
+                else:
+                    mix_labels = torch.tensor(float(mix_sample['is_anomalous'])).float()
+                    mix_labels = torch.round(mix_labels)  # Ensure binary values
             
             mix_data = self.normalise(mix_data)
             mix_data = torch.from_numpy(mix_data).permute(2, 0, 1)
@@ -225,7 +242,8 @@ class ONCSpectrogramDataset(Dataset):
             # Apply mixup
             lam = np.random.beta(0.4, 0.4)
             data = lam * data + (1 - lam) * mix_data
-            labels = lam * labels + (1 - lam) * mix_labels
+            if not self.multiclass:  # Only apply mixup to labels for binary classification
+                labels = lam * labels + (1 - lam) * mix_labels
         
         return data, labels, sample['source']
 
@@ -248,6 +266,47 @@ class ONCSpectrogramDataset(Dataset):
             data = (data - np.min(data)) / (np.max(data) - np.min(data))
         
         return np.nan_to_num(data, 0)
+
+    def _build_label_mapping(self):
+        """Build mapping from label strings to class indices for multiclass classification."""
+        # Collect all unique labels across the dataset
+        all_labels = set()
+        for sample in self.sample_info:
+            for label in sample['labels']:
+                if label and label != '':  # Skip empty labels
+                    # Normalize unknown variants into 'Anomaly'
+                    norm = label.strip().lower()
+                    if norm in ['unknown', 'unknown feature', 'unknown features']:
+                        label = 'Anomaly'
+                    all_labels.add(label)
+        
+        # Sort labels for consistent ordering - put 'normal' first if it exists
+        sorted_labels = sorted(all_labels)
+        if 'normal' in sorted_labels:
+            sorted_labels.remove('normal')
+            sorted_labels = ['normal'] + sorted_labels
+        
+        # Create mapping - limit to num_classes
+        self.label_to_index = {label: idx for idx, label in enumerate(sorted_labels[:self.num_classes])}
+        self.index_to_label = {idx: label for label, idx in self.label_to_index.items()}
+        
+        print(f"Multiclass label mapping: {self.label_to_index}")
+
+    def _get_multiclass_labels(self, label_list):
+        """Convert label strings to class index for multiclass classification."""
+        # For multiclass, use the first valid label as the class
+        # In case of multiple labels, you might want different logic
+        for label in label_list:
+            # Normalize unknown variants into 'Anomaly'
+            if label:
+                norm = label.strip().lower()
+                if norm in ['unknown', 'unknown feature', 'unknown features']:
+                    label = 'Anomaly'
+            if label in self.label_to_index:
+                return torch.tensor(self.label_to_index[label], dtype=torch.long)
+        
+        # If no valid label found, default to first class (usually 'normal')
+        return torch.tensor(0, dtype=torch.long)
 
     def subsample(self):
         """Subsample test set to maintain desired contamination ratios"""
@@ -392,7 +451,9 @@ def exclude_anomaly_type(datasets, exclude_labels, data_path):
             supervised=True,
             ood=test_dataset.ood,
             amount=test_dataset.amount,
-            subsample_test=False  # Don't subsample excluded test set
+            subsample_test=False,  # Don't subsample excluded test set
+            multiclass=test_dataset.multiclass,
+            num_classes=test_dataset.num_classes
         )
         
         # Set the excluded samples in the new dataset
@@ -427,7 +488,9 @@ def get_onc_spectrogram_data(
     ood: int = -1,
     amount: float = 1.0,
     subsample_test: bool = True,
-    exclude_labels: list = None
+    exclude_labels: list = None,
+    multiclass: bool = False,
+    num_classes: int = 2
 ) -> tuple:
     """Load and split data into train/val/test sets
     
@@ -460,7 +523,9 @@ def get_onc_spectrogram_data(
         mixup=mixup,
         supervised=False,
         ood=ood,
-        amount=amount
+        amount=amount,
+        multiclass=False,  # SSL is always binary
+        num_classes=2
     )
     
     ssl_val_dataset = ONCSpectrogramDataset(
@@ -478,7 +543,9 @@ def get_onc_spectrogram_data(
         mixup=0.0,
         supervised=False,
         ood=ood,
-        amount=amount
+        amount=amount,
+        multiclass=False,  # SSL is always binary
+        num_classes=2
     )
     
     train_dataset = ONCSpectrogramDataset(
@@ -496,7 +563,9 @@ def get_onc_spectrogram_data(
         mixup=mixup,
         supervised=True,
         ood=ood,
-        amount=amount
+        amount=amount,
+        multiclass=multiclass,
+        num_classes=num_classes
     )
     
     val_dataset = ONCSpectrogramDataset(
@@ -514,7 +583,9 @@ def get_onc_spectrogram_data(
         mixup=0.0,
         supervised=True,
         ood=ood,
-        amount=amount
+        amount=amount,
+        multiclass=multiclass,
+        num_classes=num_classes
     )
     
     test_dataset = ONCSpectrogramDataset(
@@ -533,7 +604,9 @@ def get_onc_spectrogram_data(
         supervised=True,
         ood=ood,
         amount=amount,
-        subsample_test=subsample_test
+        subsample_test=subsample_test,
+        multiclass=multiclass,
+        num_classes=num_classes
     )
     
     # If exclude_labels is provided, modify the supervised datasets
@@ -544,6 +617,24 @@ def get_onc_spectrogram_data(
             exclude_labels,
             data_path
         )
+
+    # Ensure consistent label mapping across supervised splits for multiclass
+    if multiclass:
+        # Build a global mapping from all supervised samples
+        all_labels = set()
+        for ds in [train_dataset, val_dataset, test_dataset]:
+            for sample in ds.sample_info:
+                for label in sample['labels']:
+                    if label and label != '':
+                        all_labels.add(label)
+        sorted_labels = sorted(all_labels)
+        if 'normal' in sorted_labels:
+            sorted_labels.remove('normal')
+            sorted_labels = ['normal'] + sorted_labels
+        global_map = {label: idx for idx, label in enumerate(sorted_labels[:num_classes])}
+        for ds in [train_dataset, val_dataset, test_dataset]:
+            ds.label_to_index = dict(global_map)
+            ds.index_to_label = {v: k for k, v in ds.label_to_index.items()}
     
     # Print final dataset composition
     print("\n=== FINAL DATASET COMPOSITION ===")

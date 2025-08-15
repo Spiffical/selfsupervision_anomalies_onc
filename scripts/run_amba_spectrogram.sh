@@ -47,10 +47,14 @@ TRAIN_RATIO=0.8
 RESUME="true"  # Default is to resume training if a checkpoint exists
 EXP_DIR="/exp"
 TASK="pretrain_joint"
+MULTICLASS="false"
+NUM_CLASSES=""
 WANDB_ENTITY=""
 declare -a EXCLUDE_LABELS=()
 PRETRAINED_PATH=""
 DRY_RUN="false"
+MULTICLASS="false"
+NUM_CLASSES=""
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -106,6 +110,14 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN="true"
             shift
             ;;
+        --multiclass)
+            MULTICLASS="true"
+            shift
+            ;;
+        --num-classes|--num_classes)
+            NUM_CLASSES="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown argument: $1"
             exit 1
@@ -137,7 +149,7 @@ echo "Excluded labels: ${EXCLUDE_LABELS[*]}"
 if [[ $TASK == *"pretrain"* ]]; then
     # Pretraining parameters
     mask_patch=300  # Number of patches to mask during pretraining
-    batch_size=16
+    batch_size=2
     lr=1e-4
     lr_patience=2
     epoch=200
@@ -151,7 +163,7 @@ if [[ $TASK == *"pretrain"* ]]; then
 else
     # Finetuning parameters
     mask_patch=0  # No masking in finetuning
-    batch_size=16
+    batch_size=2
     lr=5e-5
     lr_patience=3
     epoch=200
@@ -196,7 +208,7 @@ bimamba_type="v2"
 drop_path_rate=0.1
 stride=16
 channels=1
-num_classes=2
+num_classes="${NUM_CLASSES}"
 drop_rate=0.
 norm_epsilon=1e-5
 if_bidirectional='true'
@@ -250,7 +262,6 @@ PYTHON_CMD="python -W ignore $PYTHON_SCRIPT --use_wandb --wandb_entity \"${WANDB
 $([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
 --dataset_mean ${dataset_mean} \
 --dataset_std ${dataset_std} \
---n_class 2 \
 --train_ratio ${train_ratio} \
 --val_ratio ${val_ratio} \
 --split_seed ${split_seed} \
@@ -265,7 +276,7 @@ $([ ! -z "$PRETRAINED_PATH" ] && echo "--pretrained_path $PRETRAINED_PATH") \
 --fused_add_norm ${fused_add_norm} --if_rope ${if_rope} --if_rope_residual ${if_rope_residual} \
 --bimamba_type ${bimamba_type} --use_middle_cls_token ${use_middle_cls_token} \
 --drop_path_rate ${drop_path_rate} --stride ${stride} --channels ${channels} \
---num_classes ${num_classes} --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
+$( [ -n "$num_classes" ] && echo "--num_classes $num_classes" ) --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
@@ -283,6 +294,11 @@ fi
 # Add resume flag if needed (default behavior is to resume)
 if [ "$RESUME" != "false" ]; then
     PYTHON_CMD+=" --resume"
+fi
+
+# Add multiclass flag if enabled
+if [ "$MULTICLASS" = "true" ]; then
+    PYTHON_CMD+=" --multiclass"
 fi
 
 # Print the command that would be executed

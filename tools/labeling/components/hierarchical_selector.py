@@ -2,6 +2,8 @@ import dash
 from dash import html, dcc, Input, Output, State, callback, ALL, MATCH
 import dash_bootstrap_components as dbc
 from hierarchical_labels import HIERARCHICAL_LABELS, get_all_paths, get_label_display_name, path_to_string
+from config import LEGACY_LABELS
+import os
 
 def create_hierarchical_selector(filename, selected_labels=None):
     """
@@ -14,6 +16,9 @@ def create_hierarchical_selector(filename, selected_labels=None):
     if selected_labels is None:
         selected_labels = []
     
+    # check if we're in legacy view mode
+    is_legacy_view = LEGACY_LABELS and os.path.exists(LEGACY_LABELS)
+    
     # convert string labels back to paths if needed
     selected_paths = []
     for label in selected_labels:
@@ -25,7 +30,19 @@ def create_hierarchical_selector(filename, selected_labels=None):
             # old format - try to map to new hierarchy
             selected_paths.append((label,))
     
-    return html.Div([
+    # create the component with optional read-only styling
+    content = []
+    
+    # add legacy view warning if applicable
+    if is_legacy_view:
+        content.append(
+            dbc.Alert([
+                html.I(className="fas fa-eye me-2"),
+                "Viewing legacy labels (read-only mode)"
+            ], color="info", className="mb-3")
+        )
+    
+    content.extend([
         # search box
         dbc.InputGroup([
             dbc.Input(
@@ -90,7 +107,9 @@ def create_hierarchical_selector(filename, selected_labels=None):
             id={'type': 'audio-reinit-dummy', 'filename': filename},
             style={'display': 'none'}
         )
-    ], style={'padding': '8px'})
+    ])
+    
+    return html.Div(content, style={'padding': '8px'})
 
 def create_selected_labels_display(selected_paths, filename):
     """Create display for currently selected labels"""

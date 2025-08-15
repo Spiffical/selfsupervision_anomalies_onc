@@ -226,9 +226,9 @@ def log_validation_metrics(metrics, task, epoch, prefix="", use_wandb=True):
     is_pretraining = task.startswith('pretrain')
     section_prefix = "Pretraining" if is_pretraining else "Finetuning"
     
-    # Process each metric
+    # Process each metric (skip complex nested structures handled separately)
     for k, v in metrics.items():
-        if k == 'hydrophone_metrics':
+        if k in ['hydrophone_metrics', 'per_class']:
             continue
             
         # Clean the key name
@@ -252,6 +252,54 @@ def log_validation_metrics(metrics, task, epoch, prefix="", use_wandb=True):
         
         # Log to the appropriate section
         wandb.log({f"{section}/validation": {clean_key: v, "epoch": epoch}})
+
+    # Log per-class metrics if available (multiclass)
+    if 'per_class' in metrics:
+        pc = metrics['per_class'] or {}
+        try:
+            precisions = pc.get('precision', [])
+            recalls = pc.get('recall', [])
+            f2s = pc.get('f2', [])
+            aucs = pc.get('auc', [])
+            supports = pc.get('support', [])
+
+            # Log a summary table
+            num_classes = max(len(precisions), len(recalls), len(f2s), len(aucs), len(supports))
+            if num_classes > 0:
+                data = []
+                for i in range(num_classes):
+                    data.append([
+                        i,
+                        float(precisions[i]) if i < len(precisions) else 0.0,
+                        float(recalls[i]) if i < len(recalls) else 0.0,
+                        float(f2s[i]) if i < len(f2s) else 0.0,
+                        float(aucs[i]) if i < len(aucs) else 0.0,
+                        int(supports[i]) if i < len(supports) else 0,
+                    ])
+
+                table = wandb.Table(data=data, columns=[
+                    "class_idx", "precision", "recall", "f2", "auc", "support"
+                ])
+                wandb.log({f"{section_prefix} Per-Class/validation_table": table})
+
+                # Also log grouped per-class scalars for easy charting
+                wandb.log({
+                    f"{section_prefix} Per-Class Precision/validation": {**{f"class_{i}": float(precisions[i]) for i in range(len(precisions))}, "epoch": epoch}
+                })
+                wandb.log({
+                    f"{section_prefix} Per-Class Recall/validation": {**{f"class_{i}": float(recalls[i]) for i in range(len(recalls))}, "epoch": epoch}
+                })
+                wandb.log({
+                    f"{section_prefix} Per-Class F2/validation": {**{f"class_{i}": float(f2s[i]) for i in range(len(f2s))}, "epoch": epoch}
+                })
+                wandb.log({
+                    f"{section_prefix} Per-Class AUC/validation": {**{f"class_{i}": float(aucs[i]) for i in range(len(aucs))}, "epoch": epoch}
+                })
+                wandb.log({
+                    f"{section_prefix} Per-Class Support/validation": {**{f"class_{i}": int(supports[i]) for i in range(len(supports))}, "epoch": epoch}
+                })
+        except Exception as e:
+            print(f"[DEBUG] Error logging per-class metrics: {str(e)}")
     
     # Log per-hydrophone metrics if available
     if 'hydrophone_metrics' in metrics:

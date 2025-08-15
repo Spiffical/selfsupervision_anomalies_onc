@@ -18,6 +18,7 @@ import datetime
 from ssamba.utilities.wandb_utils import init_wandb, finish_run, log_training_metrics
 from ssamba.dataset import ONCSpectrogramDataset, get_onc_spectrogram_data
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score
+import yaml
 
 print("I am process %s, running on %s: starting (%s)" % (os.getpid(), os.uname()[1], time.asctime()))
 
@@ -78,7 +79,8 @@ parser.add_argument('--bimamba_type', type=str, default='v2')
 parser.add_argument('--drop_path_rate', type=float, default=0.1)
 parser.add_argument('--stride', type=int, default=16)
 parser.add_argument('--channels', type=int, default=1)
-parser.add_argument('--num_classes', type=int, default=1000)
+parser.add_argument('--num_classes', type=int, default=None, help='Total number of classes (including normal). If omitted with --multiclass, defaults to all classes from config (after grouping).')
+parser.add_argument('--multiclass', action='store_true', help='Enable multiclass classification instead of binary')
 parser.add_argument('--drop_rate', type=float, default=0.0)
 parser.add_argument('--norm_epsilon', type=float, default=1e-5)
 parser.add_argument('--if_bidirectional', type=str, choices=['true', 'false'], default='true')
@@ -161,6 +163,42 @@ args.if_devide_out = args.if_devide_out == 'true'
 args.use_double_cls_token = args.use_double_cls_token == 'true'
 args.use_middle_cls_token = args.use_middle_cls_token == 'true'
 
+# Resolve default/limits for num_classes when using multiclass
+if args.multiclass:
+    try:
+        # Load anomaly labels from config
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg_path = os.path.join(repo_root, 'config', 'dataset_config.yaml')
+        with open(cfg_path, 'r') as f:
+            cfg = yaml.safe_load(f)
+        anomaly_labels = cfg.get('anomaly_labels', [])
+        # Group unknown variants into 'Anomaly'
+        normalized = []
+        for lab in anomaly_labels:
+            norm = lab.strip().lower()
+            if norm in ['unknown', 'unknown feature', 'unknown features']:
+                normalized.append('Anomaly')
+            else:
+                normalized.append(lab)
+        max_anomaly_classes = len(sorted(set(normalized)))
+        max_total_classes = 1 + max_anomaly_classes  # include 'normal'
+        if args.num_classes is None:
+            args.num_classes = max_total_classes
+            print(f"[DEBUG] num_classes not provided; defaulting to {args.num_classes} (from config)")
+        else:
+            # Clamp to [2, max_total_classes]
+            if args.num_classes < 2:
+                print(f"[WARN] num_classes {args.num_classes} < 2; setting to 2")
+                args.num_classes = 2
+            if args.num_classes > max_total_classes:
+                print(f"[WARN] num_classes {args.num_classes} > max available {max_total_classes}; reducing to {max_total_classes}")
+                args.num_classes = max_total_classes
+        print(f"[DEBUG] Using num_classes={args.num_classes} (max={max_total_classes})")
+    except Exception as e:
+        print(f"[WARN] Failed to derive num_classes from config: {e}. Proceeding with provided value or fallback.")
+        if args.num_classes is None:
+            args.num_classes = 2
+
 # Verify split ratios sum to <= 1.0
 test_ratio = 1.0 - args.train_ratio - args.val_ratio
 if test_ratio < 0:
@@ -232,7 +270,9 @@ if exclude_labels:
         ood=-1,  # No OOD filtering
         amount=1.0,
         subsample_test=True,
-        exclude_labels=exclude_labels
+        exclude_labels=exclude_labels,
+        multiclass=args.multiclass,
+        num_classes=args.num_classes
     )
 else:
     ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset = get_onc_spectrogram_data(
@@ -250,7 +290,8 @@ else:
         ood=-1,  # No OOD filtering
         amount=1.0,
         subsample_test=True,
-        exclude_labels=exclude_labels
+        multiclass=args.multiclass,
+        num_classes=args.num_classes
     )
     excluded_test_dataset = None
 

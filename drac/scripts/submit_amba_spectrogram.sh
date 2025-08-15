@@ -21,6 +21,8 @@ WANDB_ENTITY=""
 PRETRAINED_PATH=""
 declare -a EXCLUDE_LABELS=()
 DRY_RUN="false"
+MULTICLASS="false"
+NUM_CLASSES=2
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -72,6 +74,11 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             DRY_RUN="true"
             shift
+            ;;
+        --multiclass)
+            MULTICLASS="true"
+            NUM_CLASSES="$2"
+            shift 2
             ;;
         *)
             echo "Unknown argument: $1"
@@ -127,6 +134,10 @@ done
 
 if [ ! -z "$PRETRAINED_PATH" ]; then
     RUN_CMD+=" --pretrained-path \"$PRETRAINED_PATH\""
+fi
+
+if [ "$MULTICLASS" = "true" ]; then
+    RUN_CMD+=" --multiclass \"$NUM_CLASSES\""
 fi
 
 if [ "$DRY_RUN" = "true" ]; then

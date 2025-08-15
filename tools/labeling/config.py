@@ -66,6 +66,7 @@ def parse_arguments():
     parser.add_argument('--available_labels', type=str, nargs='+', help="Labels available for selection")
     parser.add_argument('--enable_audio', action='store_true', help="Enable audio playback")
     parser.add_argument('--disable_audio', action='store_true', help="Disable audio playback")
+    parser.add_argument('--legacy_labels', type=str, help="Path to legacy format JSON file to load for viewing")
     
     return parser.parse_args()
 
@@ -106,10 +107,14 @@ def get_config():
     if not output_file:
         raise ValueError("Output file must be specified in config file or command line")
     
+    # Legacy labels file
+    legacy_labels = args.legacy_labels
+    
     # Resolve paths relative to repository root
     folder = resolve_path(folder)
     audio_folder = resolve_path(audio_folder) if audio_folder else None
     output_file = resolve_path(output_file)
+    legacy_labels = resolve_path(legacy_labels) if legacy_labels else None
     
     return {
         'folder': folder,
@@ -122,7 +127,8 @@ def get_config():
         'enable_audio': enable_audio,
         'auto_match_audio': auto_match_audio,
         'cache_max_size': cache_max_size,
-        'preload_next_page': preload_next_page
+        'preload_next_page': preload_next_page,
+        'legacy_labels': legacy_labels
     }
 
 # Get configuration
@@ -140,3 +146,4 @@ ENABLE_AUDIO = ARGS['enable_audio']
 AUTO_MATCH_AUDIO = ARGS['auto_match_audio']
 CACHE_MAX_SIZE = ARGS['cache_max_size']
 PRELOAD_NEXT_PAGE = ARGS['preload_next_page']
+LEGACY_LABELS = ARGS['legacy_labels']

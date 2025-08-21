@@ -11,7 +11,7 @@
 # Input arguments
 TRAINING_DATA_PATH=${1:-$HOME/projects/def-kmoran/merileo/ssl_hydrophones/data/h5/training_data.h5}
 TRAIN_RATIO=${2:-0.8}  # Default to 80% if not provided
-PROJECT_PATH=${3:-$HOME/ssamba}
+PROJECT_PATH=${3:-$HOME/selfsupervision_anomalies_onc}
 
 # Extract the filename from the training data path
 TRAINING_DATA_FILENAME=$(basename "$TRAINING_DATA_PATH")
@@ -23,7 +23,7 @@ WANDB_GROUP="training_size_experiment"
 module load python/3.10
 
 # Activate your virtual environment
-source $HOME/ssamba/myenv/bin/activate
+source $HOME/selfsupervision_anomalies_onc/myenv/bin/activate
 
 # Load W&B API key from .env file if available
 if [ -f $PROJECT_PATH/.env ]; then

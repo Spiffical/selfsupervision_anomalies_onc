@@ -344,17 +344,16 @@ For users with access to DRAC (Digital Research Alliance of Canada) clusters, co
 
 1. **Setup environment:**
    ```bash
-   module load python/3.10 cuda/11.8 cudnn/8.7
+   module load StdEnv/2023 python/3.10 gcc/12.3 cuda/12.2 cudnn/8.9.5.29
    python -m venv .env_drac
    source .env_drac/bin/activate
-   pip install -r requirements.txt
-   pip install -r drac/requirements_drac.txt
+   bash drac/scripts/install_deps_drac.sh
    ```
 
 2. **Submit linked pre-training and fine-tuning jobs:**
    ```bash
    python drac/scripts/submit_jobs.py \
-       /lustre03/project/6003287/shared/ssamba_data/your_dataset.h5 \
+       /path/to/your_dataset.h5 \
        --job-name "ssamba_experiment" \
        --num-jobs 2 \
        --wandb-project "ssamba_drac" \

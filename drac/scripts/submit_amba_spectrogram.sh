@@ -22,7 +22,7 @@ PRETRAINED_PATH=""
 declare -a EXCLUDE_LABELS=()
 DRY_RUN="false"
 MULTICLASS="false"
-NUM_CLASSES=2
+NUM_CLASSES=""
 
 # Virtualenv (can be overridden via --venv or --venv-path, or env VENV_PATH)
 VENV_PATH="${VENV_PATH:-$HOME/selfsupervision_anomalies_onc/myenv}"
@@ -41,7 +41,8 @@ while [[ $# -gt 0 ]]; do
         --exclude-label) EXCLUDE_LABELS+=("$2"); shift 2;;
         --pretrained-path) PRETRAINED_PATH="$2"; shift 2;;
         --dry-run) DRY_RUN="true"; shift;;
-        --multiclass) MULTICLASS="true"; NUM_CLASSES="$2"; shift 2;;
+        --multiclass) MULTICLASS="true"; shift;;
+        --num-classes|--num_classes) NUM_CLASSES="$2"; shift 2;;
         --venv|--venv-path) VENV_PATH="$2"; shift 2;;
         *) echo "Unknown argument: $1"; exit 1;;
     esac
@@ -79,10 +80,12 @@ RUN_CMD="$SLURM_TMPDIR/ssamba_project/scripts/run_amba_spectrogram.sh \
 [ -n "$WANDB_ENTITY" ]     && RUN_CMD+=" --wandb-entity \"$WANDB_ENTITY\""
 for label in "${EXCLUDE_LABELS[@]}"; do RUN_CMD+=" --exclude-label \"$label\""; done
 [ -n "$PRETRAINED_PATH" ]  && RUN_CMD+=" --pretrained-path \"$PRETRAINED_PATH\""
-[ "$MULTICLASS" = "true" ] && RUN_CMD+=" --multiclass \"$NUM_CLASSES\""
+[ "$MULTICLASS" = "true" ] && RUN_CMD+=" --multiclass"
+[ -n "$NUM_CLASSES" ] && RUN_CMD+=" --num-classes \"$NUM_CLASSES\""
 [ "$DRY_RUN" = "true" ]    && RUN_CMD+=" --dry-run"
 
 echo -e "\nFinal command that would be executed:\n$RUN_CMD\n"
+echo "[MARK] Now executing runner script..."
 [ "$DRY_RUN" = "true" ] && { echo "Dry run completed. Exiting."; exit 0; }
 
 module load python/3.10
@@ -105,5 +108,18 @@ cp "$TRAINING_DATA_PATH" "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME"
 echo "Copying project files to temporary directory..."
 cp -ru "$PROJECT_PATH" "$SLURM_TMPDIR/ssamba_project"
 
+# Debug checks to verify expected files exist before running
+echo "Verifying copied files..."
+if [ ! -f "$SLURM_TMPDIR/$TRAINING_DATA_FILENAME" ]; then
+    echo "ERROR: Training data missing at $SLURM_TMPDIR/$TRAINING_DATA_FILENAME"; ls -l "$SLURM_TMPDIR"; exit 3
+fi
+if [ ! -f "$SLURM_TMPDIR/ssamba_project/src/run_amba_spectrogram.py" ]; then
+    echo "ERROR: Python script missing at $SLURM_TMPDIR/ssamba_project/src/run_amba_spectrogram.py"; ls -l "$SLURM_TMPDIR/ssamba_project/src"; exit 4
+fi
+if [ ! -f "$SLURM_TMPDIR/ssamba_project/scripts/run_amba_spectrogram.sh" ]; then
+    echo "ERROR: Runner script missing at $SLURM_TMPDIR/ssamba_project/scripts/run_amba_spectrogram.sh"; ls -l "$SLURM_TMPDIR/ssamba_project/scripts"; exit 5
+fi
+
 cd "$SLURM_TMPDIR/ssamba_project"
-eval "$RUN_CMD"
+set -x
+eval "$RUN_CMD" || { echo "[FATAL] Runner script exited with non-zero status $?"; exit 90; }

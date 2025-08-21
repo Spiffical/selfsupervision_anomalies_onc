@@ -112,10 +112,23 @@ parser.add_argument('--resume', action='store_true', help='Resume training from 
 parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pretrained model for finetuning')
 
 args = parser.parse_args()
+print(f"[DEBUG] Parsed args: exp_dir={args.exp_dir}, data_train={args.data_train}, task={args.task}, resume={args.resume}, num_classes={args.num_classes}, multiclass={args.multiclass}")
 
 # Ensure experiment directory exists
-os.makedirs(args.exp_dir, exist_ok=True)
-os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
+try:
+    os.makedirs(args.exp_dir, exist_ok=True)
+    os.makedirs(os.path.join(args.exp_dir, 'models'), exist_ok=True)
+    print(f"[DEBUG] Ensured exp dirs exist: {args.exp_dir}")
+except Exception as e:
+    print(f"[FATAL] Failed to create exp dirs at {args.exp_dir}: {e}")
+    sys.exit(10)
+
+# Extra verification: print cwd and list target exp dir
+print(f"[DEBUG] CWD: {os.getcwd()}")
+try:
+    print(f"[DEBUG] List exp_dir: {os.listdir(args.exp_dir)[:5]}")
+except Exception as e:
+    print(f"[WARN] Could not list exp_dir: {e}")
 
 # Update wandb project name based on task type
 if args.use_wandb:
@@ -136,13 +149,18 @@ else:
 
 # Initialize wandb using our centralized utility
 if args.use_wandb:
-    run = init_wandb(
+    try:
+        run = init_wandb(
         args,
         project_name=args.wandb_project,
         entity=args.wandb_entity,
         group=args.wandb_group,
         run_id=run_id
-    )
+        )
+        print(f"[DEBUG] W&B init ok: project={args.wandb_project}, group={args.wandb_group}")
+    except Exception as e:
+        print(f"[WARN] W&B init failed: {e}. Continuing without W&B.")
+        args.use_wandb = False
     
     # Save the run ID for future resumption
     if not os.path.exists(run_id_file) and run is not None:
@@ -169,6 +187,7 @@ if args.multiclass:
         # Load anomaly labels from config
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cfg_path = os.path.join(repo_root, 'config', 'dataset_config.yaml')
+        print(f"[DEBUG] Loading dataset config: {cfg_path}")
         with open(cfg_path, 'r') as f:
             cfg = yaml.safe_load(f)
         anomaly_labels = cfg.get('anomaly_labels', [])
@@ -198,6 +217,7 @@ if args.multiclass:
         print(f"[WARN] Failed to derive num_classes from config: {e}. Proceeding with provided value or fallback.")
         if args.num_classes is None:
             args.num_classes = 2
+            print("[DEBUG] Falling back to num_classes=2")
 
 # Verify split ratios sum to <= 1.0
 test_ratio = 1.0 - args.train_ratio - args.val_ratio

@@ -1,57 +1,154 @@
 # DRAC Cluster Usage Guide
 
-This guide provides instructions for running the Self-Supervised Anomaly Detection project on DRAC (Digital Research Alliance of Canada) clusters.
+This guide explains how to run the Self-Supervised Anomaly Detection project on the Digital Research Alliance of Canada (DRAC) clusters (e.g., Fir/Cedar/Graham/Narval/Beluga).
+
+> **Key rules (TL;DR)**
+> - Use a single, consistent CUDA stack: **StdEnv/2023 + python/3.10 + gcc/12.3 + cuda/12.2 + cudnn/8.9.5.29**.
+> - Keep the PyTorch trio pinned: **torch 2.6.0, torchaudio 2.6.0, torchvision 0.21.0**.
+> - Install `mamba_ssm`, `causal_conv1d`, and `s3prl` **with `--no-deps`** so pip doesn’t downgrade Torch.
+> - Import `mamba_ssm` **only on GPU nodes** (Triton needs an active CUDA backend at import time).
+
+---
 
 ## Prerequisites
 
-- Access to a DRAC cluster (Cedar, Graham, Narval, or Beluga)
-- Familiarity with SLURM job submission
-- Valid DRAC account with appropriate resource allocations
+- DRAC account and allocations.
+- Familiarity with SLURM.
+- Access to a GPU partition on your site (A100/H100/V100 etc.).
 
-## Setup
+---
 
-### 1. Environment Setup
+## Preferred: one-shot install script
 
-**Load Required Modules:**
+1) Load modules (keep this stack)
 ```bash
-module load python/3.10
-module load cuda/11.8
-module load cudnn/8.7
-```
+module --force purge
+module load StdEnv/2023 python/3.10 gcc/12.3 cuda/12.2 cudnn/8.9.5.29
+````
 
-**Create Virtual Environment:**
+2. Create & activate a virtual environment
+
 ```bash
 python -m venv .env_drac
 source .env_drac/bin/activate
 ```
 
-**Install Dependencies:**
+3. Run the installer
+
 ```bash
-pip install -r requirements.txt
-pip install -r drac/requirements_drac.txt
+bash drac/scripts/install_deps_drac.sh
+```
+
+> The script does:
+>
+> * Base deps with Rust-free constraints (`-c drac/constraints-drac.txt`)
+> * Locks `torch/torchaudio/torchvision` to 2.6.0/2.6.0/0.21.0
+> * Installs `mamba_ssm`, `causal_conv1d`, `s3prl` with `--no-deps`
+> * Installs `onc` and this repo
+
+**Version check (quick):**
+
+```bash
+python -c "import torch, torchaudio, torchvision; \
+print('torch', torch.__version__, 'cuda', torch.version.cuda); \
+print('torchaudio', torchaudio.__version__); \
+print('torchvision', torchvision.__version__); \
+print('cuda_available', torch.cuda.is_available())"
+```
+
+---
+
+<details>
+<summary><strong>Manual install (if you can’t run the script)</strong></summary>
+
+### 1) Load modules
+
+```bash
+module --force purge
+module load StdEnv/2023 python/3.10 gcc/12.3 cuda/12.2 cudnn/8.9.5.29
+```
+
+### 2) Virtual environment
+
+```bash
+python -m venv .env_drac
+source .env_drac/bin/activate
+```
+
+### 3) Base dependencies (avoid Rust builds)
+
+```bash
+pip install -r requirements-base.txt -c drac/constraints-drac.txt
+```
+
+### 4) Lock PyTorch to 2.6.0 trio
+
+```bash
+pip install --no-deps --force-reinstall \
+  "torch==2.6.0" "torchaudio==2.6.0" "torchvision==0.21.0"
+```
+
+### 5) Mamba-related packages (no dependency resolver)
+
+```bash
+pip install --no-deps "mamba_ssm==2.2.4" "causal_conv1d>=1.5.0" "s3prl==0.4.15"
+pip install "onc>=2.3.0"
+```
+
+### 6) Install this repo
+
+```bash
 pip install .
 ```
 
-### 2. Data Location
+**Note:** The Compute Canada `mamba_ssm` wheel declares a dependency on `torch~=2.5.0`. We stay on 2.6.0; pip may warn, but runtime is typically fine. If you do hit runtime issues, see **Alternative Torch stack (2.5.1)** below.
 
-The primary ONC dataset is located at:
+</details>
+
+---
+
+## Quick GPU Sanity Check
+
+Run this **inside a GPU allocation** (see “Interactive GPU” below):
+
+```bash
+python - <<'PY'
+import torch, triton
+from triton.runtime import driver
+print("torch:", torch.__version__, "cuda_available:", torch.cuda.is_available())
+print("triton backend:", getattr(driver.active, "name", "NONE"))
+# Import mamba_ssm only on GPU nodes
+import mamba_ssm
+print("mamba_ssm import OK")
+PY
 ```
-/lustre03/project/6003287/shared/ssamba_data/
+
+Expected:
+
+* `cuda_available: True`
+* `triton backend: cuda`
+* `mamba_ssm import OK`
+
+---
+
+## Running Jobs
+
+### Interactive GPU (debugging)
+
+```bash
+salloc --time=02:00:00 --gres=gpu:1 --cpus-per-task=4 --mem=24G
+module --force purge
+module load StdEnv/2023 python/3.10 gcc/12.3 cuda/12.2 cudnn/8.9.5.29
+source ~/selfsupervision_anomalies_onc/.env_drac/bin/activate
 ```
 
-Ensure your scripts point to this path when running on DRAC.
+### Linked jobs / multi-ratio / supervised (examples)
 
-## Usage
-
-The DRAC scripts support multiple job submission modes:
-
-### 1. Single Linked Job Submission
-
-Submit a series of linked jobs where each depends on the previous one:
+**Single linked job submission:**
 
 ```bash
 python drac/scripts/submit_jobs.py \
-    /lustre03/project/6003287/shared/ssamba_data/your_dataset.h5 \
+    /path/to/your_dataset.h5 \
     --job-name "ssamba_experiment" \
     --num-jobs 3 \
     --wandb-project "ssamba_drac" \
@@ -64,13 +161,11 @@ python drac/scripts/submit_jobs.py \
     --task ft_avgtok
 ```
 
-### 2. Training Size Experiments
-
-Run experiments across multiple training set sizes:
+**Training size experiments:**
 
 ```bash
 python drac/scripts/submit_jobs.py \
-    /lustre03/project/6003287/shared/ssamba_data/your_dataset.h5 \
+    /path/to/your_dataset.h5 \
     --job-name "ssamba_size_exp" \
     --num-jobs 2 \
     --wandb-project "ssamba_drac" \
@@ -82,13 +177,11 @@ python drac/scripts/submit_jobs.py \
     --training-type pretrain_finetune
 ```
 
-### 3. Supervised Training Only
-
-Run supervised training without pre-training:
+**Supervised only:**
 
 ```bash
 python drac/scripts/submit_jobs.py \
-    /lustre03/project/6003287/shared/ssamba_data/your_dataset.h5 \
+    /path/to/your_dataset.h5 \
     --job-name "supervised_baseline" \
     --num-jobs 1 \
     --wandb-project "ssamba_drac" \
@@ -99,203 +192,134 @@ python drac/scripts/submit_jobs.py \
     --train-ratio 0.8
 ```
 
-## Available Scripts
+---
 
-### Main Submission Script
+## Storage & Structure
 
-- **`submit_jobs.py`**: Primary script for job submission with multiple modes
-  - Single linked jobs (pre-training → fine-tuning)
-  - Multi-ratio experiments
-  - Supervised training
-  - Dry-run capability for testing
+**Use appropriate storage:**
 
-### Individual Submission Scripts
+* `~` (home): code & small configs only (file-count quota \~500k).
+* `/project`: shared data, long-term storage.
+* `/scratch/$USER`: experiments, checkpoints, caches (preferred for heavy I/O).
 
-- **`submit_amba_spectrogram.sh`**: SLURM script for SSAMBA training
-- **`submit_supervised.sh`**: SLURM script for supervised training
-- **`submit_amba_finetune.sh`**: SLURM script for fine-tuning only
+**Example layout:**
 
-### Experiment Scripts
-
-- **`submit_linked_jobs.sh`**: Submit linked pre-training and fine-tuning jobs
-- **`submit_training_size_experiments.sh`**: Run experiments across training sizes
-- **`test_job.sh`**: Test job for validating setup
-
-## Key Parameters
-
-### Job Configuration
-- `--job-name`: Base name for SLURM jobs
-- `--num-jobs`: Number of sequential jobs to submit
-- `--time-limit`: Maximum runtime per job (default: 12 hours)
-- `--project-path`: Path to the project directory
-- `--exp-dir`: Directory for experiment outputs (use `/scratch/$USER/`)
-
-### Training Configuration
-- `--training-type`: Choose `pretrain_finetune` or `supervised`
-- `--task`: Fine-tuning task (`ft_avgtok`, `ft_cls`, `ft_avgtok_1sec`)
-- `--train-ratio`: Fraction of data for training (single mode)
-- `--train-ratios`: Multiple ratios for experiments (multi mode)
-- `--exclude-labels`: Labels to exclude from training
-
-### Weights & Biases
-- `--wandb-project`: W&B project name
-- `--wandb-group`: W&B group for organizing runs
-- `--wandb-entity`: W&B team/entity name
-
-### Advanced Options
-- `--resume`: Resume training from checkpoints
-- `--pretrained-path`: Path to pre-trained model
-- `--dry-run`: Print commands without executing
-
-## Resource Management
-
-### Storage Guidelines
-
-**Use appropriate storage locations:**
-- **Home directory (`~`)**: Code, small configs (limited quota)
-- **Project space (`/project/`)**: Shared datasets, long-term storage
-- **Scratch space (`/scratch/$USER/`)**: Experiment outputs, temporary files
-
-**Example directory structure:**
 ```
 /scratch/$USER/ssamba_experiments/
-├── pretrain/
-│   └── amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/
-└── finetune/
-    └── amba-base-f16-t16-b16-lr0.0001-m300-custom-tr0.8-experiment_v1/
+├── pretrain/...
+└── finetune/...
 ```
 
-### SLURM Resource Allocation
+---
 
-**Typical resource requirements:**
+## SLURM Templates
+
+**Typical resources:**
+
 ```bash
-#SBATCH --account=def-username        # Your allocation
-#SBATCH --gres=gpu:v100:1            # 1 V100 GPU
-#SBATCH --cpus-per-task=4            # 4 CPU cores
-#SBATCH --mem=32G                    # 32GB RAM
-#SBATCH --time=0-12:00:00            # 12 hours max
+#SBATCH --account=<your_allocation>
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=0-12:00:00
 ```
 
-**For larger models or datasets:**
+**Larger:**
+
 ```bash
-#SBATCH --gres=gpu:a100:1            # A100 GPU (if available)
-#SBATCH --cpus-per-task=8            # More CPU cores
-#SBATCH --mem=64G                    # More RAM
-#SBATCH --time=1-00:00:00            # 24 hours max
+#SBATCH --gres=gpu:a100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=1-00:00:00
 ```
 
-## Monitoring Jobs
+---
 
-### Check Job Status
+## Monitoring
+
 ```bash
-# View your running jobs
 squeue -u $USER
-
-# View detailed job information
 scontrol show job <job_id>
-
-# View job history
 sacct -j <job_id> --format=JobID,JobName,State,ExitCode,Start,End,Elapsed
-```
-
-### View Job Outputs
-```bash
-# Check output logs
 tail -f out/job_name_*.out
-
-# Check error logs
 tail -f err/job_name_*.err
+scancel <job_id>       # cancel one
+scancel -u $USER       # cancel all
 ```
 
-### Cancel Jobs
-```bash
-# Cancel a specific job
-scancel <job_id>
-
-# Cancel all your jobs
-scancel -u $USER
-```
+---
 
 ## Troubleshooting
 
-### Common Issues
+### 1) Pip tries to downgrade Torch
 
-1. **Module Loading Errors**
-   ```bash
-   # Check available modules
-   module avail python
-   module avail cuda
-   
-   # Load compatible versions
-   module load python/3.10 cuda/11.8
-   ```
-
-2. **Storage Quota Exceeded**
-   ```bash
-   # Check disk usage
-   diskusage_report
-   
-   # Clean up old experiments
-   rm -rf /scratch/$USER/old_experiments/
-   ```
-
-3. **GPU Memory Issues**
-   - Reduce batch size in your configuration
-   - Use gradient checkpointing
-   - Monitor GPU usage with `nvidia-smi`
-
-4. **Job Dependencies**
-   ```bash
-   # Check job dependencies
-   squeue -u $USER --format="%.10i %.20j %.8T %.15D"
-   ```
-
-### Getting Help
-
-- **DRAC Documentation**: [docs.alliancecan.ca](https://docs.alliancecan.ca)
-- **SLURM Documentation**: [slurm.schedmd.com](https://slurm.schedmd.com)
-- **Support**: Contact DRAC support through their ticketing system
-
-## Examples
-
-### Complete Workflow Example
+`mamba_ssm` / `s3prl` may push Torch → 2.5.1. Fix:
 
 ```bash
-# 1. Load modules and activate environment
-module load python/3.10 cuda/11.8 cudnn/8.7
-source .env_drac/bin/activate
-
-# 2. Submit pre-training and fine-tuning jobs
-python drac/scripts/submit_jobs.py \
-    /lustre03/project/6003287/shared/ssamba_data/onc_dataset.h5 \
-    --job-name "ssamba_full_exp" \
-    --num-jobs 2 \
-    --wandb-project "ssamba_production" \
-    --wandb-group "full_pipeline" \
-    --project-path $PWD \
-    --exp-dir /scratch/$USER/ssamba_production \
-    --mode single \
-    --train-ratio 0.8 \
-    --training-type pretrain_finetune \
-    --task ft_avgtok \
-    --time-limit "1-00:00:00"
-
-# 3. Monitor progress
-watch -n 30 'squeue -u $USER'
+pip install --no-deps --force-reinstall "torch==2.6.0" "torchaudio==2.6.0" "torchvision==0.21.0"
+pip install --no-deps "mamba_ssm==2.2.4" "causal_conv1d>=1.5.0" "s3prl==0.4.15"
 ```
 
-### Dry Run Testing
+Or always install with the preferred constraints and `--no-deps`.
 
-Always test your job submission with `--dry-run` first:
+### 2) Triton backend = NONE
+
+* Run on a **GPU node** (not a login node).
+* Load `cuda/12.2` module.
+* Check:
+
+  ```bash
+  python - <<'PY'
+  import torch; print(torch.cuda.is_available())
+  from triton.runtime import driver; print(getattr(driver.active,"name","NONE"))
+  PY
+  ```
+* If needed: `pip install "cuda-python>=12.2,<13"` and ensure `libcuda.so.1` is on `LD_LIBRARY_PATH`.
+
+### 3) “Disk quota exceeded (os error 122)”
+
+Likely **inode** quota in `$HOME`. Free files and move caches:
 
 ```bash
-python drac/scripts/submit_jobs.py \
-    /path/to/dataset.h5 \
-    --job-name "test_run" \
-    --num-jobs 1 \
-    --wandb-project "test" \
-    --wandb-group "test" \
-    --project-path $PWD \
-    --exp-dir /scratch/$USER/test \
-    --dry-run
-``` 
+du --inodes -d1 ~ | sort -n | tail -20
+pip cache purge
+rm -rf ~/.cache/{pip,wandb,huggingface} ~/.cargo ~/.rustup ~/wandb
+```
+
+Prefer using `/scratch/$USER` for caches and experiment output.
+
+### 4) Optional: silence “Ignoring invalid distribution -orch”
+
+If you see that warning, remove the stray broken dist:
+
+```bash
+rm -rf "$VIRTUAL_ENV/lib/python3.10/site-packages"/-orch*
+```
+
+### 5) W\&B optional
+
+If cluster runs don’t need W\&B, set `WANDB_MODE=disabled` or gate imports behind a flag.
+
+---
+
+<details>
+<summary><strong>Alternative Torch stack (align to mamba_ssm’s metadata)</strong></summary>
+
+The Compute Canada `mamba_ssm==2.2.4` wheel declares `torch~=2.5.0`. If you prefer zero resolver warnings:
+
+```bash
+pip install --no-deps --force-reinstall \
+  "torch==2.5.1" "torchaudio==2.5.1" "torchvision==0.20.1"
+
+# Reinstall mamba bits without deps so Torch stays put
+pip install --no-deps "mamba_ssm==2.2.4" "causal_conv1d>=1.5.0" "s3prl==0.4.15"
+```
+
+</details>
+
+---
+
+## Links
+
+* DRAC docs: [https://docs.alliancecan.ca](https://docs.alliancecan.ca)
+* SLURM docs: [https://slurm.schedmd.com](https://slurm.schedmd.com)

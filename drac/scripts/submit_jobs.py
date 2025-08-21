@@ -3,6 +3,7 @@ import argparse
 import subprocess
 from pathlib import Path
 import os
+import shlex
 from typing import List, Optional
 
 def submit_linked_jobs(
@@ -13,7 +14,7 @@ def submit_linked_jobs(
     wandb_group: str,
     project_path: str,
     exp_dir: str,
-    training_type: str = "pretrain_finetune",
+    training_type: str = "selfsupervised",
     wandb_entity: Optional[str] = None,
     exclude_labels: Optional[List[str]] = None,
     pretrained_path: Optional[str] = None,
@@ -23,7 +24,10 @@ def submit_linked_jobs(
     time_limit: str = "0-12:00:00",
     dry_run: bool = False,
     multiclass: bool = False,
-    num_classes: int = 2,
+    num_classes: Optional[int] = None,
+    venv_path: Optional[str] = None,
+    gpus: Optional[str] = None,
+    sbatch_flags: Optional[List[str]] = None,
 ) -> None:
     """Submit a series of linked jobs where each subsequent job depends on the previous one.
 
@@ -35,7 +39,7 @@ def submit_linked_jobs(
         wandb_group: W&B group name
         project_path: Path to the project directory
         exp_dir: Directory for experiment outputs
-        training_type: Type of training ('pretrain_finetune' or 'supervised')
+        training_type: Type of training ('selfsupervised' or 'supervised')
         wandb_entity: W&B entity (team) name
         exclude_labels: List of labels to exclude from training
         pretrained_path: Path to pretrained model
@@ -62,13 +66,34 @@ def submit_linked_jobs(
             f"--error=err/{job_name}_ratio{train_ratio}_job{i}_%j.err",
         ]
 
+        # Optional GPU flag and extra sbatch flags
+        has_gpu_in_sbatch = False
+        if sbatch_flags:
+            # Check if user already passed a GPU-related flag
+            for raw_flag in sbatch_flags:
+                if "--gpus=" in raw_flag or "--gres=" in raw_flag:
+                    has_gpu_in_sbatch = True
+                    break
+        if gpus and not has_gpu_in_sbatch:
+            # If value includes a GPU type (letters), prefer --gres to avoid --gpus* conflicts
+            if any(c.isalpha() for c in gpus):
+                cmd.append(f"--gres=gpu:{gpus}")
+            else:
+                cmd.append(f"--gpus={gpus}")
+        if sbatch_flags:
+            for raw_flag in sbatch_flags:
+                cmd.extend(shlex.split(raw_flag))
+
         # Add dependency if not first job
         if prev_job_id is not None:
             cmd.append(f"--dependency=afterany:{prev_job_id}")
 
-        # Choose script based on training type
-        script = "submit_supervised.sh" if training_type == "supervised" else "submit_amba_spectrogram.sh"
-        cmd.append(script)
+        # Choose script based on training type (use absolute paths to avoid stale copies)
+        scripts_dir = Path(__file__).resolve().parent
+        supervised_script = str(scripts_dir / "submit_supervised.sh")
+        spectrogram_script = str(scripts_dir / "submit_amba_spectrogram.sh")
+        script_path = supervised_script if training_type == "supervised" else spectrogram_script
+        cmd.append(script_path)
 
         # Add required arguments
         cmd.extend([
@@ -80,16 +105,18 @@ def submit_linked_jobs(
             "--exp-dir", exp_dir,
         ])
 
-        # Add training type specific arguments
-        if training_type == "pretrain_finetune":
+        # Add script-specific arguments
+        if training_type == "selfsupervised":
             cmd.extend([
                 "--resume", str(resume).lower(),
                 "--task", task,
             ])
             if pretrained_path:
                 cmd.extend(["--pretrained-path", pretrained_path])
+            # Virtualenv is passed via environment variable VENV_PATH to avoid arg mismatches
         elif training_type == "supervised" and resume:
-            cmd.extend(["--resume"])
+            # Supervised script expects a value for --resume
+            cmd.extend(["--resume", str(resume).lower()])
 
         # Add optional arguments
         if wandb_entity:
@@ -101,7 +128,9 @@ def submit_linked_jobs(
                 cmd.extend(["--exclude-label", label])
 
         if multiclass:
-            cmd.extend(["--multiclass", str(num_classes)])
+            cmd.extend(["--multiclass"])
+            if num_classes and int(num_classes) > 0:
+                cmd.extend(["--num-classes", str(num_classes)])
 
         if dry_run:
             cmd.extend(["--dry-run"])
@@ -114,7 +143,11 @@ def submit_linked_jobs(
         # Execute the command unless in dry-run mode
         if not dry_run:
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                # Ensure VENV_PATH is available to the sbatch job environment
+                env = os.environ.copy()
+                if venv_path:
+                    env["VENV_PATH"] = venv_path
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
                 if result.returncode != 0:
                     print(f"Error executing command: {result.stderr}")
                 else:
@@ -145,7 +178,10 @@ def submit_training_size_experiments(
     time_limit: str = "0-12:00:00",
     dry_run: bool = False,
     multiclass: bool = False,
-    num_classes: int = 2,
+    num_classes: Optional[int] = None,
+    venv_path: Optional[str] = None,
+    gpus: Optional[str] = None,
+    sbatch_flags: Optional[List[str]] = None,
 ) -> None:
     """Submit linked jobs for multiple training ratios.
 
@@ -177,6 +213,9 @@ def submit_training_size_experiments(
             dry_run=dry_run,
             multiclass=multiclass,
             num_classes=num_classes,
+            venv_path=venv_path,
+            gpus=gpus,
+            sbatch_flags=sbatch_flags,
         )
 
 def main():
@@ -192,10 +231,15 @@ def main():
     parser.add_argument("--exclude-labels", nargs="+", help="Labels to exclude from training")
     parser.add_argument("--pretrained-path", help="Path to pretrained model")
     parser.add_argument("--resume", action="store_true", help="Whether to resume training")
-    parser.add_argument("--task", default="ft_cls", help="Training task type")
+    parser.add_argument("--task", default="ft_cls", help="Self-supervised/finetune task",
+                        choices=["ft_avgtok", "ft_cls", "pretrain_mpc", "pretrain_mpg", "pretrain_joint"])
     parser.add_argument("--time-limit", default="0-12:00:00", help="Time limit for each job")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
-    parser.add_argument("--multiclass", type=int, help="Enable multiclass with given number of classes")
+    parser.add_argument("--multiclass", action="store_true", help="Enable multiclass using all available classes")
+    parser.add_argument("--num-classes", type=int, dest="num_classes", help="Override number of classes when using --multiclass")
+    parser.add_argument("--venv-path", help="Path to virtualenv to use (forwarded to pretrain/finetune script)")
+    parser.add_argument("--gpus", help="Value for sbatch --gpus=... (e.g., 'h100:1' or '1')")
+    parser.add_argument("--sbatch", action="append", dest="sbatch_flags", help="Extra sbatch flags; can be repeated. Each entry may include multiple tokens, e.g., '--partition=gpu --qos=high'")
 
     # Mode selection
     parser.add_argument("--mode", choices=["single", "multi"], default="single",
@@ -204,8 +248,8 @@ def main():
                        help="Training ratio for single mode (ignored in multi mode)")
     parser.add_argument("--train-ratios", type=float, nargs="+",
                        help="List of training ratios for multi mode (default: [0.1, 0.2, 0.4, 0.6, 0.8])")
-    parser.add_argument("--training-type", choices=["pretrain_finetune", "supervised"], default="pretrain_finetune",
-                       help="Type of training to perform")
+    parser.add_argument("--training-type", choices=["selfsupervised", "supervised"], default="selfsupervised",
+                        help="Training mode: selfsupervised (spectrogram pipeline) or supervised")
 
     args = parser.parse_args()
 
@@ -232,7 +276,10 @@ def main():
             time_limit=args.time_limit,
             dry_run=args.dry_run,
             multiclass=bool(args.multiclass),
-            num_classes=int(args.multiclass) if args.multiclass else 2,
+            num_classes=args.num_classes,
+            venv_path=args.venv_path,
+            gpus=args.gpus,
+            sbatch_flags=args.sbatch_flags,
         )
     else:
         submit_training_size_experiments(
@@ -253,7 +300,10 @@ def main():
             time_limit=args.time_limit,
             dry_run=args.dry_run,
             multiclass=bool(args.multiclass),
-            num_classes=int(args.multiclass) if args.multiclass else 2,
+            num_classes=args.num_classes,
+            venv_path=args.venv_path,
+            gpus=args.gpus,
+            sbatch_flags=args.sbatch_flags,
         )
 
 if __name__ == "__main__":

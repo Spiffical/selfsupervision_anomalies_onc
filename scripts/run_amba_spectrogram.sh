@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+# Debug: print failing line on any error
+trap 'echo "[ERROR] Bash exited at line $LINENO" >&2' ERR
+# Enable xtrace early to trace commands
+PS4='+ [${BASH_SOURCE##*/}:${LINENO}] '
+set -x
 
 # -------------------------------
 # Cluster detection (DRAC vs local)
@@ -155,6 +160,7 @@ folder_tstride=16
 # Task-specific training params
 # -------------------------------
 echo "Excluded labels: ${EXCLUDE_LABELS[*]}"
+echo "[MARK] TASK=$TASK, EXP_DIR=$EXP_DIR, PRETRAINED_PATH=$PRETRAINED_PATH, TRAIN_RATIO=$TRAIN_RATIO"
 
 if [[ $TASK == *"pretrain"* ]]; then
   # Pretraining parameters
@@ -246,23 +252,34 @@ fi
 base_folder=amba-${model_size}-f${fshape}-t${tshape}-b${folder_batch_size}-lr${folder_lr}-m${folder_mask_patch}-custom-tr$(printf "%.1f" ${TRAIN_RATIO})-${WANDB_GROUP}${exclude_labels_str}
 echo "Base folder: $base_folder"
 
+# Compute and create experiment dirs
 if [[ $TASK == *"pretrain"* ]]; then
   exp_dir=${EXP_DIR}/pretrain/${base_folder}
 else
   exp_dir=${EXP_DIR}/finetune/${base_folder}
 fi
-mkdir -p "${exp_dir}/models"
+echo "[MARK] Creating exp_dir: $exp_dir"
+mkdir -p "${exp_dir}/models" || { echo "[FATAL] mkdir failed for $exp_dir"; exit 91; }
+ls -ld "$exp_dir" "$exp_dir/models" || true
 
 # -------------------------------
-# Build Python command
+# Build Python command (avoid set -e pitfalls from command substitution)
 # -------------------------------
-PYTHON_CMD="python -W ignore \"$PYTHON_SCRIPT\" --use_wandb --wandb_entity \"${WANDB_ENTITY:-spencer-bialek}\" \
+PY_APPEND_PRETRAINED=""
+if [ -n "$PRETRAINED_PATH" ]; then
+  PY_APPEND_PRETRAINED=" --pretrained_path \"$PRETRAINED_PATH\""
+fi
+PY_APPEND_NUM_CLASSES=""
+if [ -n "$NUM_CLASSES" ]; then
+  PY_APPEND_NUM_CLASSES=" --num_classes $NUM_CLASSES"
+fi
+
+PYTHON_CMD="python -u -W ignore \"$PYTHON_SCRIPT\" --use_wandb --wandb_entity \"${WANDB_ENTITY:-spencer-bialek}\" \
 --wandb_project ${WANDB_PROJECT} \
 --wandb_group ${WANDB_GROUP} \
 --dataset custom \
 --data-train \"$DATA_TRAIN_PATH\" \
---exp-dir \"$exp_dir\" \
-$([ -n "$PRETRAINED_PATH" ] && echo "--pretrained_path \"$PRETRAINED_PATH\"") \
+--exp-dir \"$exp_dir\"${PY_APPEND_PRETRAINED} \
 --dataset_mean ${dataset_mean} \
 --dataset_std ${dataset_std} \
 --train_ratio ${train_ratio} \
@@ -278,13 +295,15 @@ $([ -n "$PRETRAINED_PATH" ] && echo "--pretrained_path \"$PRETRAINED_PATH\"") \
 --rms_norm ${rms_norm} --residual_in_fp32 ${residual_in_fp32} \
 --fused_add_norm ${fused_add_norm} --if_rope ${if_rope} --if_rope_residual ${if_rope_residual} \
 --bimamba_type ${bimamba_type} --use_middle_cls_token ${use_middle_cls_token} \
---drop_path_rate ${drop_path_rate} --stride ${stride} --channels ${channels} \
-$( [ -n "$NUM_CLASSES" ] && echo "--num_classes $NUM_CLASSES" ) --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
+--drop_path_rate ${drop_path_rate} --stride ${stride} --channels ${channels}${PY_APPEND_NUM_CLASSES} \
+--drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
 --if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
 --use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
 --main_metric ${main_metric}"
+
+echo "[MARK] Built PYTHON_CMD (len=${#PYTHON_CMD})"
 
 # Append exclude labels as a multi-value flag
 if [ ${#EXCLUDE_LABELS[@]} -gt 0 ]; then
@@ -319,4 +338,20 @@ fi
 # Extra debug on DRAC
 $IS_DRAC && set -x
 
-eval "$PYTHON_CMD"
+# Pre-flight: show Python and torch versions, confirm data script path
+python --version || true
+python -c 'import torch, sys; print("torch:", torch.__version__)' || true
+echo "Exists PYTHON_SCRIPT? $( [ -f "$PYTHON_SCRIPT" ] && echo yes || echo no ) at $PYTHON_SCRIPT"
+echo "Exists DATA? $( [ -f "$DATA_TRAIN_PATH" ] && echo yes || echo no ) at $DATA_TRAIN_PATH"
+echo "which python: $(which python)"
+echo "PYTHONPATH=$PYTHONPATH"
+export PYTHONFAULTHANDLER=1
+
+# Execute via a temporary script to preserve exact quoting and capture stderr
+echo "$PYTHON_CMD" > run_cmd.sh
+chmod +x run_cmd.sh
+echo "[MARK] Executing run_cmd.sh under bash -x"
+bash -x ./run_cmd.sh 2>&1 || true
+status=$?
+echo "[MARK] Python exit status: $status"
+exit $status

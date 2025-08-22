@@ -99,10 +99,16 @@ class FinWhaleCallAnalyzer:
     ONC API downloads, and custom spectrogram generation.
     """
     
-    def __init__(self, onc_token: str, excel_file: str, config_path: str = "./config/dataset_config.yaml"):
-        """Initialize the analyzer with ONC credentials and Excel file path"""
+    def __init__(self, onc_token: str, excel_file: Optional[str] = None, config_path: str = "./config/dataset_config.yaml", excel_files: Optional[List[str]] = None):
+        """Initialize the analyzer with ONC credentials and one or more Excel file paths"""
         self.onc = ONC(onc_token)
-        self.excel_file = Path(excel_file)
+        # Normalize excel files to a list
+        if excel_files and len(excel_files) > 0:
+            self.excel_files = [str(Path(p)) for p in excel_files]
+        elif excel_file:
+            self.excel_files = [str(Path(excel_file))]
+        else:
+            raise ValueError("At least one Excel file must be provided")
         
         # Load configuration
         self.config = self.load_config(config_path)
@@ -137,8 +143,8 @@ class FinWhaleCallAnalyzer:
             begin_time = float(begin_time_raw)
             end_time = float(end_time_raw)
             
-            # Validate that times are reasonable
-            if begin_time < 0 or end_time < 0 or begin_time >= end_time:
+            # Validate that times are reasonable (allow zero-length: begin == end)
+            if begin_time < 0 or end_time < 0 or begin_time > end_time:
                 return None
                 
             call_id = f"{clip_id}_{begin_time:.1f}s_{end_time:.1f}s"
@@ -161,16 +167,61 @@ class FinWhaleCallAnalyzer:
             return {}
         
     def load_whale_data(self):
-        """Load and preprocess the fin whale call library data"""
+        """Load and preprocess fin whale call library data from one or more Excel files"""
         print_status("Loading fin whale call library...")
-        
-        if not self.excel_file.exists():
-            raise FileNotFoundError(f"Whale call library not found: {self.excel_file}")
-            
-        self.whale_data = pd.read_excel(self.excel_file)
+        # Validate and read all files, then concatenate
+        dataframes = []
+        for p in self.excel_files:
+            path_obj = Path(p)
+            if not path_obj.exists():
+                raise FileNotFoundError(f"Whale call library not found: {p}")
+            try:
+                df = pd.read_excel(path_obj)
+                # Normalize column names: strip whitespace
+                df.columns = [str(c).strip() for c in df.columns]
+                # Map 40Hz schema -> unified schema expected by pipeline
+                rename_map = {}
+                # Clip ID
+                if 'Clip ID' not in df.columns and 'Clip_identifier' in df.columns:
+                    rename_map['Clip_identifier'] = 'Clip ID'
+                # Date (UTC)
+                if 'Date (UTC)' not in df.columns and 'Date_UTC' in df.columns:
+                    rename_map['Date_UTC'] = 'Date (UTC)'
+                # Begin/end seconds
+                if 'begin time (s)' not in df.columns and 'begin_ time_s' in df.columns:
+                    rename_map['begin_ time_s'] = 'begin time (s)'
+                if 'end time (s)' not in df.columns and 'end_time_s' in df.columns:
+                    rename_map['end_time_s'] = 'end time (s)'
+                # Frequencies
+                if 'low freq' not in df.columns and 'low_freq_Hz' in df.columns:
+                    rename_map['low_freq_Hz'] = 'low freq'
+                if 'high freq' not in df.columns and 'high_freq_Hz' in df.columns:
+                    rename_map['high_freq_Hz'] = 'high freq'
+                # Handle odd peak name variants
+                if 'peak freq' not in df.columns:
+                    if 'peak_ freq_Hz' in df.columns:
+                        rename_map['peak_ freq_Hz'] = 'peak freq'
+                    elif 'peak_freq_Hz' in df.columns:
+                        rename_map['peak_freq_Hz'] = 'peak freq'
+                if rename_map:
+                    df = df.rename(columns=rename_map)
+                # Ensure Duration (s) exists (compute if missing)
+                if 'Duration (s)' not in df.columns and {'begin time (s)', 'end time (s)'} <= set(df.columns):
+                    with pd.option_context('mode.use_inf_as_na', True):
+                        b = pd.to_numeric(df['begin time (s)'], errors='coerce')
+                        e = pd.to_numeric(df['end time (s)'], errors='coerce')
+                        df['Duration (s)'] = e - b
+                df['__source_file__'] = str(path_obj)
+                dataframes.append(df)
+                print_status(f"Loaded annotations from {path_obj}")
+            except Exception as e:
+                raise RuntimeError(f"Failed reading Excel file {p}: {e}")
+        if not dataframes:
+            raise ValueError("No annotation data loaded from provided Excel files")
+        self.whale_data = pd.concat(dataframes, ignore_index=True, sort=False)
         
         # Clean and preprocess data
-        print_status(f"Loaded {len(self.whale_data)} whale call records")
+        print_status(f"Loaded {len(self.whale_data)} whale call records across {len(self.excel_files)} files")
         
         # Extract device codes from clip IDs
         self.whale_data['device_code'] = self.whale_data['Clip ID'].str.extract(r'(ICLISTENHF\d+)')
@@ -221,7 +272,7 @@ class FinWhaleCallAnalyzer:
             if col in self.whale_data.columns:
                 self.whale_data[col] = pd.to_numeric(self.whale_data[col], errors='coerce')
         
-        # Filter for valid 20 Hz calls (handle whitespace in Call Category)
+        # Filter for valid calls (handle whitespace in Call Category)
         mask = (
             (self.whale_data['device_code'].notna()) &
             (self.whale_data['Clip ID'].str.endswith('.wav')) &
@@ -229,7 +280,7 @@ class FinWhaleCallAnalyzer:
             (self.whale_data['end time (s)'].notna()) &
             (self.whale_data['begin time (s)'] >= 0) &
             (self.whale_data['end time (s)'] >= 0) &
-            (self.whale_data['begin time (s)'] < self.whale_data['end time (s)'])
+            (self.whale_data['begin time (s)'] <= self.whale_data['end time (s)'])
         )
         
         invalid_timing_count = len(self.whale_data) - mask.sum()
@@ -237,7 +288,7 @@ class FinWhaleCallAnalyzer:
             print_status(f"Filtered out {invalid_timing_count} calls with invalid timing data", "WARNING")
         
         self.whale_data = self.whale_data[mask].copy()
-        print_status(f"Filtered to {len(self.whale_data)} valid 20 Hz fin whale calls")
+        print_status(f"Filtered to {len(self.whale_data)} valid fin whale calls")
         
         # Show summary statistics
         self.print_data_summary()
@@ -580,6 +631,462 @@ class FinWhaleCallAnalyzer:
         
         return None
     
+    def _stitch_audio_files_from_clip(self, clip_id: str, device_code: str, desired_start: float, desired_end: float, context_duration: float, audio_dir: Path) -> Optional[np.ndarray]:
+        """
+        Stitch audio when the desired window spans multiple files, using only clip_id and device code.
+        """
+        import re
+        timestamp_match = re.search(r'(\d{8}T\d{6}\.\d{3}Z)', clip_id)
+        if not timestamp_match:
+            print_status(f"❌ Could not parse timestamp from: {clip_id}", "ERROR")
+            return None
+        current_timestamp_str = timestamp_match.group(1)
+        try:
+            current_timestamp = pd.to_datetime(current_timestamp_str, format='%Y%m%dT%H%M%S.%fZ')
+        except Exception as e:
+            print_status(f"❌ Could not parse timestamp {current_timestamp_str}: {e}", "ERROR")
+            return None
+        # Load current file
+        current_path = audio_dir / clip_id
+        current_audio, sample_rate = sf.read(current_path)
+        current_duration = len(current_audio) / sample_rate
+        stitched_audio = []
+        # Prev file if needed
+        if desired_start < 0:
+            prev_timestamp = current_timestamp - pd.Timedelta(seconds=300)
+            prev_filename = f"{device_code}_{prev_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
+            prev_path = audio_dir / prev_filename
+            if not prev_path.exists():
+                if not self._download_adjacent_file(device_code, prev_timestamp, audio_dir):
+                    return None
+            if prev_path.exists():
+                prev_audio, _ = sf.read(prev_path)
+                prev_duration = len(prev_audio) / sample_rate
+                needed_from_prev = -desired_start
+                start_in_prev = max(0, prev_duration - needed_from_prev)
+                prev_segment = prev_audio[int(start_in_prev * sample_rate):]
+                stitched_audio.append(prev_segment)
+        # Current segment
+        current_start = max(0, desired_start)
+        current_end = min(current_duration, desired_end)
+        current_segment = current_audio[int(current_start * sample_rate):int(current_end * sample_rate)]
+        stitched_audio.append(current_segment)
+        # Next file if needed
+        if desired_end > current_duration:
+            next_timestamp = current_timestamp + pd.Timedelta(seconds=300)
+            next_filename = f"{device_code}_{next_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
+            next_path = audio_dir / next_filename
+            if not next_path.exists():
+                if not self._download_adjacent_file(device_code, next_timestamp, audio_dir):
+                    return None
+            if next_path.exists():
+                next_audio, _ = sf.read(next_path)
+                needed_from_next = desired_end - current_duration
+                next_segment = next_audio[:int(min(len(next_audio) / sample_rate, needed_from_next) * sample_rate)]
+                stitched_audio.append(next_segment)
+        if stitched_audio:
+            final_audio = np.concatenate(stitched_audio)
+            target_samples = int(context_duration * sample_rate)
+            if len(final_audio) > target_samples:
+                final_audio = final_audio[:target_samples]
+            elif len(final_audio) < target_samples:
+                final_audio = np.pad(final_audio, (0, target_samples - len(final_audio)), mode='constant')
+            return final_audio
+        return None
+    
+    def _compute_free_intervals(self, occupied_intervals: List[Tuple[float, float]], file_duration: float, margin: float = 0.0) -> List[Tuple[float, float]]:
+        """Compute free intervals in [0, file_duration] given occupied intervals, with optional margins around calls."""
+        if not occupied_intervals:
+            return [(0.0, file_duration)]
+        # Expand by margin and clamp
+        expanded = []
+        for b, e in occupied_intervals:
+            b2 = max(0.0, b - margin)
+            e2 = min(file_duration, e + margin)
+            expanded.append((b2, e2))
+        # Merge overlaps
+        expanded.sort()
+        merged = []
+        for b, e in expanded:
+            if not merged or b > merged[-1][1]:
+                merged.append([b, e])
+            else:
+                merged[-1][1] = max(merged[-1][1], e)
+        merged = [(b, e) for b, e in merged]
+        # Free intervals are gaps
+        free = []
+        cursor = 0.0
+        for b, e in merged:
+            if b > cursor:
+                free.append((cursor, b))
+            cursor = max(cursor, e)
+        if cursor < file_duration:
+            free.append((cursor, file_duration))
+        return free
+    
+    def _largest_prefix_free(self, free_intervals: List[Tuple[float, float]]) -> float:
+        """Return length of free region contiguous from start (t=0)."""
+        total = 0.0
+        cursor = 0.0
+        for b, e in free_intervals:
+            if b > cursor:
+                break
+            if b <= cursor < e:
+                total += e - cursor
+                cursor = e
+        return total
+    
+    def _largest_suffix_free(self, free_intervals: List[Tuple[float, float]], file_duration: float) -> float:
+        """Return length of free region contiguous to end (t=file_duration)."""
+        total = 0.0
+        cursor = file_duration
+        for b, e in reversed(free_intervals):
+            if e < cursor:
+                break
+            if b < cursor <= e:
+                total += cursor - b
+                cursor = b
+        return total
+    
+    def _get_prev_next_filenames(self, clip_id: str, device_code: str) -> Tuple[str, str]:
+        import re
+        timestamp_match = re.search(r'(\d{8}T\d{6}\.\d{3}Z)', clip_id)
+        if not timestamp_match:
+            return None, None
+        ts = pd.to_datetime(timestamp_match.group(1), format='%Y%m%dT%H%M%S.%fZ')
+        prev_ts = ts - pd.Timedelta(seconds=300)
+        next_ts = ts + pd.Timedelta(seconds=300)
+        prev_filename = f"{device_code}_{prev_ts.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
+        next_filename = f"{device_code}_{next_ts.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
+        return prev_filename, next_filename
+    
+    def _create_file_overview_spectrogram(self,
+                                          clip_id: str,
+                                          device_code: str,
+                                          audio_file_path: Path,
+                                          output_dir: Path,
+                                          intervals_20: List[Tuple[float, float]],
+                                          intervals_40: List[Tuple[float, float]],
+                                          neg_windows: List[Tuple[float, float]],
+                                          win_dur: float,
+                                          overlap: float,
+                                          freq_range: Tuple[float, float]) -> Optional[str]:
+        """Create a full-file spectrogram PNG with overlays for calls (20Hz/40Hz) and negative windows."""
+        try:
+            audio_data, sample_rate = self.spectrogram_generator.load_audio(str(audio_file_path)) if self.spectrogram_generator else sf.read(audio_file_path)
+            if isinstance(audio_data, tuple):
+                audio_data, sample_rate = audio_data  # handle sf.read branch
+        except Exception as e:
+            print_status(f"❌ Failed to load audio for overview {clip_id}: {e}", "WARNING")
+            return None
+        # Resolve plotting params similar to positives
+        config_spectrograms = self.config.get('custom_spectrograms', {})
+        resolved_win_dur = win_dur if win_dur != 0.1 else config_spectrograms.get('window_duration', 2.0)
+        resolved_overlap = overlap if overlap != 0.9 else config_spectrograms.get('overlap', 0.985)
+        if freq_range != (5, 100):
+            resolved_freq_lims = freq_range
+        else:
+            config_freq = config_spectrograms.get('frequency_limits', {})
+            resolved_freq_lims = (config_freq.get('min', 5), config_freq.get('max', 100))
+        colormap = config_spectrograms.get('colormap', 'viridis')
+        config_clim = config_spectrograms.get('color_limits', {})
+        clim = (config_clim.get('min', -40), config_clim.get('max', 0))
+        log_freq = config_spectrograms.get('log_frequency', False)
+        # Ensure generator exists with these params
+        if self.spectrogram_generator is None:
+            self.spectrogram_generator = SpectrogramGenerator(
+                win_dur=resolved_win_dur,
+                overlap=resolved_overlap,
+                freq_lims=resolved_freq_lims,
+                colormap=colormap,
+                clim=clim,
+                log_freq=log_freq,
+                max_duration=None
+            )
+        frequencies, times, _, power_db_norm = self.spectrogram_generator.compute_spectrogram(audio_data, sample_rate)
+        # Crop to whale band for consistency
+        freq_min, freq_max = 5, 100
+        freq_mask = (frequencies >= freq_min) & (frequencies <= freq_max)
+        frequencies_c = frequencies[freq_mask]
+        power_c = power_db_norm[freq_mask, :]
+        fig = self.spectrogram_generator.plot_spectrogram(
+            frequencies_c, times, power_c,
+            title=f"File Overview - {device_code} | {clip_id}\nCalls (20/40Hz) and Negative Windows"
+        )
+        try:
+            ax = fig.axes[0]
+        except Exception:
+            ax = plt.gca()
+        # Overlays: calls and negatives
+        import matplotlib.patches as patches
+        # Calls overlays as translucent spans
+        for b, e in intervals_20:
+            ax.axvspan(b, e, color='tab:blue', alpha=0.25, label='20Hz call')
+        for b, e in intervals_40:
+            ax.axvspan(b, e, color='tab:red', alpha=0.25, label='40Hz call')
+        # Negative windows in green
+        for b, e in neg_windows:
+            ax.axvspan(b, e, color='tab:green', alpha=0.35, label='Negative window')
+        # Deduplicate legend entries
+        handles, labels = ax.get_legend_handles_labels()
+        seen = set()
+        uniq_h, uniq_l = [], []
+        for h, l in zip(handles, labels):
+            if l not in seen:
+                uniq_h.append(h)
+                uniq_l.append(l)
+                seen.add(l)
+        if uniq_h:
+            ax.legend(uniq_h, uniq_l, loc='upper right')
+        # Save
+        out_dir = output_dir / "file_overview_png"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{clip_id.replace('.wav','')}_overview.png"
+        fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.close(fig)
+        print_status(f"✓ Created file overview PNG: {out_path.name}")
+        return str(out_path)
+
+    def _sample_negative_windows_for_file(self,
+                                          clip_id: str,
+                                          device_code: str,
+                                          file_duration: float,
+                                          context_duration: float,
+                                          calls_by_file: Dict[str, List[Tuple[float, float]]],
+                                          max_windows: int,
+                                          margin: float = 0.0) -> List[Tuple[float, float]]:
+        """Return up to max_windows [start, end] pairs (relative to current file) that avoid any calls (with margin), sampled randomly within-file.
+        Limits heavy overlap between negatives while allowing small overlaps.
+        """
+        def overlap_amount(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+            return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+
+        windows: List[Tuple[float, float]] = []
+        occupied = sorted(calls_by_file.get(clip_id, []))
+        free = self._compute_free_intervals(occupied, file_duration, margin)
+        # Keep only intervals that can fit the context exactly
+        candidate_intervals = [(b, e) for (b, e) in free if (e - b) >= context_duration]
+        if not candidate_intervals or max_windows <= 0:
+            return windows
+        rng = np.random.default_rng()
+        max_overlap_ratio = 0.3  # allow up to 30% overlap between negatives
+        allowed_overlap = context_duration * max_overlap_ratio
+        # Attempt random sampling across intervals
+        attempts = 0
+        max_attempts = max(50, max_windows * 20)
+        while len(windows) < max_windows and attempts < max_attempts:
+            attempts += 1
+            # Randomly choose an interval (weighted by available start range could be added later)
+            b, e = candidate_intervals[rng.integers(0, len(candidate_intervals))]
+            start_min = b
+            start_max = e - context_duration
+            if start_max < start_min:
+                continue
+            start = float(rng.uniform(start_min, start_max))
+            end = start + context_duration
+            # Bounds check
+            if start < 0 or end > file_duration or end > e:
+                continue
+            cand = (start, end)
+            # Overlap check vs already chosen windows
+            too_much = False
+            for w in windows:
+                if overlap_amount(cand, w) > allowed_overlap:
+                    too_much = True
+                    break
+            if too_much:
+                continue
+            windows.append(cand)
+        return windows
+    
+    def create_negative_spectrograms(self,
+                                     clip_id: str,
+                                     device_code: str,
+                                     windows: List[Tuple[float, float]],
+                                     output_dir: Path,
+                                     win_dur: float,
+                                     overlap: float,
+                                     freq_range: Tuple[float, float],
+                                     context_duration: float,
+                                     calls_in_file_df: Optional[pd.DataFrame] = None,
+                                     generate_overview: bool = False) -> Tuple[Dict[str, str], List[Dict]]:
+        """Create negative spectrograms for provided windows for a single clip."""
+        # Output format settings from config
+        config_spectrograms = self.config.get('custom_spectrograms', {})
+        config_formats = config_spectrograms.get('output_formats', {})
+        save_matlab = config_formats.get('matlab', False)
+        save_plots = config_formats.get('plots', True)
+        # Directories
+        if save_matlab and save_plots:
+            mat_dir = output_dir / "neg_mat_files"
+            png_dir = output_dir / "neg_png_files"
+        elif save_matlab:
+            mat_dir = output_dir / "neg_mat_files"
+            png_dir = None
+        elif save_plots:
+            mat_dir = None
+            png_dir = output_dir / "neg_png_files"
+        else:
+            mat_dir = png_dir = output_dir / "negative_spectrograms"
+        if mat_dir:
+            mat_dir.mkdir(parents=True, exist_ok=True)
+        if png_dir:
+            png_dir.mkdir(parents=True, exist_ok=True)
+        # Resolve spectrogram params same as positives
+        # Use command line args if provided, otherwise use config values with whale-optimized fallbacks
+        resolved_win_dur = win_dur if win_dur != 0.1 else config_spectrograms.get('window_duration', 2.0)
+        resolved_overlap = overlap if overlap != 0.9 else config_spectrograms.get('overlap', 0.985)
+        if freq_range != (5, 100):
+            resolved_freq_lims = freq_range
+        else:
+            config_freq = config_spectrograms.get('frequency_limits', {})
+            resolved_freq_lims = (config_freq.get('min', 5), config_freq.get('max', 100))
+        # Visual params
+        colormap = config_spectrograms.get('colormap', 'viridis')
+        config_clim = config_spectrograms.get('color_limits', {})
+        clim = (config_clim.get('min', -40), config_clim.get('max', 0))
+        log_freq = config_spectrograms.get('log_frequency', False)
+        # Initialize generator if needed
+        if self.spectrogram_generator is None:
+            self.spectrogram_generator = SpectrogramGenerator(
+                win_dur=resolved_win_dur,
+                overlap=resolved_overlap,
+                freq_lims=resolved_freq_lims,
+                colormap=colormap,
+                clim=clim,
+                log_freq=log_freq,
+                max_duration=None
+            )
+        spectrogram_files: Dict[str, str] = {}
+        failed: List[Dict] = []
+        # Audio dir
+        audio_dir = output_dir / "audio"
+        audio_path = audio_dir / clip_id
+        # Load current audio to get sample rate and duration (if fully inside)
+        try:
+            audio_data, sample_rate = self.spectrogram_generator.load_audio(str(audio_path))
+            current_duration = len(audio_data) / sample_rate
+        except Exception as e:
+            for start, end in windows:
+                failed.append({
+                    'clip_id': clip_id,
+                    'call_id': f"{clip_id}_neg_{start:.1f}s_{end:.1f}s",
+                    'reason': f'Negative audio load error: {str(e)}'
+                })
+            return spectrogram_files, failed
+        # Prepare call summaries for this file (20 Hz vs 40 Hz) if provided
+        intervals_20: List[Tuple[float, float]] = []
+        intervals_40: List[Tuple[float, float]] = []
+        if calls_in_file_df is not None and not calls_in_file_df.empty:
+            def classify_source(path_str: str) -> str:
+                p = (path_str or "").lower()
+                if "40hz" in p:
+                    return "40Hz"
+                if "20hz" in p:
+                    return "20Hz"
+                return "unknown"
+            for _, row in calls_in_file_df.iterrows():
+                try:
+                    b = float(row['begin time (s)'])
+                    e = float(row['end time (s)'])
+                    if not (b < e):
+                        continue
+                    src = classify_source(row.get('__source_file__', ''))
+                    if src == "40Hz":
+                        intervals_40.append((b, e))
+                    elif src == "20Hz":
+                        intervals_20.append((b, e))
+                except Exception:
+                    continue
+            intervals_20.sort()
+            intervals_40.sort()
+
+        # Process windows
+        overview_generated = False
+        neg_windows_done: List[Tuple[float, float]] = []
+        for start, end in windows:
+            call_id = f"{clip_id}_neg_{start:.1f}s_{end:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+            try:
+                # Within-file only for negatives; require exact size (no edge padding)
+                if start < 0 or end > current_duration:
+                    failed.append({'clip_id': clip_id, 'call_id': call_id, 'reason': 'Negative window touches file boundary; skipped to maintain exact size'})
+                    continue
+                target_samples = int(round(context_duration * sample_rate))
+                start_sample = int(round(start * sample_rate))
+                end_sample = start_sample + target_samples
+                if end_sample > len(audio_data):
+                    failed.append({'clip_id': clip_id, 'call_id': call_id, 'reason': 'Negative window exceeds file samples after rounding; skipped'})
+                    continue
+                call_audio = audio_data[start_sample:end_sample]
+                if len(call_audio) != target_samples:
+                    failed.append({'clip_id': clip_id, 'call_id': call_id, 'reason': 'Negative window sample length mismatch; skipped'})
+                    continue
+                neg_windows_done.append((start, end))
+                # Print verification summary for this negative window
+                if intervals_20 or intervals_40:
+                    def fmt_intervals(ints: List[Tuple[float, float]]) -> str:
+                        return ", ".join([f"{b:.1f}-{e:.1f}s" for b, e in ints]) if ints else "none"
+                    print_status(
+                        f"NEG window {clip_id} @ {start:.1f}-{end:.1f}s | 20Hz calls: {len(intervals_20)} [{fmt_intervals(intervals_20)}] | 40Hz calls: {len(intervals_40)} [{fmt_intervals(intervals_40)}]",
+                        "INFO"
+                    )
+                # Compute spectrogram
+                frequencies, times, power, power_db_norm = self.spectrogram_generator.compute_spectrogram(call_audio, sample_rate)
+                # Crop to whale range (keep consistent dims with positives)
+                freq_min, freq_max = 5, 100
+                freq_mask = (frequencies >= freq_min) & (frequencies <= freq_max)
+                frequencies = frequencies[freq_mask]
+                power_db_norm = power_db_norm[freq_mask, :]
+                # Save PNG
+                if save_plots:
+                    fig = self.spectrogram_generator.plot_spectrogram(
+                        frequencies, times, power_db_norm,
+                        title=f"No Fin Whale (negative) - {device_code} | Window: {start:.1f}s-{end:.1f}s"
+                    )
+                    out_png = png_dir / f"{call_id}_neg.png" if png_dir else None
+                    if out_png:
+                        fig.savefig(out_png, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
+                        plt.close(fig)
+                # Save MAT
+                if save_matlab:
+                    out_mat = mat_dir / f"{call_id}_neg.mat"
+                    scipy.io.savemat(out_mat, {
+                        'spectrogram': power_db_norm,
+                        'frequencies': frequencies,
+                        'times': times,
+                        'negative_window': {
+                            'start_s': float(start),
+                            'end_s': float(end),
+                            'context_duration_s': float(context_duration),
+                        },
+                        'clip_id': clip_id,
+                        'device_code': device_code
+                    })
+                # Register
+                if save_matlab:
+                    spectrogram_files[call_id] = str(out_mat)
+                elif save_plots and png_dir:
+                    spectrogram_files[call_id] = str(out_png)
+                else:
+                    spectrogram_files[call_id] = f"processed_{call_id}"
+                print_status(f"✓ Created negative spectrogram: {call_id}")
+            except Exception as e:
+                failed.append({'clip_id': clip_id, 'call_id': call_id, 'reason': f'Negative processing error: {str(e)}'})
+                print_status(f"❌ Error creating negative spectrogram for {call_id}: {e}", "WARNING")
+        # Create overview once per file after negatives, if any
+        try:
+            if generate_overview and neg_windows_done and (intervals_20 or intervals_40):
+                audio_dir = output_dir / "audio"
+                audio_path = audio_dir / clip_id
+                self._create_file_overview_spectrogram(
+                    clip_id, device_code, audio_path, output_dir,
+                    intervals_20, intervals_40, neg_windows_done,
+                    win_dur, overlap, freq_range
+                )
+        except Exception as e:
+            print_status(f"⚠️ Failed to create overview for {clip_id}: {e}", "WARNING")
+        return spectrogram_files, failed
+
     def _download_adjacent_file(self, device_code: str, timestamp: pd.Timestamp, audio_dir: Path) -> bool:
         """Download an adjacent audio file if needed."""
         filename = f"{device_code}_{timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
@@ -737,8 +1244,8 @@ class FinWhaleCallAnalyzer:
                 begin_time = float(begin_time_raw)
                 end_time = float(end_time_raw)
                 
-                # Validate that times are reasonable
-                if begin_time < 0 or end_time < 0 or begin_time >= end_time:
+                # Validate that times are reasonable (allow begin == end)
+                if begin_time < 0 or end_time < 0 or begin_time > end_time:
                     print_status(f"⚠️ Skipping call with unreasonable timing: begin={begin_time:.1f}s, end={end_time:.1f}s", "WARNING")
                     failed_calls.append({
                         'clip_id': clip_id,
@@ -1026,7 +1533,14 @@ class FinWhaleCallAnalyzer:
                                  ml_context: Optional[float],
                                  cleanup_audio: bool,
                                  file_num: int,
-                                 total_files: int) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]], float]:
+                                 total_files: int,
+                                 generate_positives: bool,
+                                 generate_negatives: bool,
+                                 generate_overview: bool,
+                                 negatives_per_call: int,
+                                 neg_context: Optional[float],
+                                 calls_by_file: Dict[str, List[Tuple[float, float]]],
+                                 neg_margin: float) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]], float]:
         """
         Process a single audio file and its associated calls.
         
@@ -1130,16 +1644,45 @@ class FinWhaleCallAnalyzer:
         
         # Process all calls in this audio file
         try:
-            file_spectrograms, file_failed, file_dimensions = self.create_custom_spectrograms(
-                calls_in_file, {clip_id: str(audio_file_path)}, output_dir,
-                win_dur=win_dur, overlap=overlap, freq_range=freq_range, ml_context=ml_context
-            )
-            
-            # Collect results
-            spectrogram_files.update(file_spectrograms)
-            failed_calls.extend(file_failed)
-            if file_dimensions is not None:
-                actual_dimensions = file_dimensions
+            # Generate positives if requested
+            if generate_positives:
+                file_spectrograms, file_failed, file_dimensions = self.create_custom_spectrograms(
+                    calls_in_file, {clip_id: str(audio_file_path)}, output_dir,
+                    win_dur=win_dur, overlap=overlap, freq_range=freq_range, ml_context=ml_context
+                )
+                # Collect results
+                spectrogram_files.update(file_spectrograms)
+                failed_calls.extend(file_failed)
+                if file_dimensions is not None:
+                    actual_dimensions = file_dimensions
+            # Generate negatives if requested
+            if generate_negatives:
+                # Compute file duration and sample rate
+                try:
+                    with sf.SoundFile(audio_file_path) as f:
+                        duration = len(f) / f.samplerate
+                        sample_rate = f.samplerate
+                except Exception as e:
+                    print_status(f"❌ [{thread_id}] Unable to read duration for negatives: {e}", "WARNING")
+                    duration = 300.0
+                device_code = calls_in_file.iloc[0]['device_code'] if not calls_in_file.empty else clip_id.split('_')[0]
+                desired_neg = max(0, negatives_per_call * len(calls_in_file))
+                if desired_neg > 0:
+                    context_duration = neg_context if neg_context is not None else (ml_context if ml_context is not None else 40.0)
+                    neg_windows = self._sample_negative_windows_for_file(
+                        clip_id, device_code, duration, context_duration, calls_by_file, desired_neg, neg_margin
+                    )
+                    if neg_windows:
+                        # Subset of combined whale_data for this clip for verification summary
+                        calls_in_file_df = calls_in_file.copy()
+                        neg_specs, neg_failed = self.create_negative_spectrograms(
+                            clip_id, device_code, neg_windows, output_dir,
+                            win_dur=win_dur, overlap=overlap, freq_range=freq_range, context_duration=context_duration,
+                            calls_in_file_df=calls_in_file_df,
+                            generate_overview=generate_overview
+                        )
+                        spectrogram_files.update(neg_specs)
+                        failed_calls.extend(neg_failed)
                 
         except Exception as e:
             print_status(f"❌ [{thread_id}] Error processing spectrograms for {clip_id}: {e}", "WARNING")
@@ -1173,7 +1716,13 @@ class FinWhaleCallAnalyzer:
                                   freq_range: Tuple[float, float] = (10, 1000),
                                   ml_context: Optional[float] = None,
                                   cleanup_audio: bool = False,
-                                  max_workers: int = 2) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]]]:
+                                  max_workers: int = 2,
+                                  generate_positives: bool = True,
+                                  generate_negatives: bool = False,
+                                  generate_overview: bool = False,
+                                  negatives_per_call: int = 0,
+                                  neg_context: Optional[float] = None,
+                                  neg_margin: float = 0.0) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]]]:
         """
         Process whale calls incrementally with parallel processing.
         Downloads, processes, and cleans up audio files in parallel for efficiency.
@@ -1201,6 +1750,19 @@ class FinWhaleCallAnalyzer:
         audio_dir = output_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
         
+        # Build calls-by-file map for negative sampling and adjacency checks
+        calls_by_file: Dict[str, List[Tuple[float, float]]] = {}
+        for clip, df in file_groups:
+            intervals: List[Tuple[float, float]] = []
+            for _, row in df.iterrows():
+                try:
+                    b = float(row['begin time (s)'])
+                    e = float(row['end time (s)'])
+                    if b < e:
+                        intervals.append((b, e))
+                except Exception:
+                    continue
+            calls_by_file[clip] = intervals
         # Use ThreadPoolExecutor for parallel processing
         # Note: Each audio file is processed by exactly one worker to avoid race conditions
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="Worker") as executor:
@@ -1211,7 +1773,10 @@ class FinWhaleCallAnalyzer:
                     self._process_single_file_group,
                     clip_id, calls_in_file, output_dir, audio_dir,
                     win_dur, overlap, freq_range, ml_context, cleanup_audio,
-                    i, total_files
+                    i, total_files,
+                    generate_positives,
+                    generate_negatives, generate_overview, negatives_per_call, neg_context,
+                    calls_by_file, neg_margin
                 )
                 future_to_file[future] = (clip_id, i)
             
@@ -1260,12 +1825,19 @@ class FinWhaleCallAnalyzer:
         """Create a comprehensive analysis report"""
         print_header("CREATING ANALYSIS REPORT")
         
+        # Separate positive/negative counts
+        total_specs = len(custom_spectrograms)
+        negative_count = sum(1 for k in custom_spectrograms.keys() if "_neg_" in k)
+        positive_count = total_specs - negative_count
+
         report = {
             "dataset_metadata": {
                 "creation_date": datetime.now().isoformat(),
-                "source_library": str(self.excel_file),
+                "source_libraries": list(self.excel_files),
                 "total_calls_analyzed": len(whale_calls),
-                "successful_spectrograms": len(custom_spectrograms),
+                "successful_spectrograms": total_specs,
+                "positive_spectrograms": positive_count,
+                "negative_spectrograms": negative_count,
                 "failed_spectrograms": len(failed_calls) if failed_calls else 0,
                 "unique_audio_files": len(downloaded_files),
                 "onc_spectrograms_downloaded": len(onc_spectrograms)
@@ -1323,6 +1895,8 @@ class FinWhaleCallAnalyzer:
                 "audio_directory": "whale_call_analysis/audio/" if not audio_cleaned_up else "whale_call_analysis/audio/ (cleaned up)",
                 "mat_files_directory": "whale_call_analysis/mat_files/" if self.config.get('custom_spectrograms', {}).get('output_formats', {}).get('matlab', False) else None,
                 "png_files_directory": "whale_call_analysis/png_files/" if self.config.get('custom_spectrograms', {}).get('output_formats', {}).get('plots', True) else None,
+                "neg_mat_files_directory": "whale_call_analysis/neg_mat_files/" if self.config.get('custom_spectrograms', {}).get('output_formats', {}).get('matlab', False) else None,
+                "neg_png_files_directory": "whale_call_analysis/neg_png_files/" if self.config.get('custom_spectrograms', {}).get('output_formats', {}).get('plots', True) else None,
                 "onc_spectrograms_directory": "whale_call_analysis/onc_spectrograms/",
                 "note": "Directories created based on output format settings",
                 "audio_files_cleaned_up": audio_cleaned_up
@@ -1342,7 +1916,8 @@ class FinWhaleCallAnalyzer:
                     "Spectrograms are cropped to whale call frequencies (5-100 Hz) after generation",
                     "40-second temporal context is centered on each call",
                     "Multi-file stitching is used when context extends beyond file boundaries",
-                    "Failed stitching cases are documented in separate failed_spectrograms.json"
+                    "Failed stitching cases are documented in separate failed_spectrograms.json",
+                    "Negative (no-call) windows are sampled from free intervals avoiding all annotated calls"
                 ]
             }
         }
@@ -1420,8 +1995,11 @@ def main():
                        help='Overlap ratio for spectrograms (default: from config, fallback: 0.9)')
     
     # Input/Output options
-    parser.add_argument('--excel-file', type=str, required=True,
-                       help='Path to Excel file containing whale call library (e.g., data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx)')
+    group_excel = parser.add_mutually_exclusive_group(required=True)
+    group_excel.add_argument('--excel-file', type=str,
+                       help='Path to a single Excel file containing whale call library (e.g., data/finwhales/FinWhale20Hz_CallLibrary_Rannankari.xlsx)')
+    group_excel.add_argument('--excel-files', type=str, nargs='+',
+                       help='Paths to multiple Excel files (e.g., 20 Hz and 40 Hz annotations)')
     parser.add_argument('--output-dir', type=str, default='whale_call_analysis',
                        help='Output directory for results (default: whale_call_analysis)')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml',
@@ -1436,6 +2014,19 @@ def main():
                        help='Minimum time context for ML augmentation in seconds (default: from config, fallback: 40.0)')
     parser.add_argument('--target-size', type=str, default='512x512',
                        help='Target spectrogram size for ML (default: 512x512)')
+    # Negative (no-call) dataset options
+    parser.add_argument('--generate-negatives', action='store_true',
+                       help='Also generate negative spectrograms with no fin whale calls')
+    parser.add_argument('--negatives-only', action='store_true',
+                       help='Generate only negative spectrograms (skip positive/call spectrograms)')
+    parser.add_argument('--negatives-per-call', type=int, default=1,
+                       help='Number of negative windows to sample per annotated call (default: 1)')
+    parser.add_argument('--neg-context', type=float,
+                       help='Context duration for negative windows in seconds (default: use --ml-context)')
+    parser.add_argument('--neg-margin', type=float, default=2.0,
+                       help='Seconds to keep as safety margin around annotated calls when sampling negatives (default: 2.0)')
+    parser.add_argument('--overview', action='store_true',
+                       help='Generate per-file overview spectrograms with call and negative overlays')
     
     # Processing options
     parser.add_argument('--skip-download', action='store_true',
@@ -1461,12 +2052,17 @@ def main():
     try:
         print_header("FIN WHALE CALL ANALYSIS TOOL")
         
-        # Validate Excel file exists
-        if not Path(args.excel_file).exists():
-            raise FileNotFoundError(f"Excel file not found: {args.excel_file}")
+        # Validate Excel file(s) exist
+        if args.excel_files and len(args.excel_files) > 0:
+            missing = [p for p in args.excel_files if not Path(p).exists()]
+            if missing:
+                raise FileNotFoundError(f"Excel files not found: {missing}")
+        else:
+            if not Path(args.excel_file).exists():
+                raise FileNotFoundError(f"Excel file not found: {args.excel_file}")
         
-        # Initialize analyzer with Excel file path
-        analyzer = FinWhaleCallAnalyzer(onc_token, args.excel_file, args.config)
+        # Initialize analyzer with one or more Excel file paths
+        analyzer = FinWhaleCallAnalyzer(onc_token, args.excel_file, args.config, excel_files=args.excel_files)
         
         # Create output directory
         output_dir = Path(args.output_dir)
@@ -1520,7 +2116,7 @@ def main():
         downloaded_files = {}
         
         if not args.skip_download:
-            if args.batch_mode:
+            if args.batch_mode and not (args.generate_negatives or args.negatives_only):
                 # Old batch method: download all, then process all
                 print_status("📦 Using batch processing mode", "INFO")
                 downloaded_files = analyzer.download_whale_call_audio(whale_calls, output_dir)
@@ -1546,7 +2142,13 @@ def main():
                     freq_range=tuple(args.freq_range),
                     ml_context=args.ml_context if args.ml_context != 40.0 else None,
                     cleanup_audio=args.cleanup_audio,
-                    max_workers=args.workers
+                    max_workers=args.workers,
+                    generate_positives=(not args.negatives_only),
+                    generate_negatives=(args.generate_negatives or args.negatives_only),
+                    generate_overview=args.overview,
+                    negatives_per_call=args.negatives_per_call,
+                    neg_context=args.neg_context,
+                    neg_margin=args.neg_margin
                 )
                 # For report compatibility, simulate downloaded_files
                 unique_clips = whale_calls['Clip ID'].unique()
@@ -1558,7 +2160,7 @@ def main():
         
         # Download ONC spectrograms for comparison
         onc_spectrograms = {}
-        if not args.skip_onc_spectrograms:
+        if not args.skip_onc_spectrograms and not args.negatives_only:
             onc_spectrograms = analyzer.download_onc_spectrograms(whale_calls, output_dir)
         
         # Create analysis report

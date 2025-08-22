@@ -223,6 +223,9 @@ class FinWhaleCallAnalyzer:
         # Clean and preprocess data
         print_status(f"Loaded {len(self.whale_data)} whale call records across {len(self.excel_files)} files")
         
+        # Derive source band (20Hz/40Hz) from source file path
+        self.whale_data['source_band'] = self.whale_data['__source_file__'].apply(self._classify_source_file) if '__source_file__' in self.whale_data.columns else 'unknown'
+
         # Extract device codes from clip IDs
         self.whale_data['device_code'] = self.whale_data['Clip ID'].str.extract(r'(ICLISTENHF\d+)')
         
@@ -293,6 +296,15 @@ class FinWhaleCallAnalyzer:
         # Show summary statistics
         self.print_data_summary()
     
+    @staticmethod
+    def _classify_source_file(path_str: str) -> str:
+        p = (str(path_str) or "").lower()
+        if "40hz" in p:
+            return "40Hz"
+        if "20hz" in p:
+            return "20Hz"
+        return "unknown"
+
     def print_data_summary(self):
         """Print summary statistics of the whale call data"""
         print_header("WHALE CALL LIBRARY SUMMARY")
@@ -1005,7 +1017,8 @@ class FinWhaleCallAnalyzer:
         overview_generated = False
         neg_windows_done: List[Tuple[float, float]] = []
         for start, end in windows:
-            call_id = f"{clip_id}_neg_{start:.1f}s_{end:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
+            # Build a clean base id without "neg"; we'll append _neg to filenames only
+            call_id = f"{clip_id}_{start:.1f}s_{end:.1f}s".replace('.wav', '').replace(':', '-').replace(' ', '_')
             try:
                 # Within-file only for negatives; require exact size (no edge padding)
                 if start < 0 or end > current_duration:
@@ -1039,17 +1052,26 @@ class FinWhaleCallAnalyzer:
                 power_db_norm = power_db_norm[freq_mask, :]
                 # Save PNG
                 if save_plots:
+                    neg_src_tag = 'unknown'
+                    if calls_in_file_df is not None and not calls_in_file_df.empty:
+                        try:
+                            if 'source_band' in calls_in_file_df.columns:
+                                neg_src_tag = str(calls_in_file_df.iloc[0]['source_band'])
+                            else:
+                                neg_src_tag = self._classify_source_file(calls_in_file_df.iloc[0].get('__source_file__', ''))
+                        except Exception:
+                            neg_src_tag = 'unknown'
                     fig = self.spectrogram_generator.plot_spectrogram(
                         frequencies, times, power_db_norm,
-                        title=f"No Fin Whale (negative) - {device_code} | Window: {start:.1f}s-{end:.1f}s"
+                        title=f"No Fin Whale (negative; {neg_src_tag}) - {device_code} | Window: {start:.1f}s-{end:.1f}s"
                     )
-                    out_png = png_dir / f"{call_id}_neg.png" if png_dir else None
+                    out_png = png_dir / f"{call_id}_{neg_src_tag}_neg.png" if png_dir else None
                     if out_png:
                         fig.savefig(out_png, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
                         plt.close(fig)
                 # Save MAT
                 if save_matlab:
-                    out_mat = mat_dir / f"{call_id}_neg.mat"
+                    out_mat = mat_dir / f"{call_id}_{neg_src_tag}_neg.mat"
                     scipy.io.savemat(out_mat, {
                         'spectrogram': power_db_norm,
                         'frequencies': frequencies,
@@ -1060,7 +1082,8 @@ class FinWhaleCallAnalyzer:
                             'context_duration_s': float(context_duration),
                         },
                         'clip_id': clip_id,
-                        'device_code': device_code
+                        'device_code': device_code,
+                        'source_band': neg_src_tag
                     })
                 # Register
                 if save_matlab:
@@ -1257,10 +1280,15 @@ class FinWhaleCallAnalyzer:
                 # Create output filename with call timing info
                 call_id = f"{clip_id}_{begin_time:.1f}s_{end_time:.1f}s"
                 call_id = call_id.replace('.wav', '').replace(':', '-').replace(' ', '_')
+                # Determine source tag for title (20Hz/40Hz if known)
+                try:
+                    src_tag = call.get('source_band') if 'source_band' in call else (self._classify_source_file(call.get('__source_file__', '')) if '__source_file__' in call else 'unknown')
+                except Exception:
+                    src_tag = 'unknown'
                 
-                # Set output file paths for different formats
+                # Set output file paths for different formats (embed source band)
                 if png_dir:
-                    output_file = png_dir / f"{call_id}_custom.png"
+                    output_file = png_dir / f"{call_id}_{src_tag}_custom.png"
                 else:
                     output_file = None
                 
@@ -1332,7 +1360,7 @@ class FinWhaleCallAnalyzer:
                 if save_plots:
                     fig = self.spectrogram_generator.plot_spectrogram(
                         frequencies, times, power_db_norm,
-                        title=f"Fin Whale Call - {call['device_code']} - {call['Date (UTC)'].strftime('%Y-%m-%d')}\nCall: {begin_time:.1f}s-{end_time:.1f}s ({call_duration:.1f}s) | ML Context: {actual_duration:.1f}s (centered)"
+                        title=f"Fin Whale Call ({src_tag}) - {call['device_code']} - {call['Date (UTC)'].strftime('%Y-%m-%d')}\nCall: {begin_time:.1f}s-{end_time:.1f}s ({call_duration:.1f}s) | ML Context: {actual_duration:.1f}s (centered)"
                     )
                     
                     # Save with ML-optimized settings
@@ -1348,7 +1376,7 @@ class FinWhaleCallAnalyzer:
                 
                 # Save .mat file if requested
                 if save_matlab:
-                    mat_file = mat_dir / f"{call_id}_custom.mat"
+                    mat_file = mat_dir / f"{call_id}_{src_tag}_custom.mat"
                     
                     # Prepare data for MATLAB format
                     mat_data = {
@@ -1375,6 +1403,7 @@ class FinWhaleCallAnalyzer:
                         }
                     }
                     
+                    mat_data['call_info']['source_band'] = src_tag
                     scipy.io.savemat(mat_file, mat_data)
                     print_status(f"✓ Saved .mat file: {mat_file.name}")
                 

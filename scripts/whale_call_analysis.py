@@ -1615,6 +1615,14 @@ class FinWhaleCallAnalyzer:
                         'call_id': call_id,
                         'reason': 'Audio file download/validation failed after retries'
                     })
+                # Ensure cleanup if a partial file exists
+                try:
+                    if cleanup_audio and audio_file_path.exists():
+                        file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
+                        audio_file_path.unlink()
+                        print_status(f"🗑️ [{thread_id}] Cleaned up (failed download): {clip_id} ({file_size_mb:.1f} MB)")
+                except Exception as e:
+                    print_status(f"⚠️ [{thread_id}] Failed to cleanup after download failure {clip_id}: {e}", "WARNING")
                 return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
         else:
             # Validate existing file
@@ -1637,8 +1645,9 @@ class FinWhaleCallAnalyzer:
                     })
                 # Delete corrupted file
                 try:
-                    audio_file_path.unlink()
-                except:
+                    if audio_file_path.exists():
+                        audio_file_path.unlink()
+                except Exception:
                     pass
                 return spectrogram_files, failed_calls, actual_dimensions, file_size_cleaned_mb
         

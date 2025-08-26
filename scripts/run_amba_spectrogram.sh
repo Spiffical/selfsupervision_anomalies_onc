@@ -165,7 +165,7 @@ echo "[MARK] TASK=$TASK, EXP_DIR=$EXP_DIR, PRETRAINED_PATH=$PRETRAINED_PATH, TRA
 if [[ $TASK == *"pretrain"* ]]; then
   # Pretraining parameters
   mask_patch=300
-  batch_size=2
+  batch_size=16
   lr=1e-4
   lr_patience=2
   epoch=200
@@ -179,7 +179,7 @@ if [[ $TASK == *"pretrain"* ]]; then
 else
   # Finetuning parameters
   mask_patch=0
-  batch_size=2
+  batch_size=16
   lr=5e-5
   lr_patience=3
   epoch=200

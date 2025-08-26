@@ -190,6 +190,8 @@ class FinWhaleCallAnalyzer:
                 # Begin/end seconds
                 if 'begin time (s)' not in df.columns and 'begin_ time_s' in df.columns:
                     rename_map['begin_ time_s'] = 'begin time (s)'
+                if 'begin time (s)' not in df.columns and 'begin_time_s' in df.columns:
+                    rename_map['begin_time_s'] = 'begin time (s)'
                 if 'end time (s)' not in df.columns and 'end_time_s' in df.columns:
                     rename_map['end_time_s'] = 'end time (s)'
                 # Frequencies
@@ -203,6 +205,28 @@ class FinWhaleCallAnalyzer:
                         rename_map['peak_ freq_Hz'] = 'peak freq'
                     elif 'peak_freq_Hz' in df.columns:
                         rename_map['peak_freq_Hz'] = 'peak freq'
+                # Robust, case/format-insensitive fallbacks for freq columns
+                def _norm(name: str) -> str:
+                    return str(name).lower().replace(' ', '').replace('_', '').replace('-', '')
+                norm_to_orig = { _norm(c): c for c in df.columns }
+                # Low frequency variants
+                if 'low freq' not in df.columns:
+                    for cand in ['lowfreqhz', 'lowfreq', 'lowfrehz']:
+                        if cand in norm_to_orig:
+                            rename_map[norm_to_orig[cand]] = 'low freq'
+                            break
+                # High frequency variants
+                if 'high freq' not in df.columns:
+                    for cand in ['highfreqhz', 'highfreq']:
+                        if cand in norm_to_orig:
+                            rename_map[norm_to_orig[cand]] = 'high freq'
+                            break
+                # Peak frequency variants
+                if 'peak freq' not in df.columns:
+                    for cand in ['peakfreqhz', 'peakfreq']:
+                        if cand in norm_to_orig:
+                            rename_map[norm_to_orig[cand]] = 'peak freq'
+                            break
                 if rename_map:
                     df = df.rename(columns=rename_map)
                 # Ensure Duration (s) exists (compute if missing)

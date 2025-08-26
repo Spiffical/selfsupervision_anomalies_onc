@@ -289,7 +289,7 @@ if exclude_labels:
         mixup=args.mixup,
         ood=-1,  # No OOD filtering
         amount=1.0,
-        subsample_test=True,
+        subsample_test=False,
         exclude_labels=exclude_labels,
         multiclass=args.multiclass,
         num_classes=args.num_classes
@@ -309,7 +309,7 @@ else:
         mixup=args.mixup,
         ood=-1,  # No OOD filtering
         amount=1.0,
-        subsample_test=True,
+        subsample_test=False,
         multiclass=args.multiclass,
         num_classes=args.num_classes
     )

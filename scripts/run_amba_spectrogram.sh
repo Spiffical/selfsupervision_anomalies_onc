@@ -344,7 +344,7 @@ python -c 'import torch, sys; print("torch:", torch.__version__)' || true
 echo "Exists PYTHON_SCRIPT? $( [ -f "$PYTHON_SCRIPT" ] && echo yes || echo no ) at $PYTHON_SCRIPT"
 echo "Exists DATA? $( [ -f "$DATA_TRAIN_PATH" ] && echo yes || echo no ) at $DATA_TRAIN_PATH"
 echo "which python: $(which python)"
-echo "PYTHONPATH=$PYTHONPATH"
+echo "PYTHONPATH=${PYTHONPATH:-}"
 export PYTHONFAULTHANDLER=1
 
 # Execute via a temporary script to preserve exact quoting and capture stderr

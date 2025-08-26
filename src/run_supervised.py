@@ -159,7 +159,7 @@ if exclude_labels:
         mixup=args.mixup,
         ood=-1,  # No OOD filtering
         amount=1.0,
-        subsample_test=True,
+        subsample_test=False,
         exclude_labels=exclude_labels
     )
 else:
@@ -177,7 +177,7 @@ else:
         mixup=args.mixup,
         ood=-1,  # No OOD filtering
         amount=1.0,
-        subsample_test=True,
+        subsample_test=False,
         exclude_labels=exclude_labels
     )
     excluded_test_dataset = None

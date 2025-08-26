@@ -207,7 +207,8 @@ def setup_training(model, args):
         if 'pretrain' not in args.task:
             # For finetuning, first try to load finetuning checkpoint
             print("Looking for existing finetuning checkpoint...")
-            last_epoch, ft_checkpoint_path = find_latest_checkpoint(args.exp_dir, task='ft_cls')
+            # Use the actual finetuning task to find the right checkpoint prefix (e.g., ft-avgtok vs ft-cls)
+            last_epoch, ft_checkpoint_path = find_latest_checkpoint(args.exp_dir, task=args.task)
             
             if ft_checkpoint_path and os.path.isfile(ft_checkpoint_path):
                 print(f"Found finetuning checkpoint at epoch {last_epoch}")

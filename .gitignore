@@ -37,3 +37,12 @@ requirements_test.txt
 test_imports.py
 test_mamba.py
 scripts/inspect_invalid_timings.py
+out/
+build/
+err/
+src/ssamba.egg-info/dependency_links.txt
+src/ssamba.egg-info/PKG-INFO
+src/ssamba.egg-info/requires.txt
+src/ssamba.egg-info/SOURCES.txt
+src/ssamba.egg-info/top_level.txt
+=1.5.0

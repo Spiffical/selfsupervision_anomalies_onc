@@ -41,6 +41,8 @@ elif command -v nvcc &> /dev/null; then
     
     # Try installing CUDA-dependent packages
     echo "Installing CUDA-dependent packages..."
+    # Skip building CUDA extensions for mamba to avoid long compiles in some envs
+    export MAMBA_SKIP_CUDA_BUILD=TRUE
     pip install -r requirements-mamba.txt || {
         echo ""
         echo "⚠️  CUDA packages failed to install."

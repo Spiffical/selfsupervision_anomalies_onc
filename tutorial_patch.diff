@@ -1,0 +1,160 @@
+*** Begin Patch
+*** Add File: vendor/__init__.py
++"""
++Vendor package containing local implementations of third-party modules.
++
++This package is used to avoid heavy CUDA-dependent builds during workshop.
++
++Currently contains a pure-PyTorch implementation of the causal convolution
++module used by the Mamba/SSM models.
++"""
++
++
+*** End Patch
+*** Begin Patch
+*** Delete File: causal_conv1d.py
+*** End Patch
+*** Begin Patch
+*** Add File: vendor/causal_conv1d.py
++"""
++Pure PyTorch fallback implementation of the causal convolution used by
++``causal_conv1d``. This shim is intended for environments where the original
++``causal_conv1d`` package cannot be installed (e.g. Google Colab without
++pre-built CUDA wheels) and provides a drop‑in equivalent.
++
++The implementation uses grouped 1‑D convolutions from ``torch.nn.functional``
++with appropriate padding and slicing to achieve causal behaviour. See:
++
++    https://github.com/Dao-AILab/causal-conv1d
++
++for the original project and reference implementation. This file is licensed
++under the same terms as the upstream source.
++"""
++from __future__ import annotations
++
++import math
++import torch
++import torch.nn as nn
++import torch.nn.functional as F
++from typing import Optional
++
++def causal_conv1d_fn(
++    x: torch.Tensor,
++    weight: torch.Tensor,
++    bias: Optional[torch.Tensor] = None,
++    activation: Optional[str] = None,
++) -> torch.Tensor:
++    """
++    Perform a causal 1‑D convolution on input ``x`` using kernel ``weight``.
++
++    Parameters
++    ----------
++    x : torch.Tensor
++        Input tensor of shape ``(batch, channels, length)``.
++    weight : torch.Tensor
++        Convolution kernels of shape ``(channels, kernel_size)``.
++    bias : torch.Tensor, optional
++        Optional bias term of shape ``(channels,)``.
++    activation : str, optional
++        Activation applied elementwise after the convolution. The only
++        recognised values are ``"silu"`` or ``"swish"``; other values
++        result in the output being returned unchanged.
++
++    Returns
++    -------
++    torch.Tensor
++        Output tensor of shape ``(batch, channels, length)``.
++
++    Notes
++    -----
++    This function pads the input on the left (past) side with zeros so that
++    no output value depends on future inputs. It slices the result to the
++    original sequence length to remove the padded tail.
++    """
++    B, C, L = x.shape
++    K = weight.shape[-1]
++    # grouped convolution: each channel has its own kernel
++    y = F.conv1d(x, weight.unsqueeze(1), bias=bias, padding=K - 1, groups=C)
++    # trim to causal length: drop K - 1 values from the end
++    y = y[..., :L]
++    if activation in ("silu", "swish"):
++        # SiLU activation (a.k.a. Swish)
++        y = y * torch.sigmoid(y)
++    return y
++
++class CausalConv1d(nn.Module):
++    """
++    A causal 1‑D convolution layer. This wrapper follows the API of the
++    ``causal_conv1d.CausalConv1d`` class from the original package.
++    """
++    def __init__(
++        self,
++        dim: int,
++        kernel_size: int,
++        activation: Optional[str] = None,
++        bias: bool = True,
++    ) -> None:
++        super().__init__()
++        self.activation = activation
++        # Parameters are stored as weights of shape (dim, kernel_size) and bias
++        self.weight = nn.Parameter(torch.empty(dim, kernel_size))
++        self.bias = nn.Parameter(torch.empty(dim)) if bias else None
++        # Initialise weights using Kaiming uniform initialisation
++        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
++        if bias:
++            fan_in = dim * kernel_size
++            bound = 1 / math.sqrt(fan_in)
++            nn.init.uniform_(self.bias, -bound, bound)
++
++    def forward(self, x: torch.Tensor) -> torch.Tensor:
++        return causal_conv1d_fn(x, self.weight, self.bias, activation=self.activation)
++
+*** End Patch
+*** Begin Patch
+*** Update File: requirements-mamba.txt
+@@
+-# Mamba - CUDA packages
+-causal_conv1d>=1.5.0
+-mamba_ssm
++# Mamba - CUDA packages
++# The original causal_conv1d implementation requires a CUDA-capable build.
++# For Colab-friendly environments we vendor a pure‑PyTorch fallback under
++# ``vendor/causal_conv1d.py``, so the external dependency is no longer needed.
++# Similarly, ``mamba_ssm`` is optional when using pre-trained weights and
++# skipped entirely during installation. Uncomment these lines to restore the
++# original behaviour when building from source on a GPU workstation.
++# causal_conv1d>=1.5.0
++# mamba_ssm
+*** End Patch
+*** Begin Patch
+*** Update File: install_deps.sh
+@@
+-if [ -n "$NVCC" ]; then
+-  echo "✅ NVCC found! Attempting to install CUDA-dependent packages..."
+-  echo "Installing CUDA-dependent packages..."
+-  pip install -r requirements-mamba.txt || {
+-    echo "⚠️  CUDA packages failed to install."
+-     echo "   Falling back to CPU-compatible packages..."
+-    pip install -r requirements-cpu.txt
+-  }
+-else
+-  echo "⚠️  No NVCC found. Falling back to CPU-compatible packages..."
+-  pip install -r requirements-cpu.txt
+-fi
++if [ -n "$NVCC" ]; then
++  echo "✅ NVCC found! Attempting to install CUDA-dependent packages..."
++  echo "Installing CUDA-dependent packages..."
++  # Skip building CUDA extensions for mamba by setting environment variable.
++  # This prevents long compilation in Colab environments.
++  export MAMBA_SKIP_CUDA_BUILD=TRUE
++  pip install -r requirements-mamba.txt || {
++    echo "⚠️  CUDA packages failed to install."
++     echo "   Falling back to CPU-compatible packages..."
++    pip install -r requirements-cpu.txt
++  }
++else
++  echo "⚠️  No NVCC found. Falling back to CPU-compatible packages..."
++  pip install -r requirements-cpu.txt
++fi
+*** End Patch
+*** End Patch

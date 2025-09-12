@@ -26,6 +26,8 @@ DEVICE="cuda"
 PROJECT_PATH="$HOME/ssamba"   # Path to this repo on DRAC login node
 EXP_DIR="/exp"                # Base experiment dir (shared scratch/project recommended)
 COPY_TO_TMP="false"           # Whether to copy pos/neg dirs into $SLURM_TMPDIR (beware of size!)
+GIT_BRANCH="finwhales"        # Required branch in PROJECT_PATH
+AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -47,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --exp-dir) EXP_DIR="$2"; shift 2 ;;
     --copy-to-tmp) COPY_TO_TMP="true"; shift ;;
+    --git-branch) GIT_BRANCH="$2"; shift 2 ;;
+    --auto-switch-branch) AUTO_SWITCH_BRANCH="true"; shift ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -77,8 +81,30 @@ if [[ -f "$PROJECT_PATH/.env" ]]; then
   export $(grep -v '^#' "$PROJECT_PATH/.env" | xargs)
 fi
 
-# Copy project to local node scratch for faster I/O
-echo "Copying project to $SLURM_TMPDIR ..."
+# Prepare project in local node scratch and ensure requested branch from PROJECT_PATH
+echo "Preparing project in $SLURM_TMPDIR ..."
+
+if git -C "$PROJECT_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  CURRENT_BRANCH=$(git -C "$PROJECT_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [[ "$CURRENT_BRANCH" != "$GIT_BRANCH" ]]; then
+    echo "Repository at $PROJECT_PATH is on branch '$CURRENT_BRANCH', but '$GIT_BRANCH' is required."
+    if [[ "$AUTO_SWITCH_BRANCH" == "true" ]]; then
+      echo "Auto-switching to '$GIT_BRANCH' ..."
+      git -C "$PROJECT_PATH" fetch origin "$GIT_BRANCH" || true
+      git -C "$PROJECT_PATH" checkout "$GIT_BRANCH" 2>/dev/null \
+        || git -C "$PROJECT_PATH" checkout -B "$GIT_BRANCH" "origin/$GIT_BRANCH" \
+        || { echo "Error: failed to checkout '$GIT_BRANCH' in $PROJECT_PATH"; exit 1; }
+      git -C "$PROJECT_PATH" pull --ff-only || true
+    else
+      echo "Error: wrong branch. Re-run with --auto-switch-branch or switch manually:"
+      echo "  cd $PROJECT_PATH && git checkout $GIT_BRANCH && git pull --ff-only"
+      exit 1
+    fi
+  fi
+else
+  echo "Warning: $PROJECT_PATH is not a git repository; proceeding without branch enforcement."
+fi
+
 rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/ssamba_project/"
 
 # Optionally copy data to node-local storage (CAUTION: may be huge)

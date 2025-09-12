@@ -49,3 +49,4 @@ src/ssamba.egg-info/top_level.txt
 =1.5.0
 tutorial_patch.diff
 checkpoints/finwhale_cnn.pt
+notebooks/test_results_multiclass/predictions.csv

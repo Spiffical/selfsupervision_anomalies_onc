@@ -30,6 +30,7 @@ GIT_BRANCH="finwhales"        # Required branch in PROJECT_PATH
 AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
 SEED=42
 TAR_PATH=""
+VENV_PATH="${VENV_PATH:-$HOME/ssamba/myenv}"
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --auto-switch-branch) AUTO_SWITCH_BRANCH="true"; shift ;;
     --seed) SEED="$2"; shift 2 ;;
     --tar-path) TAR_PATH="$2"; shift 2 ;;
+    --venv|--venv-path) VENV_PATH="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -82,7 +84,11 @@ echo "  copy_to_tmp: $COPY_TO_TMP"
 
 # Load modules and venv
 module load python/3.10
-source "$HOME/ssamba/myenv/bin/activate"
+if [ ! -f "$VENV_PATH/bin/activate" ]; then
+  echo "Error: venv not found at $VENV_PATH/bin/activate"
+  exit 2
+fi
+source "$VENV_PATH/bin/activate"
 
 # Load W&B API key from .env if present
 if [[ -f "$PROJECT_PATH/.env" ]]; then

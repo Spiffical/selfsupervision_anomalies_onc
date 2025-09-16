@@ -3,8 +3,22 @@ import numpy as np
 
 try:
 	import torch
+	from torch.utils.data import Dataset, DataLoader  # type: ignore
 except Exception:  # torch not always needed at import time
 	torch = None  # type: ignore
+ 
+from .spectrogram_utils import (
+	load_mat_spectrogram,
+	normalize_spectrogram,
+	preprocess_with_resize_ctf,
+)
+
+# Optional tqdm import
+try:
+	from tqdm.auto import tqdm  # type: ignore
+except Exception:  # pragma: no cover
+	def tqdm(x, **kwargs):  # type: ignore
+		return x
 
 
 TensorFn = Callable[[np.ndarray], 'torch.Tensor']
@@ -21,7 +35,9 @@ def batched_inference(
 	expected_shape: Tuple[int, int],
 	device: str = 'cuda',
 	batch_size: int = 16,
-	task: str = 'ft_cls'
+	task: str = 'ft_cls',
+	show_progress: bool = False,
+	desc: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""
 	Generic batched inference for .mat spectrogram files.
@@ -35,7 +51,10 @@ def batched_inference(
 	logits_list = []
 	model.eval()
 	with torch.no_grad():
-		for i in range(0, len(paths), batch_size):
+		iterator = range(0, len(paths), batch_size)
+		if show_progress:
+			iterator = tqdm(iterator, desc=desc or 'inference', unit='batch')
+		for i in iterator:
 			batch_paths = paths[i:i+batch_size]
 			batch_tensors = []
 			for p in batch_paths:
@@ -68,3 +87,123 @@ def topk_from_probs(probs: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
 	idx = order[:, :k]
 	vals = probs[np.arange(len(probs))[:, None], idx]
 	return idx, vals
+
+
+# ---------------------------------------------------------
+# Standardized dataloader + inference used across notebooks
+# ---------------------------------------------------------
+
+class MatSpectrogramDataset(Dataset):
+	"""
+	Dataset for unlabeled .mat spectrogram files returning (tensor, label=-1, source).
+	- Reads using load_mat_spectrogram
+	- Normalizes using normalize_spectrogram with optional dataset stats
+	- Resizes to target and converts to tensor [1, T, F] via preprocess_with_resize_ctf
+	"""
+
+	def __init__(
+		self,
+		paths: List[str],
+		expected_shape: Tuple[int, int],
+		target_size: Tuple[int, int],
+		dataset_mean: Optional[float] = None,
+		dataset_std: Optional[float] = None,
+		amount: float = 1.0,
+	):
+		if torch is None:
+			raise RuntimeError("Torch is required for MatSpectrogramDataset but is not available")
+		self.paths = paths
+		self.expected_shape = expected_shape
+		self.target_size = target_size
+		self.dataset_mean = dataset_mean
+		self.dataset_std = dataset_std
+		self.amount = amount
+
+	def __len__(self) -> int:
+		return len(self.paths)
+
+	def __getitem__(self, index: int):
+		path = self.paths[index]
+		arr = load_mat_spectrogram(path, self.expected_shape)
+		arr = normalize_spectrogram(arr, dataset_mean=self.dataset_mean, dataset_std=self.dataset_std, amount=self.amount)
+		tensor = preprocess_with_resize_ctf(arr, self.target_size)
+		# Use filename stem as source identifier (or directory name if needed)
+		source = None
+		try:
+			import os
+			source = os.path.basename(path).split('_')[0]
+		except Exception:
+			source = None
+		return tensor, -1, source
+
+
+def build_mat_dataloader(
+	paths: List[str],
+	expected_shape: Tuple[int, int],
+	target_size: Tuple[int, int],
+	batch_size: int = 16,
+	num_workers: int = 0,
+	dataset_mean: Optional[float] = None,
+	dataset_std: Optional[float] = None,
+	amount: float = 1.0,
+):
+	"""
+	Create a DataLoader over .mat spectrogram files, standardized to model input.
+	"""
+	if torch is None:
+		raise RuntimeError("Torch is required for build_mat_dataloader but is not available")
+	ds = MatSpectrogramDataset(
+		paths=paths,
+		expected_shape=expected_shape,
+		target_size=target_size,
+		dataset_mean=dataset_mean,
+		dataset_std=dataset_std,
+		amount=amount,
+	)
+	return DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+
+def run_inference_multiclass(model, data_loader, device, task: str = 'ft_cls', show_progress: bool = False, desc: Optional[str] = None):
+	"""
+	Standard multiclass inference using a DataLoader that yields (data, label, source).
+	- Accumulates logits, converts to probabilities with softmax.
+	- Returns (y_true, y_pred, y_proba, sources). y_true will be -1 for unlabeled datasets.
+	"""
+	if torch is None:
+		raise RuntimeError("Torch is required for run_inference_multiclass but is not available")
+	model.eval()
+	all_logits: List[torch.Tensor] = []
+	all_targets: List[torch.Tensor] = []
+	all_sources: List[Optional[str]] = []
+	with torch.no_grad():
+		iterator = data_loader
+		if show_progress:
+			iterator = tqdm(data_loader, desc=desc or 'inference', unit='batch')
+		for batch in iterator:
+			# Support datasets that return (data, label, source) or (data, label)
+			if isinstance(batch, (list, tuple)) and len(batch) == 3:
+				data, labels, source = batch
+				all_sources.extend(list(source))
+			elif isinstance(batch, (list, tuple)) and len(batch) == 2:
+				data, labels = batch
+				all_sources.extend([None] * len(labels))
+			else:
+				data = batch
+				labels = torch.full((data.shape[0],), -1, dtype=torch.long)
+				all_sources.extend([None] * data.shape[0])
+			data = data.to(device)
+			logits = model(data, task=task)
+			if logits.dim() == 1:
+				logits = logits.unsqueeze(1)
+			all_logits.append(logits.cpu())
+			all_targets.append(labels.long().cpu())
+	logits_cat = torch.cat(all_logits, dim=0) if all_logits else torch.zeros((0, 0))
+	targets_cat = torch.cat(all_targets, dim=0) if all_targets else torch.zeros((0,), dtype=torch.long)
+	if logits_cat.numel() == 0:
+		probs = np.zeros((0, 0), dtype=np.float32)
+		preds = np.array([], dtype=int)
+	else:
+		probs_t = torch.softmax(logits_cat, dim=1)
+		probs = probs_t.numpy()
+		preds = probs.argmax(axis=1)
+	return targets_cat.numpy(), preds, probs, all_sources

@@ -4,7 +4,7 @@
 #SBATCH --output=out/finwhale_cnn_%j.out        # Standard output log
 #SBATCH --error=err/finwhale_cnn_%j.err         # Standard error log
 #SBATCH --time=08:00:00                         # Max runtime (HH:MM:SS)
-#SBATCH --gres=gpu:v100l:1                      # GPU type: adjust if needed (e.g., a100:1)
+#SBATCH --gres=gpu:h100:1                      # GPU type: adjust if needed (e.g., a100:1)
 #SBATCH --cpus-per-task=4                       # CPU cores
 #SBATCH --mem=32G                               # Memory per node
 

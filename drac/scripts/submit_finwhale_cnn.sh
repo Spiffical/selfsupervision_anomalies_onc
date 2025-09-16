@@ -28,6 +28,8 @@ EXP_DIR="/exp"                # Base experiment dir (shared scratch/project reco
 COPY_TO_TMP="false"           # Whether to copy pos/neg dirs into $SLURM_TMPDIR (beware of size!)
 GIT_BRANCH="finwhales"        # Required branch in PROJECT_PATH
 AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
+SEED=42
+TAR_PATH=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -51,14 +53,20 @@ while [[ $# -gt 0 ]]; do
     --copy-to-tmp) COPY_TO_TMP="true"; shift ;;
     --git-branch) GIT_BRANCH="$2"; shift 2 ;;
     --auto-switch-branch) AUTO_SWITCH_BRANCH="true"; shift ;;
+    --seed) SEED="$2"; shift 2 ;;
+    --tar-path) TAR_PATH="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
 # Validate required args
 if [[ -z "$POS_DIR" || -z "$NEG_DIR" ]]; then
-  echo "Error: --pos-dir and --neg-dir are required"
-  exit 1
+  if [[ -n "$TAR_PATH" ]]; then
+    echo "Using --tar-path=$TAR_PATH to populate POS/NEG directories"
+  else
+    echo "Error: --pos-dir and --neg-dir are required unless --tar-path is provided"
+    exit 1
+  fi
 fi
 
 # Prepare log dirs on submit dir
@@ -107,16 +115,63 @@ fi
 
 rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/ssamba_project/"
 
-# Optionally copy data to node-local storage (CAUTION: may be huge)
-POS_ARG="$POS_DIR"
-NEG_ARG="$NEG_DIR"
-if [[ "$COPY_TO_TMP" == "true" ]]; then
-  echo "Copying data to node-local storage (this may take a long time) ..."
-  mkdir -p "$SLURM_TMPDIR/finwhale_data/pos" "$SLURM_TMPDIR/finwhale_data/neg"
-  rsync -a "$POS_DIR/" "$SLURM_TMPDIR/finwhale_data/pos/"
-  rsync -a "$NEG_DIR/" "$SLURM_TMPDIR/finwhale_data/neg/"
-  POS_ARG="$SLURM_TMPDIR/finwhale_data/pos"
-  NEG_ARG="$SLURM_TMPDIR/finwhale_data/neg"
+# Optionally extract tar archive into node-local storage and set POS/NEG
+if [[ -n "$TAR_PATH" ]]; then
+  echo "Extracting tar archive to $SLURM_TMPDIR ..."
+  mkdir -p "$SLURM_TMPDIR/finwhale_data"
+  # Support .tar, .tar.gz/.tgz and .zip
+  if [[ "$TAR_PATH" == *.tar.gz || "$TAR_PATH" == *.tgz ]]; then
+    tar -xzf "$TAR_PATH" -C "$SLURM_TMPDIR/finwhale_data"
+  elif [[ "$TAR_PATH" == *.tar ]]; then
+    tar -xf "$TAR_PATH" -C "$SLURM_TMPDIR/finwhale_data"
+  elif [[ "$TAR_PATH" == *.zip ]]; then
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -q "$TAR_PATH" -d "$SLURM_TMPDIR/finwhale_data"
+    else
+      echo "Error: unzip not found on system PATH"
+      exit 1
+    fi
+  else
+    echo "Error: Unsupported archive format for --tar-path: $TAR_PATH"
+    exit 1
+  fi
+  # Detect mat_files and neg_mat_files inside the extracted tree
+  # Prefer top-level if present
+  if [[ -d "$SLURM_TMPDIR/finwhale_data/mat_files" && -d "$SLURM_TMPDIR/finwhale_data/neg_mat_files" ]]; then
+    POS_ARG="$SLURM_TMPDIR/finwhale_data/mat_files"
+    NEG_ARG="$SLURM_TMPDIR/finwhale_data/neg_mat_files"
+  else
+    # Search one level down
+    ROOT_SUBDIR=$(find "$SLURM_TMPDIR/finwhale_data" -maxdepth 2 -type d -name mat_files -print -quit)
+    if [[ -n "$ROOT_SUBDIR" ]]; then
+      POS_ARG="$ROOT_SUBDIR"
+      # infer neg path next to it
+      CANDIDATE_NEG_DIR="$(dirname "$ROOT_SUBDIR")/neg_mat_files"
+      if [[ -d "$CANDIDATE_NEG_DIR" ]]; then
+        NEG_ARG="$CANDIDATE_NEG_DIR"
+      else
+        echo "Error: Could not find neg_mat_files adjacent to $ROOT_SUBDIR"
+        exit 1
+      fi
+    else
+      echo "Error: Could not find mat_files and neg_mat_files in extracted archive"
+      exit 1
+    fi
+  fi
+  echo "Resolved POS_ARG=$POS_ARG"
+  echo "Resolved NEG_ARG=$NEG_ARG"
+else
+  # Optionally copy data to node-local storage (CAUTION: may be huge)
+  POS_ARG="$POS_DIR"
+  NEG_ARG="$NEG_DIR"
+  if [[ "$COPY_TO_TMP" == "true" ]]; then
+    echo "Copying data to node-local storage (this may take a long time) ..."
+    mkdir -p "$SLURM_TMPDIR/finwhale_data/pos" "$SLURM_TMPDIR/finwhale_data/neg"
+    rsync -a "$POS_DIR/" "$SLURM_TMPDIR/finwhale_data/pos/"
+    rsync -a "$NEG_DIR/" "$SLURM_TMPDIR/finwhale_data/neg/"
+    POS_ARG="$SLURM_TMPDIR/finwhale_data/pos"
+    NEG_ARG="$SLURM_TMPDIR/finwhale_data/neg"
+  fi
 fi
 
 # Build experiment directory and python command
@@ -132,7 +187,7 @@ PYTHON_CMD=(
   --lr "$LR" --balance "$BALANCE"
   --train-ratio "$TRAIN_RATIO" --val-ratio "$VAL_RATIO" --crop-size "$CROP_SIZE"
   --device "$DEVICE" --use_wandb --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP"
-  --exp_dir "$EXP_PATH" --save-path "$EXP_PATH/best.pt"
+  --exp_dir "$EXP_PATH" --save-path "$EXP_PATH/best.pt" --seed "$SEED"
 )
 
 if [[ -n "$WANDB_ENTITY" ]]; then

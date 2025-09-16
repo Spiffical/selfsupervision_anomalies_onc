@@ -225,6 +225,33 @@ def main():
     exp_dir = Path(args.exp_dir)
     exp_dir.mkdir(parents=True, exist_ok=True)
 
+    # Persist full args for reproducibility
+    try:
+        import pickle
+        with open(exp_dir / 'args.pkl', 'wb') as f:
+            pickle.dump(args, f)
+        print(f"Saved args to {exp_dir / 'args.pkl'}")
+    except Exception as e:
+        print(f"Warning: failed to save args.pkl: {e}")
+
+    # Save exact split file lists for reproducibility
+    try:
+        split_dir = exp_dir / 'splits'
+        split_dir.mkdir(parents=True, exist_ok=True)
+        # Access datasets behind loaders
+        val_ds: FinWhaleMatDataset = val_loader.dataset  # type: ignore
+        test_ds: FinWhaleMatDataset = test_loader.dataset  # type: ignore
+        def write_split(ds: FinWhaleMatDataset, name: str):
+            with open(split_dir / f"{name}.txt", 'w') as f:
+                for p, lbl in ds.files:
+                    f.write(f"{p}\t{lbl}\n")
+        write_split(train_ds, 'train')
+        write_split(val_ds, 'val')
+        write_split(test_ds, 'test')
+        print(f"Saved split file lists under {split_dir}")
+    except Exception as e:
+        print(f"Warning: failed to save split files: {e}")
+
     # Attach additional attributes expected by wandb_utils
     args.use_wandb = bool(args.use_wandb)
     args.exp_dir = str(exp_dir)

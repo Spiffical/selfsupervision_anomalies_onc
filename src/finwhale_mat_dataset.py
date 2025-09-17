@@ -106,6 +106,8 @@ class FinWhaleMatDataset(Dataset):
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         return_path: bool = False,
         seed: int = 0,
+        augment_eval: bool = False,
+        return_meta: bool = False,
     ) -> None:
         if sio is None:
             raise RuntimeError("scipy is required to load .mat files. Please install scipy.")
@@ -121,6 +123,8 @@ class FinWhaleMatDataset(Dataset):
         self.transform = transform
         self.return_path = return_path
         self.rng = np.random.default_rng(seed)
+        self.augment_eval = bool(augment_eval)
+        self.return_meta = bool(return_meta)
 
         if not self.pos_dir.exists():
             raise FileNotFoundError(f"Positive directory not found: {self.pos_dir}")
@@ -177,7 +181,7 @@ class FinWhaleMatDataset(Dataset):
                 spec = spec.T  # now (F, T)
         return spec
 
-    def _crop(self, spec: np.ndarray, is_positive: bool) -> np.ndarray:
+    def _crop(self, spec: np.ndarray, is_positive: bool, start_override: Optional[int] = None) -> np.ndarray:
         # spec expected (F, T). Crop to (F, crop_size) then square to (crop_size, crop_size)
         F, T = spec.shape
         # If freq dimension not equal to crop_size, pad or crop frequency axis to crop_size
@@ -194,9 +198,14 @@ class FinWhaleMatDataset(Dataset):
             F = self.crop_size
 
         # Time crop to crop_size
-        start = _choose_start_idx(T, self.crop_size, self.split, is_positive,
-                                  center_bias_sigma_frac=self.center_bias_sigma_frac,
-                                  rng=self.rng)
+        if start_override is not None:
+            start = int(start_override)
+        else:
+            # If evaluating with augmentation, reuse 'train' strategy for start index
+            split_for_crop = 'train' if (self.split != 'train' and self.augment_eval) else self.split
+            start = _choose_start_idx(T, self.crop_size, split_for_crop, is_positive,
+                                      center_bias_sigma_frac=self.center_bias_sigma_frac,
+                                      rng=self.rng)
         end = start + self.crop_size
         if T < self.crop_size:
             # pad time with edge
@@ -209,17 +218,43 @@ class FinWhaleMatDataset(Dataset):
     def __getitem__(self, index: int):
         path, label = self.files[index]
         spec = self._load_spectrogram(path)
+        F, T = spec.shape
         # Normalize to [0,1]
         spec = _normalize_db_to_unit(spec, self.min_db, self.max_db)
+        # Determine crop start (respect augment_eval for eval splits)
+        split_for_crop = 'train' if (self.split != 'train' and self.augment_eval) else self.split
+        start = _choose_start_idx(T, self.crop_size, split_for_crop, bool(label),
+                                  center_bias_sigma_frac=self.center_bias_sigma_frac,
+                                  rng=self.rng)
         # Crop/augment
-        spec = self._crop(spec, is_positive=bool(label))
+        spec = self._crop(spec, is_positive=bool(label), start_override=start)
         # To torch [C=1, F, T]
         x = torch.from_numpy(spec).unsqueeze(0).float()
         if self.transform is not None:
             x = self.transform(x)
         y = torch.tensor(label, dtype=torch.long)
-        if self.return_path:
-            return x, y, str(path)
+        if self.return_meta or self.return_path:
+            meta = None
+            if self.return_meta:
+                # Distance of crop center from spectrogram center (frames and fraction)
+                crop_center = start + (self.crop_size // 2)
+                spec_center = T // 2
+                dist_frames = abs(crop_center - spec_center)
+                max_center = max(1, T // 2)
+                dist_frac = float(dist_frames) / float(max_center)
+                meta = {
+                    'crop_start': int(start),
+                    'full_T': int(T),
+                    'crop_size': int(self.crop_size),
+                    'dist_from_center_frames': int(dist_frames),
+                    'dist_from_center_frac': float(dist_frac),
+                }
+            if self.return_meta and self.return_path:
+                return x, y, str(path), meta
+            if self.return_path:
+                return x, y, str(path)
+            if self.return_meta:
+                return x, y, meta
         return x, y
 
 
@@ -237,6 +272,7 @@ def make_dataloaders(
     center_bias_sigma_frac: float = 0.25,
     seed: int = 0,
     balance: str = 'weighted',  # 'weighted' | 'oversample' | 'none'
+    augment_test: bool = False,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/val/test DataLoaders with optional class balancing for train.
 
@@ -256,7 +292,7 @@ def make_dataloaders(
     test_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='test', train_ratio=train_ratio, val_ratio=val_ratio, crop_size=crop_size,
         min_db=min_db, max_db=max_db, center_bias_sigma_frac=center_bias_sigma_frac,
-        seed=seed
+        seed=seed, augment_eval=augment_test
     )
 
     # Build train sampler for balancing

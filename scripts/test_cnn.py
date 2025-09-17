@@ -75,6 +75,7 @@ def main():
     ap.add_argument('--augment-test', action='store_true', help='Jitter test crops like training')
     ap.add_argument('--device', type=str, default='cuda')
     ap.add_argument('--out-dir', type=str, required=True, help='Output directory for this test run')
+    ap.add_argument('--ignore-checkpoint-seed', action='store_true', help='Do not load seed from args.pkl next to checkpoint')
     args = ap.parse_args()
 
     device = torch.device(args.device if args.device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -85,12 +86,33 @@ def main():
     (out_dir / 'pngs' / 'fp').mkdir(parents=True, exist_ok=True)
     (out_dir / 'pngs' / 'fn').mkdir(parents=True, exist_ok=True)
 
+    # Prefer seed from checkpoint's args.pkl if available (unless ignored)
+    seed_to_use = args.seed
+    try:
+        if not args.ignore_checkpoint_seed:
+            ckpt_path = Path(args.checkpoint)
+            ckpt_dir = ckpt_path.parent
+            sidecar_args = ckpt_dir / 'args.pkl'
+            if sidecar_args.exists():
+                import pickle
+                with open(sidecar_args, 'rb') as f:
+                    saved_args = pickle.load(f)
+                if hasattr(saved_args, 'seed'):
+                    seed_to_use = int(getattr(saved_args, 'seed'))
+                elif isinstance(saved_args, dict) and 'seed' in saved_args:
+                    seed_to_use = int(saved_args['seed'])
+                print(f"Using seed from checkpoint args.pkl: {seed_to_use}")
+            else:
+                print("No args.pkl next to checkpoint; using CLI seed")
+    except Exception as e:
+        print(f"Warning: failed to load seed from checkpoint args.pkl: {e}. Using CLI seed {seed_to_use}")
+
     # Build test dataset (optionally jittered)
     test_ds = FinWhaleMatDataset(
         args.pos_dir, args.neg_dir,
         split='test', train_ratio=args.train_ratio, val_ratio=args.val_ratio,
         crop_size=args.crop_size, min_db=args.min_db, max_db=args.max_db,
-        seed=args.seed, augment_eval=bool(args.augment_test), return_path=True, return_meta=True
+        seed=seed_to_use, augment_eval=bool(args.augment_test), return_path=True, return_meta=True
     )
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
@@ -151,6 +173,7 @@ def main():
     # Save metrics report
     report_txt = out_dir / 'report.txt'
     with open(report_txt, 'w') as f:
+        f.write(f"seed_used: {seed_to_use}\n")
         for k, v in metrics.items():
             f.write(f"{k}: {v}\n")
     # Also CSV

@@ -108,6 +108,7 @@ class FinWhaleMatDataset(Dataset):
         seed: int = 0,
         augment_eval: bool = False,
         return_meta: bool = False,
+        file_list: Optional[List[Tuple[Path, int]]] = None,
     ) -> None:
         if sio is None:
             raise RuntimeError("scipy is required to load .mat files. Please install scipy.")
@@ -125,6 +126,11 @@ class FinWhaleMatDataset(Dataset):
         self.rng = np.random.default_rng(seed)
         self.augment_eval = bool(augment_eval)
         self.return_meta = bool(return_meta)
+
+        if file_list is not None:
+            # Use provided list directly
+            self.files = [(Path(p), int(lbl)) for p, lbl in file_list]
+            return
 
         if not self.pos_dir.exists():
             raise FileNotFoundError(f"Positive directory not found: {self.pos_dir}")

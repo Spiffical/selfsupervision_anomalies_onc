@@ -31,6 +31,8 @@ AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJEC
 SEED=42
 TAR_PATH=""
 VENV_PATH="${VENV_PATH:-$HOME/ssamba/myenv}"
+SPLIT_STRATEGY="internal"
+MIN_GAP_SECONDS=120
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -57,6 +59,8 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --tar-path) TAR_PATH="$2"; shift 2 ;;
     --venv|--venv-path) VENV_PATH="$2"; shift 2 ;;
+    --split-strategy) SPLIT_STRATEGY="$2"; shift 2 ;;
+    --min-gap-seconds) MIN_GAP_SECONDS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -194,6 +198,7 @@ PYTHON_CMD=(
   --train-ratio "$TRAIN_RATIO" --val-ratio "$VAL_RATIO" --crop-size "$CROP_SIZE"
   --device "$DEVICE" --use_wandb --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP"
   --exp_dir "$EXP_PATH" --save-path "$EXP_PATH/best.pt" --seed "$SEED"
+  --split-strategy "$SPLIT_STRATEGY" --min-gap-seconds "$MIN_GAP_SECONDS"
 )
 
 if [[ -n "$WANDB_ENTITY" ]]; then

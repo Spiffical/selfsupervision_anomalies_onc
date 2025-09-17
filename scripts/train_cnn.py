@@ -34,6 +34,7 @@ from src.ssamba.utilities.wandb_utils import (
     log_validation_metrics,
     finish_run,
 )
+from src.finwhale_split import build_entries, split_group_by_source, split_time_separated
 
 
 class SmallCNN(nn.Module):
@@ -192,6 +193,9 @@ def main():
     ap.add_argument('--wandb_project', type=str, default='finwhale_cnn', help='WandB project name')
     ap.add_argument('--exp_dir', type=str, default='exp/finwhale_cnn', help='Experiment directory for logs and checkpoints')
     ap.add_argument('--use-amp', action='store_true', help='Enable mixed precision on CUDA')
+    # Leakage-safe split options
+    ap.add_argument('--split-strategy', type=str, default='internal', choices=['internal', 'group_by_source', 'time_separated'])
+    ap.add_argument('--min-gap-seconds', type=float, default=120.0, help='For time_separated strategy')
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -200,20 +204,67 @@ def main():
     print(f"Device: {device}")
 
     # Create loaders
-    train_loader, val_loader, test_loader = make_dataloaders(
-        pos_dir=args.pos_dir,
-        neg_dir=args.neg_dir,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
-        crop_size=args.crop_size,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        min_db=args.min_db,
-        max_db=args.max_db,
-        balance=args.balance,
-        seed=args.seed,
-    )
+    if args.split_strategy == 'internal':
+        train_loader, val_loader, test_loader = make_dataloaders(
+            pos_dir=args.pos_dir,
+            neg_dir=args.neg_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_memory,
+            crop_size=args.crop_size,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            min_db=args.min_db,
+            max_db=args.max_db,
+            balance=args.balance,
+            seed=args.seed,
+        )
+    else:
+        # Build leakage-safe splits
+        entries = build_entries(args.pos_dir, args.neg_dir)
+        if args.split_strategy == 'group_by_source':
+            sp = split_group_by_source(entries, args.train_ratio, args.val_ratio, args.seed)
+        else:
+            sp = split_time_separated(entries, args.train_ratio, args.val_ratio, args.seed, args.min_gap_seconds)
+
+        # Save split lists
+        split_dir = Path(args.exp_dir) / 'splits'
+        split_dir.mkdir(parents=True, exist_ok=True)
+        def save_split(name: str, lst):
+            with open(split_dir / f'{name}.txt', 'w') as f:
+                for e in lst:
+                    f.write(f"{e['path']}\t{e['label']}\n")
+        save_split('train', sp['train'])
+        save_split('val', sp['val'])
+        save_split('test', sp['test'])
+
+        # Build datasets from lists
+        to_list = lambda lst: [(Path(e['path']), int(e['label'])) for e in lst]
+        train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=args.crop_size,
+                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                      file_list=to_list(sp['train']))
+        val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=args.crop_size,
+                                    min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                    file_list=to_list(sp['val']))
+        test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=args.crop_size,
+                                     min_db=args.max_db if False else args.min_db, max_db=args.max_db, seed=args.seed,
+                                     file_list=to_list(sp['test']))
+
+        # Build loaders
+        sampler = None
+        if args.balance in ('weighted', 'oversample'):
+            labels = torch.tensor([lbl for _, lbl in train_ds.files], dtype=torch.long)
+            class_counts = torch.bincount(labels, minlength=2).float()
+            class_weights = 1.0 / torch.clamp(class_counts, min=1.0)
+            sample_weights = class_weights[labels]
+            if args.balance == 'weighted':
+                sampler = torch.utils.data.WeightedRandomSampler(weights=sample_weights, num_samples=len(train_ds), replacement=True)
+            else:
+                target = int(2 * torch.max(class_counts).item())
+                sampler = torch.utils.data.WeightedRandomSampler(weights=sample_weights, num_samples=target, replacement=True)
+        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=(sampler is None), sampler=sampler, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
+        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
+        test_loader = torch.utils.data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
 
     # Class counts from train dataset
     train_ds: FinWhaleMatDataset = train_loader.dataset  # type: ignore

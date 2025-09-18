@@ -51,36 +51,49 @@ def _normalize_db_to_unit(x: np.ndarray, min_db: float = -80.0, max_db: float = 
     return (x - min_db) / (max_db - min_db)
 
 
+def _start_from_fraction(T: int, crop: int, frac_in_crop: float) -> int:
+    """Compute crop start so that the spectrogram center (call) appears at a given
+    fraction position inside the crop (0=left edge, 1=right edge)."""
+    frac = float(np.clip(frac_in_crop, 0.0, 1.0))
+    call_center = T // 2
+    pos_in_crop = frac * max(1, crop - 1)
+    start = int(round(call_center - pos_in_crop))
+    return max(0, min(start, max(0, T - crop)))
+
+
 def _choose_start_idx(T: int, crop: int, split: str, is_positive: bool,
                       center_bias_sigma_frac: float = 0.25,
-                      rng: Optional[np.random.Generator] = None) -> int:
+                      rng: Optional[np.random.Generator] = None,
+                      augment_eval: bool = False) -> int:
     if T <= crop:
         return 0
     if rng is None:
         rng = np.random.default_rng()
-    if split == 'train':
-        if is_positive:
-            # Jitter around center with truncated normal
-            center = T // 2
-            base = center - crop // 2
-            max_off = (T - crop) // 2
-            sigma = max(1, int(center_bias_sigma_frac * max_off))
-            # Sample until within [ -max_off, +max_off]
+    if is_positive:
+        # Keep the call in view by selecting a fraction position inside the crop.
+        if split == 'train' or (split != 'train' and augment_eval):
+            # Gaussian jitter around center (0.5), sigma is fraction of half-range
+            sigma = max(1e-3, float(center_bias_sigma_frac)) * 0.5
+            frac = None
+            # Truncate to [0,1]
             for _ in range(10):
-                off = int(rng.normal(0, sigma))
-                if -max_off <= off <= max_off:
-                    start = base + off
-                    return max(0, min(start, T - crop))
-            # Fallback to clamp
-            start = base
-            return max(0, min(start, T - crop))
+                f = 0.5 + float(rng.normal(0.0, sigma))
+                if 0.0 <= f <= 1.0:
+                    frac = f
+                    break
+            if frac is None:
+                frac = 0.5
+            return _start_from_fraction(T, crop, frac)
         else:
-            # Uniform for negatives
-            return int(rng.integers(0, T - crop + 1))
+            # Deterministic center for val/test without augmentation
+            return _start_from_fraction(T, crop, 0.5)
     else:
-        # Deterministic center crop for val/test
-        center = T // 2
-        return max(0, min(center - crop // 2, T - crop))
+        # Negatives: uniform random window for train; deterministic center for eval
+        if split == 'train' or (split != 'train' and augment_eval):
+            return int(rng.integers(0, T - crop + 1))
+        else:
+            center = T // 2
+            return max(0, min(center - crop // 2, T - crop))
 
 
 class FinWhaleMatDataset(Dataset):
@@ -89,7 +102,7 @@ class FinWhaleMatDataset(Dataset):
     - Positive samples from `pos_dir` (call present)
     - Negative samples from `neg_dir` (no call)
     - Applies normalization to [0, 1] from dB values and square crop on time axis
-    - Training-time augmentation: random center shift for positives; random window for negatives
+    - Training-time augmentation: random in-crop position for positives; random window for negatives
     """
 
     def __init__(
@@ -207,11 +220,11 @@ class FinWhaleMatDataset(Dataset):
         if start_override is not None:
             start = int(start_override)
         else:
-            # If evaluating with augmentation, reuse 'train' strategy for start index
-            split_for_crop = 'train' if (self.split != 'train' and self.augment_eval) else self.split
+            split_for_crop = self.split
             start = _choose_start_idx(T, self.crop_size, split_for_crop, is_positive,
                                       center_bias_sigma_frac=self.center_bias_sigma_frac,
-                                      rng=self.rng)
+                                      rng=self.rng,
+                                      augment_eval=self.augment_eval)
         end = start + self.crop_size
         if T < self.crop_size:
             # pad time with edge
@@ -227,11 +240,11 @@ class FinWhaleMatDataset(Dataset):
         F, T = spec.shape
         # Normalize to [0,1]
         spec = _normalize_db_to_unit(spec, self.min_db, self.max_db)
-        # Determine crop start (respect augment_eval for eval splits)
-        split_for_crop = 'train' if (self.split != 'train' and self.augment_eval) else self.split
-        start = _choose_start_idx(T, self.crop_size, split_for_crop, bool(label),
+        # Determine crop start ensuring call visibility for positives
+        start = _choose_start_idx(T, self.crop_size, self.split, bool(label),
                                   center_bias_sigma_frac=self.center_bias_sigma_frac,
-                                  rng=self.rng)
+                                  rng=self.rng,
+                                  augment_eval=self.augment_eval)
         # Crop/augment
         spec = self._crop(spec, is_positive=bool(label), start_override=start)
         # To torch [C=1, F, T]

@@ -41,12 +41,13 @@ def compute_metrics(y_true: torch.Tensor, y_pred_logits: torch.Tensor) -> dict:
         return dict(acc=acc, precision=prec, recall=rec, f1=f1, tp=tp, tn=tn, fp=fp, fn=fn, total=total)
 
 
-def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "") -> None:
+def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int = 3) -> None:
     # x is [1, F, T] in [0,1]
     arr = (x.squeeze(0).cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
-    # Convert to (H, W) grayscale image; map F to H
-    img = Image.fromarray(arr)
-    img = img.convert('L')
+    img = Image.fromarray(arr).convert('L')
+    if scale > 1:
+        w, h = img.size
+        img = img.resize((w * scale, h * scale), resample=Image.BICUBIC)
     # Add overlay text
     if overlay_text:
         img = img.convert('RGB')
@@ -76,6 +77,7 @@ def main():
     ap.add_argument('--device', type=str, default='cuda')
     ap.add_argument('--out-dir', type=str, required=True, help='Output directory for this test run')
     ap.add_argument('--ignore-checkpoint-seed', action='store_true', help='Do not load seed from args.pkl next to checkpoint')
+    ap.add_argument('--png-scale', type=int, default=3, help='Scale factor for saved spectrogram PNGs')
     args = ap.parse_args()
 
     device = torch.device(args.device if args.device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -131,24 +133,43 @@ def main():
     all_paths: List[str] = []
     all_meta: List[dict] = []
 
+    def normalize_meta(meta_obj, batch_size: int):
+        # Convert collated meta (dict of tensors) to list of dicts
+        if isinstance(meta_obj, dict):
+            out = []
+            for i in range(batch_size):
+                item = {}
+                for k, v in meta_obj.items():
+                    try:
+                        item[k] = v[i].item() if hasattr(v, 'shape') else v[i]
+                    except Exception:
+                        item[k] = None
+                out.append(item)
+            return out
+        elif isinstance(meta_obj, (list, tuple)):
+            return list(meta_obj)
+        else:
+            return [None] * batch_size
+
     with torch.no_grad():
         for batch in test_loader:
             if len(batch) == 4:
                 x, y, paths, meta = batch
+                meta_list = normalize_meta(meta, x.size(0))
             elif len(batch) == 3:
                 x, y, paths = batch
-                meta = [None] * x.size(0)
+                meta_list = [None] * x.size(0)
             else:
                 x, y = batch
                 paths = ["?"] * x.size(0)
-                meta = [None] * x.size(0)
+                meta_list = [None] * x.size(0)
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             logits = model(x)
             all_logits.append(logits.cpu())
             all_labels.append(y.cpu())
             all_paths.extend(list(paths))
-            all_meta.extend(list(meta))
+            all_meta.extend(meta_list)
 
             # Save PNGs for this batch
             probs = torch.softmax(logits, dim=1)
@@ -159,12 +180,10 @@ def main():
                 cls = 'tp' if (pred == 1 and truth == 1) else \
                       'tn' if (pred == 0 and truth == 0) else \
                       'fp' if (pred == 1 and truth == 0) else 'fn'
-                # Construct overlay text with source filename
                 src = Path(all_paths[-x.size(0) + i]).name
                 overlay = f"pred={pred} truth={truth} file={src}"
                 out_path = out_dir / 'pngs' / cls / f"{Path(src).stem}.png"
-                # Save spectrogram image
-                save_png(x[i].detach().cpu(), out_path, overlay_text=overlay)
+                save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale))
 
     logits_cat = torch.cat(all_logits, dim=0)
     labels_cat = torch.cat(all_labels, dim=0)
@@ -192,7 +211,7 @@ def main():
 
     # Precision-Recall vs threshold
     precisions, recalls, pr_thresholds = precision_recall_curve(y_true, probs_pos)
-    plt.figure()
+    plt.figure(figsize=(8, 5))
     plt.plot(recalls, precisions, label='PR curve')
     plt.xlabel('Recall')
     plt.ylabel('Precision')
@@ -206,7 +225,7 @@ def main():
     # ROC curve and AUC
     fpr, tpr, roc_thresholds = roc_curve(y_true, probs_pos)
     roc_auc = auc(fpr, tpr)
-    plt.figure()
+    plt.figure(figsize=(8, 5))
     plt.plot(fpr, tpr, label=f'ROC (AUC={roc_auc:.3f})')
     plt.plot([0,1], [0,1], 'k--', alpha=0.5)
     plt.xlabel('False Positive Rate')
@@ -219,7 +238,6 @@ def main():
     plt.close()
 
     # Precision and Recall as function of threshold
-    # Convert PR arrays (which may not include threshold for last point)
     thresholds = np.linspace(0.0, 1.0, 101)
     prec_at = []
     rec_at = []
@@ -230,7 +248,7 @@ def main():
         fn = int(((pred == 0) & (y_true == 1)).sum())
         prec_at.append(tp / (tp + fp) if (tp + fp) > 0 else 0.0)
         rec_at.append(tp / (tp + fn) if (tp + fn) > 0 else 0.0)
-    plt.figure()
+    plt.figure(figsize=(8, 5))
     plt.plot(thresholds, prec_at, label='Precision')
     plt.plot(thresholds, rec_at, label='Recall')
     plt.xlabel('Threshold')
@@ -242,27 +260,31 @@ def main():
     plt.savefig(out_dir / 'precision_recall_vs_threshold.png', dpi=150)
     plt.close()
 
-    # Performance vs distance from center (only for positives where meta present)
+    # Performance vs distance from center
     dist_fracs = []
-    preds_bin = (probs_pos >= 0.5).astype(np.int32)
-    correct = (preds_bin == y_true).astype(np.int32)
     for m in all_meta:
         if isinstance(m, dict) and 'dist_from_center_frac' in m:
-            dist_fracs.append(float(m['dist_from_center_frac']))
+            try:
+                dist_fracs.append(float(m['dist_from_center_frac']))
+            except Exception:
+                dist_fracs.append(np.nan)
         else:
             dist_fracs.append(np.nan)
     dist_fracs = np.array(dist_fracs)
-    # Bin distances
+
+    preds_bin = (probs_pos >= 0.5).astype(np.int32)
+    correct = (preds_bin == y_true).astype(np.float32)
+
     bins = np.linspace(0, 1.0, 11)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
     acc_by_bin = []
     for b0, b1 in zip(bins[:-1], bins[1:]):
-        mask = (dist_fracs >= b0) & (dist_fracs < b1)
+        mask = (dist_fracs >= b0) & (dist_fracs < b1) & (~np.isnan(dist_fracs))
         if mask.sum() > 0:
             acc_by_bin.append(float(correct[mask].mean()))
         else:
             acc_by_bin.append(np.nan)
-    plt.figure()
+    plt.figure(figsize=(8, 5))
     plt.plot(bin_centers, acc_by_bin, marker='o')
     plt.xlabel('Distance from Center (fraction of half-length)')
     plt.ylabel('Accuracy')

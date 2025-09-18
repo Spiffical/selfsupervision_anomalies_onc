@@ -53,3 +53,4 @@ notebooks/test_results_multiclass/predictions.csv
 analysis/
 scripts/finwhale_quick_check.py
 scripts/finwhale_split_experiments.py
+finwhale_test_runs/

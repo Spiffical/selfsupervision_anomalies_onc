@@ -35,6 +35,7 @@ from src.ssamba.utilities.wandb_utils import (
     finish_run,
 )
 from src.finwhale_split import build_entries, split_group_by_source, split_time_separated
+from src.models.fin_models import create_model
 
 
 class SmallCNN(nn.Module):
@@ -196,6 +197,8 @@ def main():
     # Leakage-safe split options
     ap.add_argument('--split-strategy', type=str, default='internal', choices=['internal', 'group_by_source', 'time_separated'])
     ap.add_argument('--min-gap-seconds', type=float, default=120.0, help='For time_separated strategy')
+    # Model selection
+    ap.add_argument('--model', type=str, default='SmallCNN', help='Model name: SmallCNN, DeepCNN[:w64:d8], resnet18/34/50')
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -306,7 +309,7 @@ def main():
     # Attach additional attributes expected by wandb_utils
     args.use_wandb = bool(args.use_wandb)
     args.exp_dir = str(exp_dir)
-    args.model = 'SmallCNN'
+    args.model = args.model
     args.dataset = 'FinWhaleMAT'
     args.n_epochs = args.epochs
     args.task = 'finetune_classification'
@@ -339,7 +342,7 @@ def main():
             args.use_wandb = False
 
     # Model, optimizer, loss
-    model = SmallCNN().to(device)
+    model = create_model(args.model, num_classes=2, in_ch=1).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # If we are not using sampler-based balancing, use class-weighted CE
     if args.balance == 'none':

@@ -26,6 +26,10 @@ AUGMENT_TEST="false"
 DEVICE="cuda"
 PROJECT_PATH="$HOME/ssamba"
 VENV_PATH="${VENV_PATH:-$HOME/ssamba/myenv}"
+PNG_SCALE=3
+PNG_CMAP="inferno"
+PNG_PMIN=2
+PNG_PMAX=98
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -47,6 +51,10 @@ while [[ $# -gt 0 ]]; do
     --device) DEVICE="$2"; shift 2 ;;
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv|--venv-path) VENV_PATH="$2"; shift 2 ;;
+    --png-scale) PNG_SCALE="$2"; shift 2 ;;
+    --png-cmap) PNG_CMAP="$2"; shift 2 ;;
+    --png-pmin) PNG_PMIN="$2"; shift 2 ;;
+    --png-pmax) PNG_PMAX="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -115,7 +123,8 @@ CMD=(
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --crop-size "$CROP_SIZE" --min-db "$MIN_DB" --max-db "$MAX_DB" \
     --train-ratio "$TRAIN_RATIO" --val-ratio "$VAL_RATIO" \
-    --seed "$SEED" --device "$DEVICE"
+    --seed "$SEED" --device "$DEVICE" \
+    --png-scale "$PNG_SCALE" --png-cmap "$PNG_CMAP" --png-pmin "$PNG_PMIN" --png-pmax "$PNG_PMAX"
 )
 if [[ "$AUGMENT_TEST" == "true" ]]; then
   CMD+=( --augment-test )

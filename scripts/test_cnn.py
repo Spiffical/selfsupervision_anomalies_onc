@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
 from src.finwhale_mat_dataset import FinWhaleMatDataset
@@ -41,14 +42,36 @@ def compute_metrics(y_true: torch.Tensor, y_pred_logits: torch.Tensor) -> dict:
         return dict(acc=acc, precision=prec, recall=rec, f1=f1, tp=tp, tn=tn, fp=fp, fn=fn, total=total)
 
 
-def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int = 3) -> None:
+def apply_contrast(x01: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
+    lo = np.percentile(x01, pmin)
+    hi = np.percentile(x01, pmax)
+    if hi <= lo:
+        return x01
+    y = (x01 - lo) / (hi - lo)
+    return np.clip(y, 0.0, 1.0)
+
+
+def to_colormap_rgb(x01: np.ndarray, cmap_name: str = 'inferno') -> np.ndarray:
+    cmap = cm.get_cmap(cmap_name)
+    rgb = (cmap(x01)[..., :3] * 255.0).astype(np.uint8)
+    return rgb
+
+
+def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int = 3,
+             cmap: str = 'inferno', pmin: float = 2.0, pmax: float = 98.0, marker_x: int = None) -> None:
     # x is [1, F, T] in [0,1]
-    arr = (x.squeeze(0).cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
-    img = Image.fromarray(arr).convert('L')
+    arr01 = x.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    arr01 = apply_contrast(arr01, pmin, pmax)
+    rgb = to_colormap_rgb(arr01, cmap_name=cmap)
+    img = Image.fromarray(rgb)
+    # draw marker before scaling
+    if marker_x is not None and 0 <= marker_x < arr01.shape[1]:
+        draw = ImageDraw.Draw(img)
+        h = img.size[1]
+        draw.line([(marker_x, 0), (marker_x, h)], fill=(255, 255, 255), width=1)
     if scale > 1:
         w, h = img.size
         img = img.resize((w * scale, h * scale), resample=Image.BICUBIC)
-    # Add overlay text
     if overlay_text:
         img = img.convert('RGB')
         draw = ImageDraw.Draw(img)
@@ -56,7 +79,7 @@ def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int
             font = ImageFont.load_default()
         except Exception:
             font = None
-        draw.text((5, 5), overlay_text, fill=(255, 0, 0), font=font)
+        draw.text((5, 5), overlay_text, fill=(255, 255, 255), font=font)
     img.save(str(out_path))
 
 
@@ -78,6 +101,9 @@ def main():
     ap.add_argument('--out-dir', type=str, required=True, help='Output directory for this test run')
     ap.add_argument('--ignore-checkpoint-seed', action='store_true', help='Do not load seed from args.pkl next to checkpoint')
     ap.add_argument('--png-scale', type=int, default=3, help='Scale factor for saved spectrogram PNGs')
+    ap.add_argument('--png-cmap', type=str, default='inferno', help='Colormap for saved PNGs')
+    ap.add_argument('--png-pmin', type=float, default=2.0, help='Lower percentile for PNG contrast')
+    ap.add_argument('--png-pmax', type=float, default=98.0, help='Upper percentile for PNG contrast')
     args = ap.parse_args()
 
     device = torch.device(args.device if args.device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu'))
@@ -183,7 +209,18 @@ def main():
                 src = Path(all_paths[-x.size(0) + i]).name
                 overlay = f"pred={pred} truth={truth} file={src}"
                 out_path = out_dir / 'pngs' / cls / f"{Path(src).stem}.png"
-                save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale))
+                # Marker based on meta
+                marker_x = None
+                m = meta_list[i]
+                try:
+                    if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
+                        marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
+                        # clip to crop
+                        marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
+                except Exception:
+                    marker_x = None
+                save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
+                         cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
 
     logits_cat = torch.cat(all_logits, dim=0)
     labels_cat = torch.cat(all_labels, dim=0)

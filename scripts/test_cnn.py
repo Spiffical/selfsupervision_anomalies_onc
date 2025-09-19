@@ -21,7 +21,7 @@ import matplotlib.cm as cm
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
 from src.finwhale_mat_dataset import FinWhaleMatDataset
-from scripts.train_cnn import SmallCNN  # reuse the model class
+from src.models.fin_models import create_model
 
 
 def compute_metrics(y_true: torch.Tensor, y_pred_logits: torch.Tensor) -> dict:
@@ -149,7 +149,25 @@ def main():
 
     # Load model
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    model = SmallCNN().to(device)
+    # Determine model name from sidecar args.pkl (preferred) or checkpoint
+    model_name = 'SmallCNN'
+    try:
+        ckpt_dir = Path(args.checkpoint).parent
+        sidecar_args = ckpt_dir / 'args.pkl'
+        if sidecar_args.exists():
+            import pickle
+            with open(sidecar_args, 'rb') as f:
+                saved_args = pickle.load(f)
+            if hasattr(saved_args, 'model'):
+                model_name = str(getattr(saved_args, 'model'))
+            elif isinstance(saved_args, dict) and 'model' in saved_args:
+                model_name = str(saved_args['model'])
+    except Exception:
+        pass
+    # Fallback to checkpoint hint
+    if isinstance(checkpoint, dict) and 'args' in checkpoint and isinstance(checkpoint['args'], dict):
+        model_name = checkpoint['args'].get('model', model_name)
+    model = create_model(model_name, num_classes=2, in_ch=1).to(device)
     state_dict = checkpoint.get('model_state', checkpoint)
     model.load_state_dict(state_dict)
     model.eval()

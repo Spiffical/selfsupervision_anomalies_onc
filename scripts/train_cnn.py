@@ -309,7 +309,7 @@ def main():
     # Attach additional attributes expected by wandb_utils
     args.use_wandb = bool(args.use_wandb)
     args.exp_dir = str(exp_dir)
-    args.model = args.model
+    # Preserve the chosen model name in saved args
     args.dataset = 'FinWhaleMAT'
     args.n_epochs = args.epochs
     args.task = 'finetune_classification'

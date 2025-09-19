@@ -195,7 +195,7 @@ def main():
         model.eval()
 
         # Per-model output directory
-        label = labels[idx] if (labels and idx < len(labels)) else derive_label(ckpt_path, model_name)
+        label = labels[idx] if (len(labels) > idx) else derive_label(ckpt_path, model_name)
         model_dir = out_dir / label
         (model_dir / 'pngs' / 'tp').mkdir(parents=True, exist_ok=True)
         (model_dir / 'pngs' / 'tn').mkdir(parents=True, exist_ok=True)

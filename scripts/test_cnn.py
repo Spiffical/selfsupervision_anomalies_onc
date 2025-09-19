@@ -52,7 +52,10 @@ def apply_contrast(x01: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
 
 
 def to_colormap_rgb(x01: np.ndarray, cmap_name: str = 'inferno') -> np.ndarray:
-    cmap = cm.get_cmap(cmap_name)
+    try:
+        cmap = matplotlib.colormaps.get_cmap(cmap_name)
+    except Exception:
+        cmap = cm.get_cmap(cmap_name)
     rgb = (cmap(x01)[..., :3] * 255.0).astype(np.uint8)
     return rgb
 
@@ -90,8 +93,8 @@ def main():
     # Backward-compat single checkpoint; can be omitted when using --checkpoints
     ap.add_argument('--checkpoint', type=str, default="", help='Path to trained model checkpoint (.pt)')
     # New: multiple checkpoints
-    ap.add_argument('--checkpoints', type=str, nargs='*', help='Paths to multiple checkpoints')
-    ap.add_argument('--labels', type=str, nargs='*', help='Optional labels for checkpoints (same order)')
+    ap.add_argument('--checkpoints', type=str, action='append', help='Repeatable: path to a checkpoint (or comma-separated)')
+    ap.add_argument('--labels', type=str, action='append', help='Repeatable: label for a checkpoint (or comma-separated)')
     ap.add_argument('--batch-size', type=int, default=128)
     ap.add_argument('--num-workers', type=int, default=4)
     ap.add_argument('--crop-size', type=int, default=96)

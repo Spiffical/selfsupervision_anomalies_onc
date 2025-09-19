@@ -12,7 +12,9 @@
 POS_DIR=""
 NEG_DIR=""
 TAR_PATH=""
-CHECKPOINT=""
+CHECKPOINT=""              # single checkpoint (backward compat)
+CHECKPOINTS=()              # array of checkpoints
+LABELS=()                   # array of labels for checkpoints
 OUT_DIR=""
 BATCH_SIZE=128
 NUM_WORKERS=4
@@ -38,6 +40,8 @@ while [[ $# -gt 0 ]]; do
     --neg-dir) NEG_DIR="$2"; shift 2 ;;
     --tar-path) TAR_PATH="$2"; shift 2 ;;
     --checkpoint) CHECKPOINT="$2"; shift 2 ;;
+    --checkpoints) shift; while [[ $# -gt 0 && $1 != --* ]]; do CHECKPOINTS+=("$1"); shift; done ;;
+    --labels) shift; while [[ $# -gt 0 && $1 != --* ]]; do LABELS+=("$1"); shift; done ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
@@ -59,8 +63,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$CHECKPOINT" || -z "$OUT_DIR" ]]; then
-  echo "Error: --checkpoint and --out-dir are required"
+if [[ -z "$OUT_DIR" ]]; then
+  echo "Error: --out-dir is required"
+  exit 1
+fi
+
+# Normalize checkpoints: accept either --checkpoint or --checkpoints
+if [[ -n "$CHECKPOINT" ]]; then
+  CHECKPOINTS+=("$CHECKPOINT")
+fi
+if [[ ${#CHECKPOINTS[@]} -eq 0 ]]; then
+  echo "Error: provide at least one checkpoint via --checkpoint or --checkpoints"
   exit 1
 fi
 
@@ -118,7 +131,6 @@ cd "$SLURM_TMPDIR/ssamba_project"
 CMD=(
   python -u scripts/test_cnn.py \
     --pos-dir "$POS_ARG" --neg-dir "$NEG_ARG" \
-    --checkpoint "$CHECKPOINT" \
     --out-dir "$RUN_OUT_DIR" \
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --crop-size "$CROP_SIZE" --min-db "$MIN_DB" --max-db "$MAX_DB" \
@@ -126,6 +138,15 @@ CMD=(
     --seed "$SEED" --device "$DEVICE" \
     --png-scale "$PNG_SCALE" --png-cmap "$PNG_CMAP" --png-pmin "$PNG_PMIN" --png-pmax "$PNG_PMAX"
 )
+# Append checkpoints
+for ck in "${CHECKPOINTS[@]}"; do
+  CMD+=( --checkpoints "$ck" )
+done
+# Append labels if provided
+for lb in "${LABELS[@]}"; do
+  CMD+=( --labels "$lb" )
+done
+
 if [[ "$AUGMENT_TEST" == "true" ]]; then
   CMD+=( --augment-test )
 fi

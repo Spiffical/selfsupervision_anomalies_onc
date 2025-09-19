@@ -3,7 +3,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 # Ensure repo root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -84,10 +84,14 @@ def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Test CNN on Fin Whale MAT spectrograms")
+    ap = argparse.ArgumentParser(description="Test CNN on Fin Whale MAT spectrograms (supports multiple models)")
     ap.add_argument('--pos-dir', type=str, required=True, help='Directory with positive MAT files')
     ap.add_argument('--neg-dir', type=str, required=True, help='Directory with negative MAT files')
-    ap.add_argument('--checkpoint', type=str, required=True, help='Path to trained model checkpoint (.pt)')
+    # Backward-compat single checkpoint; can be omitted when using --checkpoints
+    ap.add_argument('--checkpoint', type=str, default="", help='Path to trained model checkpoint (.pt)')
+    # New: multiple checkpoints
+    ap.add_argument('--checkpoints', type=str, nargs='*', help='Paths to multiple checkpoints')
+    ap.add_argument('--labels', type=str, nargs='*', help='Optional labels for checkpoints (same order)')
     ap.add_argument('--batch-size', type=int, default=128)
     ap.add_argument('--num-workers', type=int, default=4)
     ap.add_argument('--crop-size', type=int, default=96)
@@ -106,36 +110,42 @@ def main():
     ap.add_argument('--png-pmax', type=float, default=98.0, help='Upper percentile for PNG contrast')
     args = ap.parse_args()
 
+    # Build checkpoint list (support comma-separated and backward compat)
+    ckpts: List[str] = []
+    if args.checkpoints:
+        for c in args.checkpoints:
+            ckpts.extend([s for s in c.split(',') if s.strip()])
+    if args.checkpoint:
+        ckpts.append(args.checkpoint)
+    if not ckpts:
+        raise SystemExit("Please provide at least one checkpoint via --checkpoint or --checkpoints")
+    labels: List[str] = []
+    if args.labels:
+        for l in args.labels:
+            labels.extend([s for s in l.split(',') if s.strip()])
+
     device = torch.device(args.device if args.device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
     out_dir = Path(args.out_dir)
-    (out_dir / 'pngs' / 'tp').mkdir(parents=True, exist_ok=True)
-    (out_dir / 'pngs' / 'tn').mkdir(parents=True, exist_ok=True)
-    (out_dir / 'pngs' / 'fp').mkdir(parents=True, exist_ok=True)
-    (out_dir / 'pngs' / 'fn').mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prefer seed from checkpoint's args.pkl if available (unless ignored)
+    # Build test dataset once
+    # Derive seed from the first checkpoint if not ignored
     seed_to_use = args.seed
-    try:
-        if not args.ignore_checkpoint_seed:
-            ckpt_path = Path(args.checkpoint)
-            ckpt_dir = ckpt_path.parent
-            sidecar_args = ckpt_dir / 'args.pkl'
-            if sidecar_args.exists():
-                import pickle
-                with open(sidecar_args, 'rb') as f:
-                    saved_args = pickle.load(f)
-                if hasattr(saved_args, 'seed'):
-                    seed_to_use = int(getattr(saved_args, 'seed'))
-                elif isinstance(saved_args, dict) and 'seed' in saved_args:
-                    seed_to_use = int(saved_args['seed'])
-                print(f"Using seed from checkpoint args.pkl: {seed_to_use}")
-            else:
-                print("No args.pkl next to checkpoint; using CLI seed")
-    except Exception as e:
-        print(f"Warning: failed to load seed from checkpoint args.pkl: {e}. Using CLI seed {seed_to_use}")
+    if not args.ignore_checkpoint_seed:
+        try:
+            import pickle
+            sidecar = Path(ckpts[0]).parent / 'args.pkl'
+            if sidecar.exists():
+                with open(sidecar, 'rb') as f:
+                    sargs = pickle.load(f)
+                if hasattr(sargs, 'seed'):
+                    seed_to_use = int(getattr(sargs, 'seed'))
+                elif isinstance(sargs, dict) and 'seed' in sargs:
+                    seed_to_use = int(sargs['seed'])
+        except Exception:
+            pass
 
-    # Build test dataset (optionally jittered)
     test_ds = FinWhaleMatDataset(
         args.pos_dir, args.neg_dir,
         split='test', train_ratio=args.train_ratio, val_ratio=args.val_ratio,
@@ -147,207 +157,207 @@ def main():
         num_workers=args.num_workers, pin_memory=True
     )
 
-    # Load model
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    # Determine model name from sidecar args.pkl (preferred) or checkpoint
-    model_name = 'SmallCNN'
-    try:
-        ckpt_dir = Path(args.checkpoint).parent
-        sidecar_args = ckpt_dir / 'args.pkl'
-        if sidecar_args.exists():
+    # Helper to derive a short label per checkpoint
+    def derive_label(ckpt_path: str, model_name: str) -> str:
+        p = Path(ckpt_path)
+        # prefer directory name (e.g., resnet18) or model name
+        parent = p.parent.name
+        base = p.stem
+        for cand in [parent, model_name, base]:
+            if cand:
+                return cand
+        return 'model'
+
+    # Store results per model
+    all_results: Dict[str, Dict[str, np.ndarray]] = {}
+
+    for idx, ckpt_path in enumerate(ckpts):
+        # Determine model name from args.pkl (preferred) or checkpoint
+        model_name = 'SmallCNN'
+        try:
             import pickle
-            with open(sidecar_args, 'rb') as f:
-                saved_args = pickle.load(f)
-            if hasattr(saved_args, 'model'):
-                model_name = str(getattr(saved_args, 'model'))
-            elif isinstance(saved_args, dict) and 'model' in saved_args:
-                model_name = str(saved_args['model'])
-    except Exception:
-        pass
-    # Fallback to checkpoint hint
-    if isinstance(checkpoint, dict) and 'args' in checkpoint and isinstance(checkpoint['args'], dict):
-        model_name = checkpoint['args'].get('model', model_name)
-    model = create_model(model_name, num_classes=2, in_ch=1).to(device)
-    state_dict = checkpoint.get('model_state', checkpoint)
-    model.load_state_dict(state_dict)
-    model.eval()
+            sidecar_args = Path(ckpt_path).parent / 'args.pkl'
+            if sidecar_args.exists():
+                with open(sidecar_args, 'rb') as f:
+                    saved_args = pickle.load(f)
+                if hasattr(saved_args, 'model'):
+                    model_name = str(getattr(saved_args, 'model'))
+                elif isinstance(saved_args, dict) and 'model' in saved_args:
+                    model_name = str(saved_args['model'])
+        except Exception:
+            pass
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        if isinstance(checkpoint, dict) and 'args' in checkpoint and isinstance(checkpoint['args'], dict):
+            model_name = checkpoint['args'].get('model', model_name)
+        model = create_model(model_name, num_classes=2, in_ch=1).to(device)
+        state_dict = checkpoint.get('model_state', checkpoint)
+        model.load_state_dict(state_dict)
+        model.eval()
 
-    all_logits: List[torch.Tensor] = []
-    all_labels: List[torch.Tensor] = []
-    all_paths: List[str] = []
-    all_meta: List[dict] = []
+        # Per-model output directory
+        label = labels[idx] if (labels and idx < len(labels)) else derive_label(ckpt_path, model_name)
+        model_dir = out_dir / label
+        (model_dir / 'pngs' / 'tp').mkdir(parents=True, exist_ok=True)
+        (model_dir / 'pngs' / 'tn').mkdir(parents=True, exist_ok=True)
+        (model_dir / 'pngs' / 'fp').mkdir(parents=True, exist_ok=True)
+        (model_dir / 'pngs' / 'fn').mkdir(parents=True, exist_ok=True)
 
-    def normalize_meta(meta_obj, batch_size: int):
-        # Convert collated meta (dict of tensors) to list of dicts
-        if isinstance(meta_obj, dict):
-            out = []
-            for i in range(batch_size):
-                item = {}
-                for k, v in meta_obj.items():
-                    try:
-                        item[k] = v[i].item() if hasattr(v, 'shape') else v[i]
-                    except Exception:
-                        item[k] = None
-                out.append(item)
-            return out
-        elif isinstance(meta_obj, (list, tuple)):
-            return list(meta_obj)
-        else:
-            return [None] * batch_size
+        all_logits: List[torch.Tensor] = []
+        all_labels: List[torch.Tensor] = []
+        all_paths: List[str] = []
+        all_meta: List[dict] = []
 
-    with torch.no_grad():
-        for batch in test_loader:
-            if len(batch) == 4:
-                x, y, paths, meta = batch
-                meta_list = normalize_meta(meta, x.size(0))
-            elif len(batch) == 3:
-                x, y, paths = batch
-                meta_list = [None] * x.size(0)
+        def normalize_meta(meta_obj, batch_size: int):
+            if isinstance(meta_obj, dict):
+                out = []
+                for i in range(batch_size):
+                    item = {}
+                    for k, v in meta_obj.items():
+                        try:
+                            item[k] = v[i].item() if hasattr(v, 'shape') else v[i]
+                        except Exception:
+                            item[k] = None
+                    out.append(item)
+                return out
+            elif isinstance(meta_obj, (list, tuple)):
+                return list(meta_obj)
             else:
-                x, y = batch
-                paths = ["?"] * x.size(0)
-                meta_list = [None] * x.size(0)
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
-            logits = model(x)
-            all_logits.append(logits.cpu())
-            all_labels.append(y.cpu())
-            all_paths.extend(list(paths))
-            all_meta.extend(meta_list)
+                return [None] * batch_size
 
-            # Save PNGs for this batch
-            probs = torch.softmax(logits, dim=1)
-            preds = torch.argmax(probs, dim=1)
-            for i in range(x.size(0)):
-                truth = int(y[i].item())
-                pred = int(preds[i].item())
-                cls = 'tp' if (pred == 1 and truth == 1) else \
-                      'tn' if (pred == 0 and truth == 0) else \
-                      'fp' if (pred == 1 and truth == 0) else 'fn'
-                src = Path(all_paths[-x.size(0) + i]).name
-                overlay = f"pred={pred} truth={truth} file={src}"
-                out_path = out_dir / 'pngs' / cls / f"{Path(src).stem}.png"
-                # Marker based on meta
-                marker_x = None
-                m = meta_list[i]
-                try:
-                    if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
-                        marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
-                        # clip to crop
-                        marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
-                except Exception:
+        with torch.no_grad():
+            for batch in test_loader:
+                if len(batch) == 4:
+                    x, y, paths, meta = batch
+                    meta_list = normalize_meta(meta, x.size(0))
+                elif len(batch) == 3:
+                    x, y, paths = batch
+                    meta_list = [None] * x.size(0)
+                else:
+                    x, y = batch
+                    paths = ["?"] * x.size(0)
+                    meta_list = [None] * x.size(0)
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
+                logits = model(x)
+                all_logits.append(logits.cpu())
+                all_labels.append(y.cpu())
+                all_paths.extend(list(paths))
+                all_meta.extend(meta_list)
+
+                # Save PNGs for this batch
+                probs = torch.softmax(logits, dim=1)
+                preds = torch.argmax(probs, dim=1)
+                for i in range(x.size(0)):
+                    truth = int(y[i].item())
+                    pred = int(preds[i].item())
+                    cls = 'tp' if (pred == 1 and truth == 1) else \
+                          'tn' if (pred == 0 and truth == 0) else \
+                          'fp' if (pred == 1 and truth == 0) else 'fn'
+                    src = Path(all_paths[-x.size(0) + i]).name
+                    overlay = f"{label} pred={pred} truth={truth} file={src}"
+                    out_path = model_dir / 'pngs' / cls / f"{Path(src).stem}.png"
                     marker_x = None
-                save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
-                         cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
+                    m = meta_list[i]
+                    try:
+                        if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
+                            marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
+                            marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
+                    except Exception:
+                        marker_x = None
+                    save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
+                             cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
 
-    logits_cat = torch.cat(all_logits, dim=0)
-    labels_cat = torch.cat(all_labels, dim=0)
-    metrics = compute_metrics(labels_cat, logits_cat)
+        logits_cat = torch.cat(all_logits, dim=0)
+        labels_cat = torch.cat(all_labels, dim=0)
+        metrics = compute_metrics(labels_cat, logits_cat)
+        # Save per-model report
+        with open(model_dir / 'report.txt', 'w') as f:
+            for k, v in metrics.items():
+                f.write(f"{k}: {v}\n")
 
-    # Save metrics report
-    report_txt = out_dir / 'report.txt'
-    with open(report_txt, 'w') as f:
-        f.write(f"seed_used: {seed_to_use}\n")
-        for k, v in metrics.items():
-            f.write(f"{k}: {v}\n")
-    # Also CSV
-    report_csv = out_dir / 'report.csv'
-    import csv
-    with open(report_csv, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(list(metrics.keys()))
-        writer.writerow([metrics[k] for k in metrics.keys()])
+        # Collect for combined plots
+        probs_pos = torch.softmax(logits_cat, dim=1)[:, 1].numpy()
+        y_true = labels_cat.numpy().astype(np.int32)
+        all_results[label] = {
+            'probs': probs_pos,
+            'y_true': y_true,
+            'meta': np.array([m.get('dist_from_center_frac', np.nan) if isinstance(m, dict) else np.nan for m in all_meta], dtype=float)
+        }
 
-    print(f"Saved report to {report_txt} and {report_csv}")
+        # Also save individual PR/ROC per model
+        fpr, tpr, _ = roc_curve(y_true, probs_pos)
+        roc_auc = auc(fpr, tpr)
+        plt.figure(figsize=(8, 5))
+        plt.plot(fpr, tpr, label=f'{label} (AUC={roc_auc:.3f})')
+        plt.plot([0,1],[0,1],'k--',alpha=0.5)
+        plt.xlabel('FPR'); plt.ylabel('TPR'); plt.title(f'ROC: {label}'); plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout()
+        plt.savefig(model_dir / 'roc_curve.png', dpi=150); plt.close()
 
-    # Threshold sweep plots
-    probs_pos = torch.softmax(logits_cat, dim=1)[:, 1].numpy()
-    y_true = labels_cat.numpy().astype(np.int32)
+        prec, rec, _ = precision_recall_curve(y_true, probs_pos)
+        plt.figure(figsize=(8,5))
+        plt.plot(rec, prec, label=label)
+        plt.xlabel('Recall'); plt.ylabel('Precision'); plt.title(f'PR: {label}'); plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout()
+        plt.savefig(model_dir / 'pr_curve.png', dpi=150); plt.close()
 
-    # Precision-Recall vs threshold
-    precisions, recalls, pr_thresholds = precision_recall_curve(y_true, probs_pos)
+    # Combined plots across models
+    # Use y_true from first model as reference (should be identical)
+    # ROC
     plt.figure(figsize=(8, 5))
-    plt.plot(recalls, precisions, label='PR curve')
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_dir / 'pr_curve.png', dpi=150)
-    plt.close()
+    for label, res in all_results.items():
+        y_true = res['y_true']; probs = res['probs']
+        fpr, tpr, _ = roc_curve(y_true, probs)
+        roc_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, label=f'{label} (AUC={roc_auc:.3f})')
+    plt.plot([0,1],[0,1],'k--',alpha=0.5)
+    plt.xlabel('False Positive Rate'); plt.ylabel('True Positive Rate'); plt.title('ROC (combined)')
+    plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'roc_curve_all.png', dpi=150); plt.close()
 
-    # ROC curve and AUC
-    fpr, tpr, roc_thresholds = roc_curve(y_true, probs_pos)
-    roc_auc = auc(fpr, tpr)
-    plt.figure(figsize=(8, 5))
-    plt.plot(fpr, tpr, label=f'ROC (AUC={roc_auc:.3f})')
-    plt.plot([0,1], [0,1], 'k--', alpha=0.5)
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_dir / 'roc_curve.png', dpi=150)
-    plt.close()
+    # PR combined
+    plt.figure(figsize=(8,5))
+    for label, res in all_results.items():
+        y_true = res['y_true']; probs = res['probs']
+        prec, rec, _ = precision_recall_curve(y_true, probs)
+        plt.plot(rec, prec, label=label)
+    plt.xlabel('Recall'); plt.ylabel('Precision'); plt.title('PR Curve (combined)')
+    plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'pr_curve_all.png', dpi=150); plt.close()
 
-    # Precision and Recall as function of threshold
+    # Precision/Recall vs threshold combined
+    plt.figure(figsize=(8,5))
     thresholds = np.linspace(0.0, 1.0, 101)
-    prec_at = []
-    rec_at = []
-    for thr in thresholds:
-        pred = (probs_pos >= thr).astype(np.int32)
-        tp = int(((pred == 1) & (y_true == 1)).sum())
-        fp = int(((pred == 1) & (y_true == 0)).sum())
-        fn = int(((pred == 0) & (y_true == 1)).sum())
-        prec_at.append(tp / (tp + fp) if (tp + fp) > 0 else 0.0)
-        rec_at.append(tp / (tp + fn) if (tp + fn) > 0 else 0.0)
-    plt.figure(figsize=(8, 5))
-    plt.plot(thresholds, prec_at, label='Precision')
-    plt.plot(thresholds, rec_at, label='Recall')
-    plt.xlabel('Threshold')
-    plt.ylabel('Score')
-    plt.title('Precision/Recall vs Threshold')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_dir / 'precision_recall_vs_threshold.png', dpi=150)
-    plt.close()
+    for label, res in all_results.items():
+        y_true = res['y_true']; probs = res['probs']
+        prec_at=[]; rec_at=[]
+        for thr in thresholds:
+            pred = (probs >= thr).astype(np.int32)
+            tp = int(((pred == 1) & (y_true == 1)).sum())
+            fp = int(((pred == 1) & (y_true == 0)).sum())
+            fn = int(((pred == 0) & (y_true == 1)).sum())
+            prec_at.append(tp / (tp + fp) if (tp + fp) > 0 else 0.0)
+            rec_at.append(tp / (tp + fn) if (tp + fn) > 0 else 0.0)
+        plt.plot(thresholds, prec_at, label=f'{label} Precision')
+        plt.plot(thresholds, rec_at, linestyle='--', label=f'{label} Recall')
+    plt.xlabel('Threshold'); plt.ylabel('Score'); plt.title('Precision/Recall vs Threshold (combined)')
+    plt.legend(ncol=2, fontsize=8); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'precision_recall_vs_threshold_all.png', dpi=150); plt.close()
 
-    # Performance vs distance from center
-    dist_fracs = []
-    for m in all_meta:
-        if isinstance(m, dict) and 'dist_from_center_frac' in m:
-            try:
-                dist_fracs.append(float(m['dist_from_center_frac']))
-            except Exception:
-                dist_fracs.append(np.nan)
-        else:
-            dist_fracs.append(np.nan)
-    dist_fracs = np.array(dist_fracs)
-
-    preds_bin = (probs_pos >= 0.5).astype(np.int32)
-    correct = (preds_bin == y_true).astype(np.float32)
-
+    # Accuracy vs offset combined
+    plt.figure(figsize=(8,5))
     bins = np.linspace(0, 1.0, 11)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
-    acc_by_bin = []
-    for b0, b1 in zip(bins[:-1], bins[1:]):
-        mask = (dist_fracs >= b0) & (dist_fracs < b1) & (~np.isnan(dist_fracs))
-        if mask.sum() > 0:
-            acc_by_bin.append(float(correct[mask].mean()))
-        else:
-            acc_by_bin.append(np.nan)
-    plt.figure(figsize=(8, 5))
-    plt.plot(bin_centers, acc_by_bin, marker='o')
-    plt.xlabel('Distance from Center (fraction of half-length)')
-    plt.ylabel('Accuracy')
-    plt.title('Test Accuracy vs Call Offset from Center')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out_dir / 'accuracy_vs_center_offset.png', dpi=150)
-    plt.close()
+    for label, res in all_results.items():
+        dist_fracs = res['meta']
+        y_true = res['y_true']; probs = res['probs']
+        preds_bin = (probs >= 0.5).astype(np.int32)
+        correct = (preds_bin == y_true).astype(np.float32)
+        acc_by_bin = []
+        for b0, b1 in zip(bins[:-1], bins[1:]):
+            mask = (dist_fracs >= b0) & (dist_fracs < b1) & (~np.isnan(dist_fracs))
+            if mask.sum() > 0:
+                acc_by_bin.append(float(correct[mask].mean()))
+            else:
+                acc_by_bin.append(np.nan)
+        plt.plot(bin_centers, acc_by_bin, marker='o', label=label)
+    plt.xlabel('Distance from Center (fraction of half-length)'); plt.ylabel('Accuracy'); plt.title('Accuracy vs Call Offset (combined)')
+    plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'accuracy_vs_center_offset_all.png', dpi=150); plt.close()
 
 
 if __name__ == '__main__':

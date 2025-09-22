@@ -220,6 +220,17 @@ def main():
     device = get_device(args.device)
     print(f"Device: {device}")
 
+    # Ensure experiment directory exists and save args.pkl for reproducibility
+    exp_dir = Path(args.exp_dir)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import pickle
+        with open(exp_dir / 'args.pkl', 'wb') as f:
+            pickle.dump(args, f)
+        print(f"Saved args to {exp_dir / 'args.pkl'}")
+    except Exception as e:
+        print(f"Warning: failed to save args.pkl: {e}")
+
     # Create loaders
     if args.split_strategy == 'internal':
         train_loader, val_loader, test_loader = make_dataloaders(

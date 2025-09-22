@@ -212,6 +212,9 @@ def main():
     ap.add_argument('--main-metric', type=str, default='f1', choices=['f1','acc','auc','precision','recall'], help='Validation metric to select best model')
     args = ap.parse_args()
 
+    if not hasattr(args, 'task') or args.task is None:
+        args.task = 'finwhale_cnn'
+
     torch.manual_seed(args.seed)
 
     device = get_device(args.device)

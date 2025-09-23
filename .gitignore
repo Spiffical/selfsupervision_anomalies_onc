@@ -55,3 +55,6 @@ scripts/finwhale_quick_check.py
 scripts/finwhale_split_experiments.py
 finwhale_test_runs/
 scripts/visualize_augmentation.py
+scripts/test_spectrogram_params.py
+
+tmp_spec_test/

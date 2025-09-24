@@ -58,3 +58,5 @@ scripts/visualize_augmentation.py
 scripts/test_spectrogram_params.py
 
 tmp_spec_test/
+notebooks/verify_mat_vs_h5_pipeline.ipynb
+notebooks/test_unlabeled_spectrograms_multiclass.ipynb

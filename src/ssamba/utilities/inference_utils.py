@@ -11,6 +11,8 @@ from .spectrogram_utils import (
 	load_mat_spectrogram,
 	normalize_spectrogram,
 	preprocess_with_resize_ctf,
+	preprocess_to_tensor,
+	resize_to_target,
 )
 
 # Optional tqdm import
@@ -153,6 +155,86 @@ def build_mat_dataloader(
 	if torch is None:
 		raise RuntimeError("Torch is required for build_mat_dataloader but is not available")
 	ds = MatSpectrogramDataset(
+		paths=paths,
+		expected_shape=expected_shape,
+		target_size=target_size,
+		dataset_mean=dataset_mean,
+		dataset_std=dataset_std,
+		amount=amount,
+	)
+	return DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+
+# ---------------------------------------------------------
+# H5-like pipeline: resize -> normalize -> [C, F, T]
+# ---------------------------------------------------------
+
+class MatSpectrogramDatasetH5Like(Dataset):
+	"""
+	Dataset for .mat spectrogram files using H5-like preprocessing order:
+	- Resize to target size first
+	- Normalize using dataset statistics or percentile-based method
+	- Convert to tensor shape [C, F, T] via preprocess_to_tensor
+	"""
+
+	def __init__(
+		self,
+		paths: List[str],
+		expected_shape: Tuple[int, int],
+		target_size: Tuple[int, int],
+		dataset_mean: Optional[float] = None,
+		dataset_std: Optional[float] = None,
+		amount: float = 1.0,
+	):
+		if torch is None:
+			raise RuntimeError("Torch is required for MatSpectrogramDatasetH5Like but is not available")
+		self.paths = paths
+		self.expected_shape = expected_shape
+		self.target_size = target_size
+		self.dataset_mean = dataset_mean
+		self.dataset_std = dataset_std
+		self.amount = amount
+
+	def __len__(self) -> int:
+		return len(self.paths)
+
+	def __getitem__(self, index: int):
+		path = self.paths[index]
+		arr = load_mat_spectrogram(path, self.expected_shape)
+		# H5-like order: resize -> normalize
+		arr = resize_to_target(arr, self.target_size)
+		arr = normalize_spectrogram(
+			arr,
+			dataset_mean=self.dataset_mean,
+			dataset_std=self.dataset_std,
+			amount=self.amount,
+		)
+		tensor = preprocess_to_tensor(arr)  # [C, F, T]
+		# Optional source id from filename prefix
+		try:
+			import os
+			source = os.path.basename(path).split('_')[0]
+		except Exception:
+			source = None
+		return tensor, -1, source
+
+
+def build_mat_dataloader_h5like(
+	paths: List[str],
+	expected_shape: Tuple[int, int],
+	target_size: Tuple[int, int],
+	batch_size: int = 16,
+	num_workers: int = 0,
+	dataset_mean: Optional[float] = None,
+	dataset_std: Optional[float] = None,
+	amount: float = 1.0,
+):
+	"""
+	Create a DataLoader over .mat files using H5-like preprocessing (resize -> normalize -> [C,F,T]).
+	"""
+	if torch is None:
+		raise RuntimeError("Torch is required for build_mat_dataloader_h5like but is not available")
+	ds = MatSpectrogramDatasetH5Like(
 		paths=paths,
 		expected_shape=expected_shape,
 		target_size=target_size,

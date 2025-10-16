@@ -15,6 +15,8 @@ Example:
 import os
 import sys
 import argparse
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import warnings
 from pathlib import Path
@@ -60,6 +62,9 @@ def main():
     ap.add_argument('--devices', type=str, help='Comma-separated device codes (e.g. ICLISTENHF1951,ICLISTENHF1354)')
     ap.add_argument('--all', action='store_true', help='Download for all devices discovered from deployments')
     ap.add_argument('--spectrograms-per-batch', type=int, default=288, help='5-min spectrograms per request (24h=288)')
+    ap.add_argument('--max-wait-minutes', type=int, default=45, help='Max time to wait for runs to be downloadable')
+    ap.add_argument('--poll-interval-seconds', type=int, default=30, help='Polling interval between download attempts')
+    ap.add_argument('--max-download-workers', type=int, default=4, help='Max parallel downloads during polling')
     args = ap.parse_args()
 
     onc_token, data_dir = load_config(data_dir_override=args.data_dir)
@@ -97,26 +102,64 @@ def main():
     print_status(f"Devices with data: {len(ok_devices)} | skipped (no data): {len(skipped_devices)}", 'INFO')
     if skipped_devices:
         print_status(f"Skipping: {', '.join(skipped_devices[:10])}{' ...' if len(skipped_devices)>10 else ''}", 'INFO')
-    # Iterate devices; for each, request MAT data product covering 24 hours
-    # SpectrogramDownloader handles path setup and processing
+    # Phase A: submit all runs (no-wait) and persist queue
+    print_status('Submitting data product runs (no-wait)...', 'INFO')
+    run_records = []
     for dev in ok_devices:
         try:
-            print_status(f"Downloading last 24h for {dev} starting {start_dt.isoformat(timespec='seconds')}Z", 'PROGRESS')
-            # Only create directories for devices we will actually download
+            # Ensure per-device output directories are set
             dl.setup_directories('mat', dev, 'last24h')
-            # ONC client sometimes returns a harmless RuntimeWarning for metadata index; suppress it
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', message='Metadata file.*', category=RuntimeWarning)
-                dl.download_MAT_or_PNG(
+                rec = dl.submit_mat_run_no_wait(
                     deviceCode=dev,
-                    start_date_object=start_dt,
-                    filetype='mat',
+                    start_dt=start_dt,
+                    end_dt=end_dt,
                     spectrograms_per_batch=args.spectrograms_per_batch,
-                    download_flac=False,
                 )
-            print_status(f"Finished {dev}", 'SUCCESS')
+            run_records.append(rec)
+            print_status(f"Submitted {dev} (dpRequestId={rec['dpRequestId']})", 'SUCCESS')
         except Exception as e:
-            print_status(f"Failed {dev}: {e}", 'ERROR')
+            print_status(f"Submit failed {dev}: {e}", 'ERROR')
+
+    # Save queue
+    dl.save_runs('last24h', run_records)
+    print_status(f"Saved run queue: {dl.runs_file_path('last24h')}", 'INFO')
+
+    # Phase B: poll and download until all complete or timeout
+    deadline = time.time() + (args.max_wait_minutes * 60)
+    remaining = lambda: [r for r in run_records if r.get('status') != 'downloaded']
+    pass_num = 0
+    while time.time() < deadline and remaining():
+        pass_num += 1
+        todo = remaining()
+        print_status(f"Poll pass {pass_num}: attempting {len(todo)} downloads", 'PROGRESS')
+
+        with ThreadPoolExecutor(max_workers=args.max_download_workers) as ex:
+            futures = {ex.submit(dl.try_download_run, r): r for r in todo}
+            for fu in as_completed(futures):
+                try:
+                    status, updated = fu.result()
+                    # Update in-memory record
+                    for i, r in enumerate(run_records):
+                        if r['dpRequestId'] == updated['dpRequestId']:
+                            run_records[i] = updated
+                            break
+                except Exception as e:
+                    base = futures[fu]
+                    print_status(f"Download attempt error for {base.get('deviceCode')} dpRequestId={base.get('dpRequestId')}: {e}", 'ERROR')
+
+        # Persist after each pass
+        dl.save_runs('last24h', run_records)
+
+        # If still pending, sleep
+        if remaining():
+            time.sleep(args.poll_interval_seconds)
+
+    # Summary
+    done = [r for r in run_records if r.get('status') == 'downloaded']
+    pend = remaining()
+    print_status(f"Completed: {len(done)} | Pending: {len(pend)}", 'INFO')
 
 
 if __name__ == '__main__':

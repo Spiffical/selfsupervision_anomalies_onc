@@ -475,10 +475,11 @@ def training_loop(model, train_loader, optimizer, scheduler, metrics_tracker, tr
                     labels = torch.clamp(labels, 0, num_classes - 1)
                 loss = args.loss_fn(output, labels)
             else:
-                # For binary classification (BCE loss), squeeze the output to match target shape
+                # For binary classification (BCE loss), squeeze only last dim to keep batch dimension
                 if 'pretrain' not in args.task:
-                    output = output.squeeze()
-                loss = args.loss_fn(output, labels)
+                    output = output.squeeze(-1)
+                # Ensure target matches shape [B]
+                loss = args.loss_fn(output, labels.view(-1))
 
         # Backward pass
         optimizer.zero_grad()
@@ -604,10 +605,11 @@ def validation_loop(model, val_loader, val_collector, args):
                         labels = torch.clamp(labels, 0, num_classes - 1)
                     loss = args.loss_fn(output, labels)
                 else:
-                    # For binary classification (BCE loss), squeeze the output to match target shape
+                    # For binary classification (BCE loss), squeeze only last dim to keep batch dimension
                     if 'pretrain' not in args.task:
-                        output = output.squeeze()
-                    loss = args.loss_fn(output, labels)
+                        output = output.squeeze(-1)
+                    # Ensure target matches shape [B]
+                    loss = args.loss_fn(output, labels.view(-1))
                 output = (output, loss)  # Pack output and loss together
             
             # Update metrics

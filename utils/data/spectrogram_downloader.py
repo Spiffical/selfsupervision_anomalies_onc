@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import datetime as dt
 from datetime import date, datetime, timedelta, timezone
@@ -15,6 +16,7 @@ import concurrent.futures
 from typing import List, Dict, Any
 import time
 import logging
+from threading import Lock
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,6 +32,7 @@ def ensure_timezone_aware(dt_obj, tz=timezone.utc):
 class SpectrogramDownloader:
     def __init__(self, ONC_token, parent_dir):
         self.onc = ONC(ONC_token)
+        self._onc_token = ONC_token
         self.parent_dir = parent_dir
         self.delim = '/' if os.name == 'posix' else '\\'
         # Initialize deployment checker
@@ -41,6 +44,8 @@ class SpectrogramDownloader:
         self.max_workers = 4
         # Batch size for API requests
         self.batch_size = 10
+        # Internal lock to guard path-sensitive processing
+        self._path_lock = Lock()
         
     def setup_directories(self, filetype, device_code=None, download_method=None, start_date=None, end_date=None, duration_seconds=None):
         """Setup directory structure with optional device, method, and date organization"""
@@ -107,6 +112,132 @@ class SpectrogramDownloader:
         end_object = start_date_object + time_delta
         end_time_str = end_object.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
         return start_time_str, end_time_str
+
+    # ---------- Parallel run helpers ----------
+    def runs_file_path(self, kind: str = 'last24h') -> str:
+        """Return path to JSON queue for submitted runs."""
+        queue_dir = os.path.join(self.parent_dir, '.onc_runs')
+        os.makedirs(queue_dir, exist_ok=True)
+        return os.path.join(queue_dir, f'{kind}_runs.json')
+
+    def load_runs(self, kind: str = 'last24h') -> List[Dict[str, Any]]:
+        """Load run queue JSON; return empty list if missing/corrupt."""
+        path = self.runs_file_path(kind)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return []
+
+    def save_runs(self, kind: str, runs: List[Dict[str, Any]]) -> None:
+        """Atomically write run queue JSON."""
+        path = self.runs_file_path(kind)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(runs, f, indent=2)
+        os.replace(tmp_path, path)
+
+    def _format_iso_utc(self, dt_obj: datetime) -> str:
+        dt_obj = ensure_timezone_aware(dt_obj)
+        return dt_obj.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+    def submit_mat_run_no_wait(self, deviceCode: str, start_dt: datetime, end_dt: datetime, spectrograms_per_batch: int = 6) -> Dict[str, Any]:
+        """Submit MAT data product run without waiting; return run record for polling/download later."""
+        # Build filters matching existing MAT path
+        time_delta = end_dt - start_dt
+        start_time, end_time = self.start_and_end_strings(start_dt, time_delta)
+        filters = {
+            'dataProductCode': 'HSD',
+            'deviceCode': deviceCode,
+            'dateFrom': start_time,
+            'dateTo': end_time,
+            'extension': 'mat',
+            'dpo_hydrophoneDataDiversionMode': 'OD',
+            'dpo_spectralDataDownsample': 2,
+        }
+
+        # Step 1: request
+        result = self.onc.requestDataProduct(filters)
+        dp_request_id = result['dpRequestId'] if isinstance(result, dict) else result
+        logger.info(f"Submitted request (no-wait) dpRequestId={dp_request_id} for {deviceCode}")
+
+        # Step 2: run (no wait)
+        run_data = self.onc.runDataProduct(dp_request_id, waitComplete=False)
+        run_ids = None
+        if isinstance(run_data, dict) and 'runIds' in run_data:
+            run_ids = run_data['runIds']
+
+        # Compose run record for queue
+        rec: Dict[str, Any] = {
+            'deviceCode': deviceCode,
+            'dpRequestId': dp_request_id,
+            'runIds': run_ids,
+            'start': start_time,
+            'end': end_time,
+            'outPath': self.input_path,
+            'status': 'submitted',
+            'createdAt': self._format_iso_utc(datetime.now(timezone.utc)),
+        }
+        return rec
+
+    def try_download_run(self, rec: Dict[str, Any], allow_rerun: bool = True) -> (str, Dict[str, Any]):
+        """Attempt to download a previously submitted run. Returns (status, updated_rec).
+        status: 'pending' | 'downloaded' | 'error'"""
+        # Prepare a per-call ONC client to avoid cross-thread outPath races
+        local_out_path = rec.get('outPath')
+        if local_out_path:
+            onc_client = ONC(self._onc_token)
+            onc_client.outPath = local_out_path
+            # Ensure directories exist prior to download
+            os.makedirs(local_out_path, exist_ok=True)
+            os.makedirs(os.path.join(local_out_path, 'processed'), exist_ok=True)
+            os.makedirs(os.path.join(local_out_path, 'rejects'), exist_ok=True)
+        else:
+            onc_client = self.onc
+
+        # Ensure we have a runId
+        run_id = None
+        if isinstance(rec.get('runIds'), list) and rec['runIds']:
+            run_id = rec['runIds'][0]
+        if run_id is None and allow_rerun and rec.get('dpRequestId'):
+            try:
+                run_data = onc_client.runDataProduct(rec['dpRequestId'], waitComplete=False)
+                if isinstance(run_data, dict) and run_data.get('runIds'):
+                    rec['runIds'] = run_data['runIds']
+                    run_id = rec['runIds'][0]
+            except Exception as e:
+                logger.debug(f"runDataProduct (no-wait) not ready for dpRequestId={rec.get('dpRequestId')}: {e}")
+
+        if run_id is None:
+            # Not ready yet
+            rec['status'] = 'pending'
+            return 'pending', rec
+
+        # Try download
+        try:
+            onc_client.downloadDataProduct(run_id)
+            # Process downloaded files under a lock to avoid path interference
+            if local_out_path:
+                with self._path_lock:
+                    self.input_path = local_out_path
+                    self.processed_path = os.path.join(local_out_path, 'processed', '')
+                    self.anom_path = os.path.join(local_out_path, 'rejects', '')
+                    self.process_spectrograms('mat')
+            else:
+                self.process_spectrograms('mat')
+            rec['status'] = 'downloaded'
+            rec['completedAt'] = self._format_iso_utc(datetime.now(timezone.utc))
+            return 'downloaded', rec
+        except Exception as e:
+            # Likely not yet ready; keep pending
+            logger.debug(f"download not ready for runId={run_id}: {e}")
+            rec['status'] = 'pending'
+            return 'pending', rec
     
     # Function to check if a file for a given date already exists
     def check_existing_files(self, device_code, date_list):

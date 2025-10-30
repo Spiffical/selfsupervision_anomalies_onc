@@ -14,6 +14,8 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Any, Optional, Union
 import concurrent.futures
 from dataclasses import dataclass
+import contextlib
+from io import StringIO
 
 try:
     from dateutil import parser as dtparse
@@ -55,6 +57,12 @@ class HydrophoneDeploymentChecker:
             debug: Enable debug logging
         """
         self.onc = ONC(onc_token, showInfo=debug)
+        # Best-effort: quiet the ONC client if it supports these toggles
+        for attr, value in (('showInfo', False), ('showWarnings', False), ('showErrors', False)):
+            try:
+                setattr(self.onc, attr, value)
+            except Exception:
+                pass
         self.debug = debug
         self._location_cache = {}
         
@@ -446,7 +454,9 @@ class HydrophoneDeploymentChecker:
                 'returnOptions': 'all'
             }
             try:
-                list_result = self.onc.getArchivefile(filters=archive_filters, allPages=True)
+                # Suppress verbose ONC client stdout/stderr warnings during availability checks
+                with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+                    list_result = self.onc.getArchivefile(filters=archive_filters, allPages=True)
                 has_files = bool(list_result.get("files", []))
                 return device_code, has_files
             except Exception as e:

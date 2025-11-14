@@ -5,34 +5,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/00-config.sh"
 
 echo "[+] Data download script starting..."
-echo "[+] Target data directory: $DATA_DIR"
-mkdir -p "$DATA_DIR"
-cd "$DATA_DIR"
+echo "[+] Root data directory: $DATA_DIR"
+echo "[+] Models dir:          $TRAINED_MODELS_DIR"
+echo "[+] Pretrain dir:        $PRETRAIN_DIR"
+echo "[+] Finetune dir:        $FINETUNE_DIR"
+echo "[+] Datasets dir:        $DATASETS_DIR"
 
+mkdir -p "$PRETRAIN_DIR" "$FINETUNE_DIR" "$DATASETS_DIR"
+
+if ! command -v wget >/dev/null 2>&1; then
+    echo "[!] ERROR: wget not found."
+    exit 1
+fi
 echo "[+] Using wget from: $(command -v wget)"
 
-# Helper to download if missing
 download_if_missing () {
     local url="$1"
-    local outname="$2"
-    if [ -f "$outname" ]; then
-        echo "[+] $outname already exists, skipping download."
+    local outpath="$2"
+    local outdir
+    outdir="$(dirname "$outpath")"
+    mkdir -p "$outdir"
+
+    if [ -f "$outpath" ]; then
+        echo "[+] $(basename "$outpath") already exists in $(dirname "$outpath"), skipping."
     else
-        echo "[+] Downloading $outname ..."
-        wget -O "$outname" "$url"
+        echo "[+] Downloading $(basename "$outpath") to $outdir ..."
+        wget -O "$outpath" "$url"
     fi
 }
 
-# 1) Finetuned model
-download_if_missing "$FINETUNE_MODEL_URL" "ft-cls_best_checkpoint.pth"
+# --- Finetune model + args ---
+download_if_missing "$FINETUNE_CKPT_URL" "$FINETUNE_DIR/ft-cls_best_checkpoint.pth"
+download_if_missing "$FINETUNE_ARGS_URL" "$FINETUNE_DIR/args.pkl"
 
-# 2) Pretrained model
-download_if_missing "$PRETRAIN_MODEL_URL" "pretrain-joint_best_checkpoint.pth"
+# --- Pretrain model + args ---
+download_if_missing "$PRETRAIN_CKPT_URL" "$PRETRAIN_DIR/pretrain-joint_best_checkpoint.pth"
+download_if_missing "$PRETRAIN_ARGS_URL" "$PRETRAIN_DIR/args.pkl"
 
-# 3) Dataset
-download_if_missing "$DATASET_URL" "different_locations_incl_backgroundpipelinenormals_multilabel.h5"
+# --- Datasets (full + small) ---
+download_if_missing "$DATASET_FULL_URL"  "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
+download_if_missing "$DATASET_SMALL_URL" "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
 
-echo "[+] Final contents of $DATA_DIR:"
-ls -lah
+echo
+echo "[+] Final layout under $DATA_DIR:"
+find "$DATA_DIR" -maxdepth 3 -type f -printf "    %P (%k KB)\n"
 
 echo "[+] Data download script finished successfully."

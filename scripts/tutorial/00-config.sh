@@ -4,23 +4,17 @@
 # Where the data should live INSIDE THE STUDENT PROJECT/COMPUTE SERVER.
 DATA_DIR="$HOME/data"
 
-# URL to your dataset/model (publish from your instructor project OR Drive gdown link)
-# This can be a Google Drive “uc?export=download&id=...” link or a published CoCalc link.
-DATA_URL="https://drive.google.com/drive/folders/1FyKnK__lNM4-LcZnfr48JQZ_gIUK7uZ9?usp=drive_link"
+# Hugging Face direct URLs
+FINETUNE_MODEL_URL="https://huggingface.co/merileo/finetune-amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones-noexclude/resolve/main/ft-cls_best_checkpoint.pth"
+PRETRAIN_MODEL_URL="https://huggingface.co/merileo/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones_FINAL/resolve/main/pretrain-joint_best_checkpoint.pth"
+DATASET_URL="https://huggingface.co/merileo/different_locations_incl_backgroundpipelinenormals_multilabel/resolve/main/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
 
-# Repo directory (the repo they just cloned)
+# Repo + venv / kernel settings (unchanged)
 REPO_DIR="$HOME/selfsupervision_anomalies_onc"
-
-# Virtual env location
 VENV_DIR="$HOME/.venvs/onc-tutorial"
-
-# Jupyter kernel name
 KERNEL_NAME="onc-tutorial"
 KERNEL_DISPLAY_NAME="ONC Tutorial (PyTorch system)"
-
-# Python to use (the one on the compute server)
 PYTHON_BIN="python3"
 
-# If your CFS needs creating:
 mkdir -p "$DATA_DIR"
 mkdir -p "$(dirname "$VENV_DIR")"

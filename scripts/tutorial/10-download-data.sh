@@ -30,19 +30,25 @@ download_if_missing () {
         echo "[+] $(basename "$outpath") already exists in $(dirname "$outpath"), skipping."
     else
         echo "[+] Downloading $(basename "$outpath") to $outdir ..."
-        wget -O "$outpath" "$url"
+        wget -q --show-progress -O "$outpath" "$url"
     fi
 }
 
-# --- Finetune model + args ---
+# ---------------------------------------------------------------------------
+# Finetune model + args
+# ---------------------------------------------------------------------------
 download_if_missing "$FINETUNE_CKPT_URL" "$FINETUNE_DIR/ft-cls_best_checkpoint.pth"
 download_if_missing "$FINETUNE_ARGS_URL" "$FINETUNE_DIR/args.pkl"
 
-# --- Pretrain model + args ---
+# ---------------------------------------------------------------------------
+# Pretrain model + args
+# ---------------------------------------------------------------------------
 download_if_missing "$PRETRAIN_CKPT_URL" "$PRETRAIN_DIR/pretrain-joint_best_checkpoint.pth"
 download_if_missing "$PRETRAIN_ARGS_URL" "$PRETRAIN_DIR/args.pkl"
 
-# --- Datasets (full + small) ---
+# ---------------------------------------------------------------------------
+# Datasets (full + small)
+# ---------------------------------------------------------------------------
 download_if_missing "$DATASET_FULL_URL"  "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
 download_if_missing "$DATASET_SMALL_URL" "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
 

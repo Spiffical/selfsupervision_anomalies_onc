@@ -1,40 +1,54 @@
 #!/usr/bin/env bash
-# Common config for all setup scripts
 
-# Where the data should live INSIDE THE STUDENT PROJECT/COMPUTE SERVER.
-DATA_DIR="$HOME/data"
+###############################################################################
+# Tutorial configuration: paths + download URLs
+###############################################################################
 
-# Subdirectories
+# Root data dir on each compute server (change if you like)
+DATA_DIR="/home/user/data"
+
+# Local subdirectories
 TRAINED_MODELS_DIR="$DATA_DIR/trained_models"
 PRETRAIN_DIR="$TRAINED_MODELS_DIR/pretrain"
 FINETUNE_DIR="$TRAINED_MODELS_DIR/finetune"
 DATASETS_DIR="$DATA_DIR/datasets"
 
-# Base HF URL
-HF_BASE_URL="https://huggingface.co/merileo/onc-ssl-tutorial/resolve/main"
+# Base public GCS URL
+GCS_BASE="https://storage.googleapis.com/onc-ssl-tutorial-data"
 
-# Long run-name subdirs on HF
-FT_RUN_SUBDIR="finetune/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones-noexclude"
-PT_RUN_SUBDIR="pretrain/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones_FINAL"
+# ---------------------------------------------------------------------------
+# Models we actually use in the tutorial
+# ---------------------------------------------------------------------------
 
-# Finetune model + args
-FINETUNE_CKPT_URL="$HF_BASE_URL/$FT_RUN_SUBDIR/models/ft-cls_best_checkpoint.pth"
-FINETUNE_ARGS_URL="$HF_BASE_URL/$FT_RUN_SUBDIR/args.pkl"
+# GCS subdirs for the chosen runs
+FT_RUN_SUBDIR="trained-models/finetune/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones-noexclude"
+PT_RUN_SUBDIR="trained-models/pretrain/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones_FINAL"
 
-# Pretrain model + args
-PRETRAIN_CKPT_URL="$HF_BASE_URL/$PT_RUN_SUBDIR/models/pretrain-joint_best_checkpoint.pth"
-PRETRAIN_ARGS_URL="$HF_BASE_URL/$PT_RUN_SUBDIR/args.pkl"
+# Finetune model + args (classification model)
+FINETUNE_CKPT_URL="$GCS_BASE/$FT_RUN_SUBDIR/models/ft-cls_best_checkpoint.pth"
+FINETUNE_ARGS_URL="$GCS_BASE/$FT_RUN_SUBDIR/args.pkl"
 
-# Datasets in repo
-DATASET_FULL_URL="$HF_BASE_URL/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
-DATASET_SMALL_URL="$HF_BASE_URL/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
+# Pretrain model + args (self-supervised backbone)
+PRETRAIN_CKPT_URL="$GCS_BASE/$PT_RUN_SUBDIR/models/pretrain-joint_best_checkpoint.pth"
+PRETRAIN_ARGS_URL="$GCS_BASE/$PT_RUN_SUBDIR/args.pkl"
 
-# Repo + venv / kernel settings
+# ---------------------------------------------------------------------------
+# Datasets (full + small)
+# ---------------------------------------------------------------------------
+
+DATASET_FULL_URL="$GCS_BASE/datasets/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
+DATASET_SMALL_URL="$GCS_BASE/datasets/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
+
+# ---------------------------------------------------------------------------
+# Repo + venv / kernel settings (as before)
+# ---------------------------------------------------------------------------
+
 REPO_DIR="$HOME/selfsupervision_anomalies_onc"
 VENV_DIR="$HOME/.venvs/onc-tutorial"
 KERNEL_NAME="onc-tutorial"
 KERNEL_DISPLAY_NAME="ONC Tutorial (PyTorch system)"
 PYTHON_BIN="python3"
 
+# Ensure directories exist
 mkdir -p "$TRAINED_MODELS_DIR" "$PRETRAIN_DIR" "$FINETUNE_DIR" "$DATASETS_DIR"
 mkdir -p "$(dirname "$VENV_DIR")"

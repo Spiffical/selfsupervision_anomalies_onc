@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ---------------- Logging setup ----------------
+LOG_DIR="$HOME"
+LOG_FILE="$LOG_DIR/onc-tutorial-download-$(date +'%Y%m%d-%H%M%S').log"
+
+mkdir -p "$LOG_DIR"
+
+# Send all stdout/stderr to both console and log file
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "[+] Logging download output to: $LOG_FILE"
+echo
+
+# ---------------- Script body ------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/00-config.sh"
 
@@ -56,4 +69,6 @@ echo
 echo "[+] Final layout under $DATA_DIR:"
 find "$DATA_DIR" -maxdepth 3 -type f -printf "    %P (%k KB)\n"
 
+echo
 echo "[+] Data download script finished successfully."
+echo "[+] Full log saved at: $LOG_FILE"

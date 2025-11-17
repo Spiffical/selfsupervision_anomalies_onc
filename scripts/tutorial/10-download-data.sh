@@ -43,7 +43,8 @@ download_if_missing () {
         echo "[+] $(basename "$outpath") already exists in $(dirname "$outpath"), skipping."
     else
         echo "[+] Downloading $(basename "$outpath") to $outdir ..."
-        wget -q --show-progress -O "$outpath" "$url"
+        wget --progress=bar:force:noscroll -O "$outpath" "$url"
+
     fi
 }
 

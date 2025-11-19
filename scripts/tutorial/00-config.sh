@@ -5,7 +5,7 @@
 ###############################################################################
 
 # Root data dir on each compute server (change if you like)
-DATA_DIR="/home/user/data"
+DATA_DIR="/data"
 
 # Local subdirectories
 TRAINED_MODELS_DIR="$DATA_DIR/trained_models"

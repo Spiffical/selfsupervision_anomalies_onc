@@ -40,12 +40,11 @@ download_if_missing () {
     mkdir -p "$outdir"
 
     if [ -f "$outpath" ]; then
-        echo "[+] $(basename "$outpath") already exists in $(dirname "$outpath"), skipping."
-    else
-        echo "[+] Downloading $(basename "$outpath") to $outdir ..."
-        wget -nv -O "$outpath" "$url"
-
+        echo "[+] $(basename "$outpath") already exists, overwriting..."
     fi
+
+    echo "[+] Downloading $(basename "$outpath") to $outdir ..."
+    wget -nv -O "$outpath" "$url"
 }
 
 # ---------------------------------------------------------------------------

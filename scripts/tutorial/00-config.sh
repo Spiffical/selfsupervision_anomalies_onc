@@ -21,11 +21,11 @@ GCS_BASE="https://storage.googleapis.com/onc-ssl-tutorial-data"
 # ---------------------------------------------------------------------------
 
 # GCS subdirs for the chosen runs
-FT_RUN_SUBDIR="trained-models/finetune/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-fir_experiment_multiclass_avgtok2"
+FT_RUN_SUBDIR="trained-models/finetune/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones-noexclude"
 PT_RUN_SUBDIR="trained-models/pretrain/amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones_FINAL"
 
 # Finetune model + args (classification model)
-FINETUNE_CKPT_URL="$GCS_BASE/$FT_RUN_SUBDIR/models/ft-avgtok_best_checkpoint.pth"
+FINETUNE_CKPT_URL="$GCS_BASE/$FT_RUN_SUBDIR/models/ft-cls_best_checkpoint.pth"
 FINETUNE_ARGS_URL="$GCS_BASE/$FT_RUN_SUBDIR/args.pkl"
 
 # Pretrain model + args (self-supervised backbone)

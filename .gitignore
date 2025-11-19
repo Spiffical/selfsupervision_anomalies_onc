@@ -67,3 +67,8 @@ data/
 ssamba_experiments
 ssamba_experiments_small
 cnn_experiments
+notebooks/.ipynb_checkpoints
+notebooks/benchmark_results
+notebooks/colab_tutorial
+notebooks/test_results
+notebooks/test_results_multiclass

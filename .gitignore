@@ -72,3 +72,15 @@ notebooks/benchmark_results
 notebooks/colab_tutorial
 notebooks/test_results
 notebooks/test_results_multiclass
+notebooks/test_results_multiclass/predictions.csv
+checkpoints/finwhale_cnn.pt
+notebooks/test_results_multiclass/predictions.csv
+analysis/
+scripts/finwhale_quick_check.py
+scripts/finwhale_split_experiments.py
+finwhale_test_runs/
+scripts/visualize_augmentation.py
+scripts/test_spectrogram_params.py
+
+tmp_spec_test/
+notebooks/verify_mat_vs_h5_pipeline.ipynb

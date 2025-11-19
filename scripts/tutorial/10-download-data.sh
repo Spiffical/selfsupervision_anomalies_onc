@@ -51,7 +51,7 @@ download_if_missing () {
 # ---------------------------------------------------------------------------
 # Finetune model + args
 # ---------------------------------------------------------------------------
-download_if_missing "$FINETUNE_CKPT_URL" "$FINETUNE_DIR/ft-cls_best_checkpoint.pth"
+download_if_missing "$FINETUNE_CKPT_URL" "$FINETUNE_DIR/ft-avgtok_best_checkpoint.pth"
 download_if_missing "$FINETUNE_ARGS_URL" "$FINETUNE_DIR/args.pkl"
 
 # ---------------------------------------------------------------------------

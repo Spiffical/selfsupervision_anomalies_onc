@@ -15,6 +15,13 @@ echo
 
 # ---------------- Script body ------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Check for optional data directory argument
+if [ "$#" -ge 1 ]; then
+    export DATA_DIR="$1"
+    echo "[+] Using provided data directory: $DATA_DIR"
+fi
+
 source "${SCRIPT_DIR}/00-config.sh"
 
 echo "[+] Data download script starting..."

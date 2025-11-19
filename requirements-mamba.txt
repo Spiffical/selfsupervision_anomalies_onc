@@ -10,9 +10,9 @@
 
 # NOTE: In CPU-only/Colab environments we provide a lightweight fallback
 # implementation at `vendor/causal_conv1d.py`, so these heavy CUDA deps
-# can be skipped. Uncomment to build from source on a GPU workstation.
-# causal_conv1d>=1.5.0
-# mamba_ssm
+# can be skipped.
+causal_conv1d>=1.5.0
+mamba_ssm
 
 # Audio processing tools (may work without CUDA)
 s3prl==0.4.15

@@ -67,10 +67,17 @@ download_if_missing "$PRETRAIN_CKPT_URL" "$PRETRAIN_DIR/pretrain-joint_best_chec
 download_if_missing "$PRETRAIN_ARGS_URL" "$PRETRAIN_DIR/args.pkl"
 
 # ---------------------------------------------------------------------------
-# Datasets (full + small)
+# Datasets (full + small + split)
 # ---------------------------------------------------------------------------
 download_if_missing "$DATASET_FULL_URL"  "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
 download_if_missing "$DATASET_SMALL_URL" "$DATASETS_DIR/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
+download_if_missing "$DATASET_SPLIT_URL" "$DATASETS_DIR/full_split_seed42.npz"
+
+# ---------------------------------------------------------------------------
+# Additional Models
+# ---------------------------------------------------------------------------
+download_if_missing "$CNN_BASELINE_URL"    "$TRAINED_MODELS_DIR/cnn_baseline/cnn_best.pt"
+download_if_missing "$SSAMBA_SMALL_FT_URL" "$FINETUNE_DIR/ft-avgtok_best_checkpoint.pth"
 
 echo
 echo "[+] Final layout under $DATA_DIR:"

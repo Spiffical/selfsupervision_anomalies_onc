@@ -38,6 +38,13 @@ PRETRAIN_ARGS_URL="$GCS_BASE/$PT_RUN_SUBDIR/args.pkl"
 
 DATASET_FULL_URL="$GCS_BASE/datasets/different_locations_incl_backgroundpipelinenormals_multilabel.h5"
 DATASET_SMALL_URL="$GCS_BASE/datasets/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5"
+DATASET_SPLIT_URL="$GCS_BASE/datasets/full_split_seed42.npz"
+
+# ---------------------------------------------------------------------------
+# Additional Models
+# ---------------------------------------------------------------------------
+CNN_BASELINE_URL="$GCS_BASE/trained-models/cnn_baseline/cnn_best.pt"
+SSAMBA_SMALL_FT_URL="$GCS_BASE/trained-models/finetune/ssamba_finetune_small/ft-avgtok_best_checkpoint.pth"
 
 # ---------------------------------------------------------------------------
 # Repo + venv / kernel settings (as before)

@@ -35,7 +35,8 @@ pip install --no-cache-dir \
     "python-dotenv>=1.0.0" \
     "wandb>=0.15.0" \
     "causal_conv1d>=1.5.0" \
-    "onc>=2.3.0"
+    "onc>=2.3.0" \
+    "seaborn>=0.12.0"
 
 echo "[+] Verifying system torch is visible inside the venv..."
 python -c "import torch; print('torch version:', torch.__version__)" || {

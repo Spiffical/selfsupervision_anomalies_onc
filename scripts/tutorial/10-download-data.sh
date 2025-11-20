@@ -76,8 +76,8 @@ download_if_missing "$DATASET_SPLIT_URL" "$DATASETS_DIR/full_split_seed42.npz"
 # ---------------------------------------------------------------------------
 # Additional Models
 # ---------------------------------------------------------------------------
-download_if_missing "$CNN_BASELINE_URL"    "$TRAINED_MODELS_DIR/cnn_baseline/cnn_best.pt"
-download_if_missing "$SSAMBA_SMALL_FT_URL" "$FINETUNE_DIR/ft-avgtok_best_checkpoint.pth"
+download_if_missing "$CNN_BASELINE_URL" "$TRAINED_MODELS_DIR/cnn_baseline/cnn_best.pt"
+download_if_missing "$SSAMBA_SMALL_FT_URL" "$FINETUNE_DIR/ssamba_finetune_small/ft-avgtok_best_checkpoint.pth"
 
 echo
 echo "[+] Final layout under $DATA_DIR:"

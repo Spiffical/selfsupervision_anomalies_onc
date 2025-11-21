@@ -1,0 +1,12 @@
+{
+    "ICLISTENHF6020_20210318T163505.000Z_20210318T164000.000Z-OD-spect_plotRes.mat": [
+        "Instrumentation > Malfunction > Time dropout"
+    ],
+    "ICLISTENHF6020_20220804T224000.076Z_20220804T224500.076Z-OD-spect_plotRes.mat": [
+        "Anthropophony > Vessel"
+    ],
+    "ICLISTENHF6092_20221002T134000.009Z_20221002T134500.009Z-OD-spect_plotRes.mat": [
+        "Instrumentation > Malfunction > Data gap",
+        "Anthropophony > Vessel"
+    ]
+}

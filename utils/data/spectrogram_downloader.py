@@ -22,6 +22,18 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+class PrintLogger:
+    def info(self, msg, *args, **kwargs):
+        print(msg % args if args else msg)
+    def warning(self, msg, *args, **kwargs):
+        print('WARNING:', msg % args if args else msg)
+    def error(self, msg, *args, **kwargs):
+        print('ERROR:', msg % args if args else msg)
+    def debug(self, msg, *args, **kwargs):
+        print(msg % args if args else msg)
+
+
 # Helper function to ensure datetime is timezone-aware
 def ensure_timezone_aware(dt_obj, tz=timezone.utc):
     """Convert timezone-naive datetime to timezone-aware datetime."""
@@ -30,11 +42,12 @@ def ensure_timezone_aware(dt_obj, tz=timezone.utc):
     return dt_obj
 
 class SpectrogramDownloader:
-    def __init__(self, ONC_token, parent_dir):
+    def __init__(self, ONC_token, parent_dir, use_logging: bool = True, **kwargs):
         self.onc = ONC(ONC_token)
         self._onc_token = ONC_token
         self.parent_dir = parent_dir
         self.delim = '/' if os.name == 'posix' else '\\'
+        self.logger = logger if use_logging else PrintLogger()
         # Initialize deployment checker
         self.deployment_checker = HydrophoneDeploymentChecker(ONC_token)
         # Cache for deployment data to avoid redundant API calls
@@ -46,6 +59,11 @@ class SpectrogramDownloader:
         self.batch_size = 10
         # Internal lock to guard path-sensitive processing
         self._path_lock = Lock()
+        # Sensible defaults so attributes exist even if setup_directories hasn't run yet
+        self.input_path = os.path.join(self.parent_dir, 'mat', '')
+        self.processed_path = os.path.join(self.input_path, 'processed', '')
+        self.anom_path = os.path.join(self.input_path, 'rejects', '')
+        self.flac_path = os.path.join(self.parent_dir, 'flac', '')
         
     def setup_directories(self, filetype, device_code=None, download_method=None, start_date=None, end_date=None, duration_seconds=None):
         """Setup directory structure with optional device, method, and date organization"""
@@ -164,7 +182,7 @@ class SpectrogramDownloader:
         # Step 1: request
         result = self.onc.requestDataProduct(filters)
         dp_request_id = result['dpRequestId'] if isinstance(result, dict) else result
-        logger.info(f"Submitted request (no-wait) dpRequestId={dp_request_id} for {deviceCode}")
+        self.logger.info(f"Submitted request (no-wait) dpRequestId={dp_request_id} for {deviceCode}")
 
         # Step 2: run (no wait)
         run_data = self.onc.runDataProduct(dp_request_id, waitComplete=False)
@@ -182,10 +200,11 @@ class SpectrogramDownloader:
             'outPath': self.input_path,
             'status': 'submitted',
             'createdAt': self._format_iso_utc(datetime.now(timezone.utc)),
+            'attempts': 0,
         }
         return rec
 
-    def try_download_run(self, rec: Dict[str, Any], allow_rerun: bool = True) -> (str, Dict[str, Any]):
+    def try_download_run(self, rec: Dict[str, Any], allow_rerun: bool = True, download_flac: bool = False, max_attempts: int = 6) -> (str, Dict[str, Any]):
         """Attempt to download a previously submitted run. Returns (status, updated_rec).
         status: 'pending' | 'downloaded' | 'error'"""
         # Prepare a per-call ONC client to avoid cross-thread outPath races
@@ -211,7 +230,7 @@ class SpectrogramDownloader:
                     rec['runIds'] = run_data['runIds']
                     run_id = rec['runIds'][0]
             except Exception as e:
-                logger.debug(f"runDataProduct (no-wait) not ready for dpRequestId={rec.get('dpRequestId')}: {e}")
+                self.logger.debug(f"runDataProduct (no-wait) not ready for dpRequestId={rec.get('dpRequestId')}: {e}")
 
         if run_id is None:
             # Not ready yet
@@ -220,7 +239,35 @@ class SpectrogramDownloader:
 
         # Try download
         try:
-            onc_client.downloadDataProduct(run_id)
+            rec['attempts'] = rec.get('attempts', 0) + 1
+            file_infos = onc_client.downloadDataProduct(
+                run_id,
+                maxRetries=10,
+                downloadResultsOnly=False,
+                includeMetadataFile=False,
+                overwrite=True,
+            )
+
+            # Determine if any MAT files actually arrived
+            mat_downloaded = False
+            target_prefix = f"{rec['deviceCode']}_"
+            for info in file_infos or []:
+                fname = info.get('file') or ''
+                if fname.lower().endswith('.mat') and os.path.basename(fname).startswith(target_prefix):
+                    mat_downloaded = True
+                    break
+            if not mat_downloaded:
+                # Also check filesystem in case getInfo lacks names
+                mat_glob = glob.glob(os.path.join(local_out_path or self.input_path, f"{rec['deviceCode']}_*.mat"))
+                mat_downloaded = bool(mat_glob)
+
+            if not mat_downloaded:
+                if rec['attempts'] >= max_attempts:
+                    rec['status'] = 'error'
+                    rec['error'] = 'No MAT files downloaded after max attempts'
+                    return 'error', rec
+                rec['status'] = 'pending'
+                return 'pending', rec
             # Process downloaded files under a lock to avoid path interference
             if local_out_path:
                 with self._path_lock:
@@ -230,40 +277,57 @@ class SpectrogramDownloader:
                     self.process_spectrograms('mat')
             else:
                 self.process_spectrograms('mat')
+            if download_flac and rec.get('start') and rec.get('end'):
+                try:
+                    flac_client = ONC(self._onc_token)
+                    flac_client.outPath = self.flac_path
+                    self.download_flac_files(rec['deviceCode'], rec['start'], rec['end'], onc_client=flac_client)
+                    rec['flac_status'] = 'downloaded'
+                except Exception as e:
+                    rec['flac_status'] = f'error: {e}'
+                    self.logger.warning(f"FLAC download failed for runId={run_id}: {e}")
             rec['status'] = 'downloaded'
             rec['completedAt'] = self._format_iso_utc(datetime.now(timezone.utc))
             return 'downloaded', rec
         except Exception as e:
             # Likely not yet ready; keep pending
-            logger.debug(f"download not ready for runId={run_id}: {e}")
+            self.logger.debug(f"download not ready for runId={run_id}: {e}")
+            if rec.get('attempts', 0) >= max_attempts:
+                rec['status'] = 'error'
+                rec['error'] = str(e)
+                return 'error', rec
             rec['status'] = 'pending'
             return 'pending', rec
     
-    # Function to check if a file for a given date already exists
-    def check_existing_files(self, device_code, date_list):
-        print(f'Checking for existing files for {device_code} in {self.processed_path}')
+    def filter_existing_requests(self, device_code, request_times, extension='mat'):
+        """
+        Skip requests that already have a matching file downloaded.
+        Matching is done on the exact request start timestamp prefix, not just the day.
+        """
+        search_paths = [
+            os.path.join(self.processed_path, f"{device_code}_*.{extension}"),
+            os.path.join(self.input_path, f"{device_code}_*.{extension}"),
+        ]
+        existing_prefixes = set()
+        for pattern in search_paths:
+            for file in glob.glob(pattern):
+                filename = os.path.basename(file)
+                parts = filename.split('_')
+                if len(parts) > 1:
+                    prefix = f"{parts[0]}_{parts[1].split('.')[0]}"  # device_YYYYMMDDTHHMMSS
+                    existing_prefixes.add(prefix)
 
-        # Get all files in the directory
-        existing_files = glob.glob(os.path.join(self.processed_path, f"{device_code}_*.mat"))
-        
-        # Extract dates from filenames
-        existing_dates = set()
-        for file in existing_files:
-            filename = os.path.basename(file)
-            # Extract the date part from the filename
-            date_str = filename.split('_')[1][:8]  # Extracts '20201002' from 'ICLISTENHF6020_20201002T000000.000Z...'
-            date_obj = dt.datetime.strptime(date_str, '%Y%m%d')
-            existing_dates.add(date_obj.date())  # Add date object to the set
-        
-        # Filter out dates that already have files
-        # Handle both datetime and date objects in date_list
-        filtered_dates = []
-        for d in date_list:
-            check_date = d.date() if hasattr(d, 'date') else d
-            if check_date not in existing_dates:
-                filtered_dates.append(d)
-
-        return filtered_dates
+        filtered = []
+        for ts in request_times:
+            if hasattr(ts, 'strftime'):
+                prefix = f"{device_code}_{ts.strftime('%Y%m%dT%H%M%S')}"
+                if prefix in existing_prefixes:
+                    continue
+            filtered.append(ts)
+        skipped = len(request_times) - len(filtered)
+        if skipped:
+            self.logger.info(f"Skipping {skipped} already-downloaded requests based on timestamp match")
+        return filtered
 
     def sampling_schedule(self, deviceCode, threshold_num, year, month, day, day_interval=None, num_days=None, spectrograms_per_batch=6):
         spect_length = 300
@@ -286,13 +350,18 @@ class SpectrogramDownloader:
         }
 
         result = self.onc.getListByDevice(filters, allPages=True)
-        spect_png_files = [s for s in result['files'] if "Z-spect.png" in s]
+        result_files = result.get('files', []) if isinstance(result, dict) else []
+        spect_png_files = [s for s in result_files if "Z-spect.png" in s]
 
         day_strings = [spect_png_file.split('_')[1] for spect_png_file in spect_png_files]
         days_int = [int(day_str[0:8]) for day_str in day_strings]
         unique_days = np.unique(days_int)
         num_days_available = len(unique_days)
         print(f'Number of days available: {num_days_available}')
+
+        if num_days_available == 0:
+            self.logger.warning("No spectrogram files found in the requested date range—nothing to sample.")
+            return [], sample_time_per_day
 
         if day_interval == 1:
             sample_time_per_day = 86400 - 1
@@ -414,35 +483,35 @@ class SpectrogramDownloader:
             
             # Request data product
             result = self.onc.requestDataProduct(filters)
-            logger.info(f"Request Id: {result['dpRequestId']}")
-            logger.info(f"Estimated files: {spectrograms_per_batch} spectrograms + 1 metadata = {spectrograms_per_batch + 1} files")
+            self.logger.info(f"Request Id: {result['dpRequestId']}")
+            self.logger.info(f"Estimated files: {spectrograms_per_batch} spectrograms + 1 metadata = {spectrograms_per_batch + 1} files")
             
             # Run data product and wait for completion
             run_start = time.time()
             run_data = self.onc.runDataProduct(result['dpRequestId'], waitComplete=True)
-            logger.info(f"Data product run completed in {time.time() - run_start:.2f}s")
+            self.logger.info(f"Data product run completed in {time.time() - run_start:.2f}s")
             
             # Download all files from the run
             if 'runIds' in run_data and run_data['runIds']:
-                logger.info("Downloading files...")
+                self.logger.info("Downloading files...")
                 download_start = time.time()
                 self.onc.downloadDataProduct(run_data['runIds'][0])
-                logger.info(f"Files downloaded successfully in {time.time() - download_start:.2f}s")
+                self.logger.info(f"Files downloaded successfully in {time.time() - download_start:.2f}s")
                 
                 # Download FLAC files if requested
                 if download_flac:
                     flac_start = time.time()
                     self.download_flac_files(deviceCode, start_time, end_time)
-                    logger.info(f"FLAC files downloaded in {time.time() - flac_start:.2f}s")
+                    self.logger.info(f"FLAC files downloaded in {time.time() - flac_start:.2f}s")
                 
                 # Process downloaded files
                 process_start = time.time()
                 self.process_spectrograms(filetype)
-                logger.info(f"Files processed in {time.time() - process_start:.2f}s")
+                self.logger.info(f"Files processed in {time.time() - process_start:.2f}s")
                 
                 # Log progress
                 num_files = len(glob.glob(os.path.join(self.processed_path, f'*.{filetype}')))
-                logger.info(f"Progress: {num_files} files downloaded")
+                self.logger.info(f"Progress: {num_files} files downloaded")
                 
         elif filetype == 'png':
             # Format the date nicely for logging
@@ -459,7 +528,7 @@ class SpectrogramDownloader:
             result = self.onc.getListByDevice(filters, allPages=True)
             spect_png_files = [s for s in result['files'] if "Z-spect.png" in s]
             
-            logger.info(f"Found {len(spect_png_files)} PNG files")
+            self.logger.info(f"Found {len(spect_png_files)} PNG files")
             
             # Download all PNG files in parallel
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -468,18 +537,18 @@ class SpectrogramDownloader:
                     try:
                         future.result()
                     except Exception as e:
-                        logger.error(f"Error downloading PNG file: {e}")
+                        self.logger.error(f"Error downloading PNG file: {e}")
             
             # Download FLAC files if requested
             if download_flac:
                 flac_start = time.time()
                 self.download_flac_files(deviceCode, start_time, end_time)
-                logger.info(f"FLAC files downloaded in {time.time() - flac_start:.2f}s")
+                self.logger.info(f"FLAC files downloaded in {time.time() - flac_start:.2f}s")
             
             # Process downloaded files
             self.process_spectrograms(filetype)
 
-    def download_flac_files(self, deviceCode, start_time, end_time):
+    def download_flac_files(self, deviceCode, start_time, end_time, onc_client=None):
         """
         Download FLAC audio files corresponding to the same time window as spectrograms.
         Uses parallel downloads for better performance.
@@ -488,10 +557,11 @@ class SpectrogramDownloader:
         :param start_time: Start time string in ISO format
         :param end_time: End time string in ISO format
         """
-        logger.info(f'Finding FLAC audio files for {deviceCode} from {start_time} to {end_time}')
+        self.logger.info(f'Finding FLAC audio files for {deviceCode} from {start_time} to {end_time}')
         
+        client = onc_client or self.onc
         # Store original path to ensure it's always restored
-        original_output_path = self.onc.outPath
+        original_output_path = client.outPath
         
         try:
             # Search for FLAC files using archive file API
@@ -503,62 +573,50 @@ class SpectrogramDownloader:
                 'extension': 'flac'
             }
             
-            result = self.onc.getListByDevice(filters, allPages=True)
-            logger.info(f"FLAC file search completed in {time.time() - search_start:.2f}s")
+            result = client.getListByDevice(filters, allPages=True)
+            self.logger.info(f"FLAC file search completed in {time.time() - search_start:.2f}s")
             
             if 'files' in result and result['files']:
                 flac_files = [f for f in result['files'] if f.lower().endswith('.flac')]
                 
                 if flac_files:
                     # Temporarily set output path to flac directory
-                    self.onc.outPath = self.flac_path
+                    client.outPath = self.flac_path
                     
-                    logger.info(f'Found {len(flac_files)} FLAC file(s)')
+                    self.logger.info(f'Found {len(flac_files)} FLAC file(s)')
                     
-                    # Download files in parallel using ThreadPoolExecutor
+                    # Poll-download loop: try until all succeed or attempts exhausted
                     download_start = time.time()
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                        # Create a list of futures
-                        futures = []
-                        for flac_file in flac_files:
-                            logger.info(f'Queuing FLAC: {flac_file}')
-                            futures.append(executor.submit(self._download_flac_with_retry, flac_file))
-                        
-                        # Wait for all downloads to complete
-                        concurrent.futures.wait(futures)
-                    logger.info(f"FLAC files downloaded in {time.time() - download_start:.2f}s")
+                    pending = set(flac_files)
+                    attempts = {f: 0 for f in flac_files}
+                    max_attempts = 6
+                    while pending:
+                        to_retry = list(pending)
+                        for flac_file in to_retry:
+                            attempts[flac_file] += 1
+                            try:
+                                self.logger.info(f"Downloading FLAC (attempt {attempts[flac_file]}/{max_attempts}): {flac_file}")
+                                client.getFile(flac_file, overwrite=True)
+                                pending.discard(flac_file)
+                            except Exception as e:
+                                if attempts[flac_file] >= max_attempts:
+                                    self.logger.warning(f"Failed to download {flac_file} after {attempts[flac_file]} attempts: {e}")
+                                    pending.discard(flac_file)
+                                else:
+                                    self.logger.debug(f"FLAC not ready yet ({flac_file}): {e}")
+                        if pending:
+                            time.sleep(5)
+                    self.logger.info(f"FLAC files downloaded in {time.time() - download_start:.2f}s")
                 else:
-                    logger.info('No FLAC files found in the specified time range')
+                    self.logger.info('No FLAC files found in the specified time range')
             else:
-                logger.info('No files found or error in API response for FLAC search')
+                self.logger.info('No files found or error in API response for FLAC search')
                 
         except Exception as e:
-            logger.error(f'Error searching for FLAC files: {e}')
+            self.logger.error(f'Error searching for FLAC files: {e}')
         finally:
             # Always restore original output path
-            self.onc.outPath = original_output_path
-
-    def _download_flac_with_retry(self, flac_file: str, max_retries: int = 3, retry_delay: int = 5) -> bool:
-        """
-        Download a single FLAC file with retry logic.
-        
-        :param flac_file: Name of the FLAC file to download
-        :param max_retries: Maximum number of retry attempts
-        :param retry_delay: Delay between retries in seconds
-        :return: True if download successful, False otherwise
-        """
-        for attempt in range(max_retries):
-            try:
-                self.onc.getFile(flac_file)
-                return True
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f'Error downloading {flac_file} (attempt {attempt + 1}/{max_retries}): {e}')
-                    time.sleep(retry_delay)
-                else:
-                    print(f'Failed to download {flac_file} after {max_retries} attempts: {e}')
-                    return False
-        return False
+            client.outPath = original_output_path
 
     def check_for_anomalies(self, file_path, file1, file2):
         try:
@@ -627,14 +685,14 @@ class SpectrogramDownloader:
 
     def process_spectrograms(self, filetype='png'):
         process_start = time.time()
-        logger.info("Starting spectrogram processing")
+        self.logger.info("Starting spectrogram processing")
         
         with open(os.path.join(self.processed_path, 'anomalous_files.txt'), 'w') as file1, \
             open(os.path.join(self.processed_path, 'anomalous_file_summary.txt'), 'w') as file2:
 
             if filetype == 'png':
                 input_image_paths = glob.glob(os.path.join(self.input_path, '*.png'))
-                logger.info(f"Found {len(input_image_paths)} PNG files to process")
+                self.logger.info(f"Found {len(input_image_paths)} PNG files to process")
 
                 for input_image in input_image_paths:
                     image_area = (107, 67, 1042, 810)
@@ -648,7 +706,7 @@ class SpectrogramDownloader:
                 [os.remove(os.path.join(self.input_path, file_name)) for file_name in os.listdir(self.input_path) if file_name.lower().endswith('.png')]
             elif filetype == 'mat':
                 mat_paths = glob.glob(os.path.join(self.input_path, '*.mat'))
-                logger.info(f"Found {len(mat_paths)} MAT files to process")
+                self.logger.info(f"Found {len(mat_paths)} MAT files to process")
                 
                 for mat_path in mat_paths:
                     self.check_for_anomalies(mat_path, file1, file2)
@@ -658,12 +716,12 @@ class SpectrogramDownloader:
                     if file_name.lower().endswith('.mat'):
                         if os.path.exists(os.path.join(self.processed_path, file_name)):
                             # Remove the file from the input folder
-                            logger.info(f'File {file_name} already exists in the processed folder. Removing from the input folder.')
+                            self.logger.info(f'File {file_name} already exists in the processed folder. Removing from the input folder.')
                             os.remove(os.path.join(self.input_path, file_name))
                         else:
                             shutil.move(os.path.join(self.input_path, file_name), os.path.join(self.processed_path, file_name))
 
-        logger.info(f"Spectrogram processing completed in {time.time() - process_start:.2f}s")
+        self.logger.info(f"Spectrogram processing completed in {time.time() - process_start:.2f}s")
 
     def download_spectrograms_with_sampling_schedule(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', spectrograms_per_batch=6, download_flac=False):
         """
@@ -678,8 +736,8 @@ class SpectrogramDownloader:
         :param download_flac: Whether to download corresponding FLAC files
         """
         schedule_start = time.time()
-        logger.info(f"Starting sampling schedule download for {deviceCode} from {start_date}")
-        logger.info(f"Batch size: {spectrograms_per_batch} spectrograms per request")
+        self.logger.info(f"Starting sampling schedule download for {deviceCode} from {start_date}")
+        self.logger.info(f"Batch size: {spectrograms_per_batch} spectrograms per request")
         
         # Generate sampling schedule first to determine actual date range
         schedule_start_time = time.time()
@@ -687,10 +745,10 @@ class SpectrogramDownloader:
         date_object_list, sample_time_per_day = self.sampling_schedule(
             deviceCode, threshold_num, year, month, day, num_days=num_days, spectrograms_per_batch=spectrograms_per_batch
         )
-        logger.info(f"Generated sampling schedule in {time.time() - schedule_start_time:.2f}s")
+        self.logger.info(f"Generated sampling schedule in {time.time() - schedule_start_time:.2f}s")
         
         if not date_object_list:
-            logger.error("Failed to generate sampling schedule")
+            self.logger.error("Failed to generate sampling schedule")
             return
 
         # Calculate actual date range from the sampling schedule
@@ -707,15 +765,12 @@ class SpectrogramDownloader:
         # Set up directories with the actual date range
         self.setup_directories(filetype, deviceCode, 'sampling', start_date_tuple, end_date_tuple, duration_seconds)
 
-        # Check for existing files and filter the dates
-        filtered_date_list = self.check_existing_files(deviceCode, date_object_list)
-        
-        # Update the date list to only include files that don't already exist
-        date_object_list = filtered_date_list
+        # Check for existing files and filter the dates (match exact request timestamps)
+        date_object_list = self.filter_existing_requests(deviceCode, date_object_list, extension='mat' if filetype == 'mat' else filetype)
 
         # Download files for each request
         total_requests = len(date_object_list)
-        logger.info(f"Starting download of {total_requests} requests")
+        self.logger.info(f"Starting download of {total_requests} requests")
         
         # Show summary of days being downloaded
         unique_dates = sorted(set(ts.date() for ts in date_object_list))
@@ -727,19 +782,73 @@ class SpectrogramDownloader:
             spectrograms_on_day = requests_on_day * spectrograms_per_batch
             print(f"   • {day_name}, {date_str} ({requests_on_day} requests = {spectrograms_on_day} spectrograms)")
         
-        for i, request_time in enumerate(date_object_list, 1):
-            request_start = time.time()
-            logger.info(f"Processing request {i}/{total_requests}: {request_time}")
+        if filetype == 'mat':
+            # Submit all requests concurrently (no wait) then poll/download in parallel
+            self.logger.info("Submitting MAT runs without waiting for completion...")
+            submit_start = time.time()
+            run_records = []
+            data_length_seconds = (spectrograms_per_batch - 1) * 300
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        self.submit_mat_run_no_wait,
+                        deviceCode,
+                        ts,
+                        ts + timedelta(seconds=data_length_seconds),
+                        spectrograms_per_batch,
+                    )
+                    for ts in date_object_list
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        rec = future.result()
+                        run_records.append(rec)
+                    except Exception as e:
+                        self.logger.error(f"Error submitting run: {e}")
+            self.logger.info(f"Submitted {len(run_records)} runs in {time.time() - submit_start:.2f}s")
+
+            # Poll + download in parallel
+            pending = run_records
+            downloaded = []
+            attempt = 0
+            while pending:
+                attempt += 1
+                self.logger.info(f"Polling attempt {attempt}: {len(pending)} runs pending")
+                next_pending = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    futures = [executor.submit(self.try_download_run, rec, True, download_flac) for rec in pending]
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            status, updated_rec = future.result()
+                        except Exception as e:
+                            self.logger.error(f"Polling error: {e}")
+                            continue
+                        if status == 'downloaded':
+                            downloaded.append(updated_rec)
+                        elif status == 'error':
+                            next_pending.append(updated_rec)
+                        else:
+                            next_pending.append(updated_rec)
+                pending = next_pending
+                if pending:
+                    time.sleep(5)
+            total_time = time.time() - schedule_start
+            self.logger.info(f"Downloaded {len(downloaded)} MAT batches in {total_time:.2f}s")
+        else:
+            # Existing sequential path for PNG
+            for i, request_time in enumerate(date_object_list, 1):
+                request_start = time.time()
+                self.logger.info(f"Processing request {i}/{total_requests}: {request_time}")
+                
+                # Download files for this request (this will get spectrograms_per_batch + 1 files)
+                self.download_MAT_or_PNG(deviceCode, request_time, filetype, spectrograms_per_batch, download_flac)
+                
+                self.logger.info(f"Completed request {i}/{total_requests} in {time.time() - request_start:.2f}s")
+                self.logger.info(f"Overall progress: {i}/{total_requests} requests completed")
             
-            # Download files for this request (this will get spectrograms_per_batch + 1 files)
-            self.download_MAT_or_PNG(deviceCode, request_time, filetype, spectrograms_per_batch, download_flac)
-            
-            logger.info(f"Completed request {i}/{total_requests} in {time.time() - request_start:.2f}s")
-            logger.info(f"Overall progress: {i}/{total_requests} requests completed")
-        
-        total_time = time.time() - schedule_start
-        logger.info(f"Completed all downloads in {total_time:.2f}s")
-        logger.info(f"Average time per request: {total_time/total_requests:.2f}s")
+            total_time = time.time() - schedule_start
+            self.logger.info(f"Completed all downloads in {total_time:.2f}s")
+            self.logger.info(f"Average time per request: {total_time/total_requests:.2f}s")
 
     def download_spectrograms_with_deployment_check(self, deviceCode, start_date, threshold_num, num_days=None, filetype='png', auto_select_deployment=False, spectrograms_per_batch=6, download_flac=False):
         """
@@ -754,13 +863,13 @@ class SpectrogramDownloader:
         :param spectrograms_per_batch: Number of 5-minute spectrograms to download per batch
         :param download_flac: Whether to download corresponding FLAC files
         """
-        logger.info(f"Starting deployment-aware download for {deviceCode}")
-        logger.info(f"Batch size: {spectrograms_per_batch} spectrograms per request")
+        self.logger.info(f"Starting deployment-aware download for {deviceCode}")
+        self.logger.info(f"Batch size: {spectrograms_per_batch} spectrograms per request")
         
         # Get deployment information
         deployment_info = self.deployment_checker.get_deployment_info(deviceCode)
         if not deployment_info:
-            logger.error(f"Could not get deployment information for {deviceCode}")
+            self.logger.error(f"Could not get deployment information for {deviceCode}")
             return
 
         # Generate sampling schedule
@@ -772,7 +881,7 @@ class SpectrogramDownloader:
         )
         
         if not sampling_schedule:
-            logger.error("Failed to generate sampling schedule")
+            self.logger.error("Failed to generate sampling schedule")
             return
 
         # Calculate duration for directory setup
@@ -783,11 +892,11 @@ class SpectrogramDownloader:
 
         # Download files for each time slot with deployment checking
         total_slots = len(sampling_schedule)
-        logger.info(f"Starting download of {total_slots} time slots with deployment checking")
+        self.logger.info(f"Starting download of {total_slots} time slots with deployment checking")
         
         for i, time_slot in enumerate(sampling_schedule, 1):
             slot_start = time.time()
-            logger.info(f"Processing slot {i}/{total_slots}: {time_slot}")
+            self.logger.info(f"Processing slot {i}/{total_slots}: {time_slot}")
             
             # Download with deployment check
             success, deployment = self.download_with_deployment_check(
@@ -795,14 +904,14 @@ class SpectrogramDownloader:
             )
             
             if success:
-                logger.info(f"Successfully downloaded slot {i}/{total_slots}")
+                self.logger.info(f"Successfully downloaded slot {i}/{total_slots}")
             else:
-                logger.warning(f"Failed to download slot {i}/{total_slots}")
+                self.logger.warning(f"Failed to download slot {i}/{total_slots}")
             
-            logger.info(f"Completed slot {i}/{total_slots} in {time.time() - slot_start:.2f}s")
-            logger.info(f"Overall progress: {i}/{total_slots} slots completed")
+            self.logger.info(f"Completed slot {i}/{total_slots} in {time.time() - slot_start:.2f}s")
+            self.logger.info(f"Overall progress: {i}/{total_slots} slots completed")
         
-        logger.info("Deployment-aware download completed")
+        self.logger.info("Deployment-aware download completed")
 
     def download_with_deployment_check(self, deviceCode, start_date_object, filetype='png', data_length_seconds=1799, auto_select_deployment=False, download_flac=False):
         """

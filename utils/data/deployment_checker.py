@@ -14,8 +14,6 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Any, Optional, Union
 import concurrent.futures
 from dataclasses import dataclass
-import contextlib
-from io import StringIO
 
 try:
     from dateutil import parser as dtparse
@@ -42,6 +40,9 @@ class DeploymentInfo:
     longitude: float
     depth: Optional[float]
     citation: Optional[str]
+    # Optional granular info for nested locations (e.g., Hydrophone A/B/C within an array)
+    position_name: Optional[str] = None
+    location_path: Optional[Tuple[str, ...]] = None
     has_data: bool = False
 
 
@@ -65,6 +66,9 @@ class HydrophoneDeploymentChecker:
                 pass
         self.debug = debug
         self._location_cache = {}
+        self._location_paths = {}
+        self._location_cache_built = False
+        self._location_paths_built = False
         
         # Setup logging
         log_level = logging.DEBUG if debug else logging.INFO
@@ -265,6 +269,8 @@ class HydrophoneDeploymentChecker:
                 
                 print(f"  🔹 {dep.device_code}")
                 print(f"     Period: {dep.begin_date.strftime('%Y-%m-%d')} to {end_str}{data_status}")
+                if getattr(dep, "position_name", None) and dep.position_name != dep.location_name:
+                    print(f"     Position: {dep.position_name}")
                 if dep.depth:
                     print(f"     Depth: {dep.depth}m")
                 if dep.latitude and dep.longitude:
@@ -338,16 +344,42 @@ class HydrophoneDeploymentChecker:
         return [dep for dep, _, _ in scored_deployments]
     
     def _build_location_cache(self):
-        """Build cache of location information."""
+        """Build cache of location information and hierarchy paths."""
         try:
+            if self._location_cache_built:
+                return
             locations = self.onc.getLocations({})
             for loc in locations:
                 if isinstance(loc, dict):
                     code = loc.get('locationCode')
                     if code:
                         self._location_cache[code] = loc
+            self._location_cache_built = True
         except Exception as e:
             logging.warning(f"Failed to build location cache: {e}")
+        
+        # Build a code -> path mapping so we can show parent locations for array elements (Hydrophone A/B/C)
+        try:
+            if self._location_paths_built:
+                return
+            tree = self.onc.getLocationHierarchy({})
+            self._location_paths = {}
+            
+            def _walk(nodes: List[Dict], trail: List[str]):
+                for node in nodes or []:
+                    code = node.get("locationCode")
+                    name = node.get("locationName", "")
+                    path = trail + ([name] if name else [])
+                    if code:
+                        self._location_paths[code] = tuple(path)
+                    children = node.get("children") or []
+                    if children:
+                        _walk(children, path)
+            
+            _walk(tree, [])
+            self._location_paths_built = True
+        except Exception as e:
+            logging.warning(f"Failed to build location hierarchy: {e}")
     
     def _get_deployments_parallel(self, hydrophones: List[Dict], max_workers: int = 10) -> List[Dict]:
         """Fetch deployments for multiple hydrophones in parallel."""
@@ -417,7 +449,9 @@ class HydrophoneDeploymentChecker:
             # Get location info
             location_code = deployment_dict.get('locationCode', '')
             location_info = self._location_cache.get(location_code, {})
-            location_name = location_info.get('locationName', '') or deployment_dict.get('locationName', '')
+            raw_location_name = location_info.get('locationName', '') or deployment_dict.get('locationName', '') or location_code
+            path = self._location_paths.get(location_code, tuple())
+            location_name, position_name = self._resolve_display_location(raw_location_name, path)
             
             # Get coordinates
             latitude = deployment_dict.get('lat') or location_info.get('lat', 0.0)
@@ -435,7 +469,9 @@ class HydrophoneDeploymentChecker:
                 latitude=float(latitude) if latitude else 0.0,
                 longitude=float(longitude) if longitude else 0.0,
                 depth=float(depth) if depth else None,
-                citation=citation
+                citation=citation,
+                position_name=position_name,
+                location_path=path or None
             )
         except Exception as e:
             if self.debug:
@@ -454,9 +490,10 @@ class HydrophoneDeploymentChecker:
                 'returnOptions': 'all'
             }
             try:
-                # Suppress verbose ONC client stdout/stderr warnings during availability checks
-                with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
-                    list_result = self.onc.getArchivefile(filters=archive_filters, allPages=True)
+                # Avoid redirecting stdout/stderr in threads; redirect_stdout is not thread-safe
+                # under concurrent use and can clobber notebook printing. We rely on the ONC
+                # client verbosity flags set in __init__ to keep output minimal.
+                list_result = self.onc.getArchivefile(filters=archive_filters, allPages=True)
                 has_files = bool(list_result.get("files", []))
                 return device_code, has_files
             except Exception as e:
@@ -485,6 +522,31 @@ class HydrophoneDeploymentChecker:
         
         print()  # New line after progress
         return results
+
+    def _resolve_display_location(self, leaf_name: str, path: Tuple[str, ...]) -> Tuple[str, Optional[str]]:
+        """
+        Decide which human-friendly location name to show.
+        For array elements where the leaf is \"Hydrophone A/B/C...\", prefer the parent site name.
+        """
+        position_name = None
+        if path:
+            leaf = path[-1]
+            parent = path[-2] if len(path) > 1 else ''
+            grandparent = path[-3] if len(path) > 2 else ''
+        else:
+            leaf = leaf_name
+            parent = ''
+            grandparent = ''
+        
+        # Identify hydrophone array leaf nodes
+        if leaf and leaf.lower().startswith("hydrophone"):
+            position_name = leaf
+            # Prefer the site above the array container (grandparent) if available
+            display_name = grandparent or parent or leaf
+        else:
+            display_name = leaf or parent or leaf_name
+        
+        return display_name, position_name
     
     def _check_product_availability_parallel(self, device_codes: List[str], 
                                            max_workers: int = 10) -> Dict[str, bool]:

@@ -73,8 +73,14 @@ def find_matching_audio_files(spectrogram_filename: str, audio_folder: str, tole
     
     # Parse spectrogram time range
     time_range = parse_spectrogram_time_range(spectrogram_filename)
-    if not time_range:
-        return []
+    if time_range:
+        start_time, end_time = time_range
+    else:
+        # Fallback: use a single timestamp if present
+        single_ts = parse_timestamp_from_filename(spectrogram_filename)
+        if not single_ts:
+            return []
+        start_time = end_time = single_ts
     
     start_time, end_time = time_range
     

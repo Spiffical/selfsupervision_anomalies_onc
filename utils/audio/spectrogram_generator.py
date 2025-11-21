@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Union, Tuple, List, Optional
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
+from functools import lru_cache
 
 # Thread lock for matplotlib operations (shared across instances)
 _plot_lock = threading.Lock()
@@ -25,6 +28,14 @@ _plot_lock = threading.Lock()
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class PrintLogger:
+    def info(self, msg, *args, **kwargs):
+        print(msg % args if args else msg)
+    def warning(self, msg, *args, **kwargs):
+        print('WARNING:', msg % args if args else msg)
+    def error(self, msg, *args, **kwargs):
+        print('ERROR:', msg % args if args else msg)
 
 class SpectrogramGenerator:
     """
@@ -39,18 +50,28 @@ class SpectrogramGenerator:
                  colormap: str = 'turbo',
                  clim: Tuple[float, float] = (-60, 0),
                  log_freq: bool = True,
-                 max_duration: Optional[float] = None):
+                 max_duration: Optional[float] = None,
+                 clip_start: Optional[float] = None,
+                 clip_end: Optional[float] = None,
+                 use_gpu: bool = False,
+                 quiet: bool = False,
+                 use_logging: bool = True):
         """
         Initialize spectrogram generator with parameters from MATLAB code.
         
         Args:
-            win_dur: Window duration in seconds
-            overlap: Overlap ratio between adjacent windows (0-1)
+            win_dur: Window duration in seconds (controls FFT size: NFFT = win_dur * fs)
+            overlap: Overlap ratio between adjacent windows (0-1), higher = smoother time axis
             freq_lims: Frequency limits for plotting [Hz]
             colormap: Matplotlib colormap name
             clim: Color axis limits [dB]
             log_freq: Whether to use logarithmic frequency scale
             max_duration: Maximum duration to process in seconds (None = full file)
+            clip_start: Optional start time (seconds) to trim from beginning of audio
+            clip_end: Optional end time (seconds) to stop processing; must be > clip_start
+            use_gpu: If True and CUDA is available, compute spectrogram on GPU using torch.stft
+            quiet: If True, suppress logger noise (only minimal prints for progress bar)
+            use_logging: If False, fall back to stdout printing (avoids notebook logging friction)
         """
         self.win_dur = win_dur
         self.overlap = overlap
@@ -59,6 +80,11 @@ class SpectrogramGenerator:
         self.clim = clim
         self.log_freq = log_freq
         self.max_duration = max_duration
+        self.clip_start = clip_start
+        self.clip_end = clip_end
+        self.use_gpu = use_gpu
+        self.quiet = quiet
+        self.log = logger if use_logging else PrintLogger()
         
     def load_audio(self, audio_path: Union[str, Path]) -> Tuple[np.ndarray, int]:
         """
@@ -90,14 +116,32 @@ class SpectrogramGenerator:
             except Exception as e2:
                 raise RuntimeError(f"Could not load audio file {audio_path}: {e}, {e2}")
         
+        # Optional clipping window
+        total_samples = len(audio_data)
+        original_duration = total_samples / sample_rate
+        start_idx = 0
+        end_idx = total_samples
+        if self.clip_start is not None:
+            start_idx = max(0, int(self.clip_start * sample_rate))
+        if self.clip_end is not None:
+            end_idx = min(total_samples, int(self.clip_end * sample_rate))
+        if end_idx <= start_idx:
+            raise ValueError(f"Invalid clip window: start={self.clip_start}s end={self.clip_end}s for {audio_path.name}")
+        if start_idx != 0 or end_idx != total_samples:
+            audio_data = audio_data[start_idx:end_idx]
+            original_duration = len(audio_data) / sample_rate
+            if not self.quiet:
+                self.log.info(f"Clipped audio to {self.clip_start or 0:.2f}s–{self.clip_end or original_duration:.2f}s ({audio_path.name})")
+
         # Truncate to max_duration if specified
-        original_duration = len(audio_data) / sample_rate
         if self.max_duration is not None and original_duration > self.max_duration:
             max_samples = int(self.max_duration * sample_rate)
             audio_data = audio_data[:max_samples]
-            logger.info(f"Truncated audio from {original_duration:.2f}s to {self.max_duration:.2f}s")
-        
-        logger.info(f"Loaded audio: {audio_path.name}, duration: {len(audio_data)/sample_rate:.2f}s, sr: {sample_rate}Hz")
+            if not self.quiet:
+                self.log.info(f"Truncated audio from {original_duration:.2f}s to {self.max_duration:.2f}s")
+
+        if not self.quiet:
+            self.log.info(f"Loaded audio: {audio_path.name}, duration: {len(audio_data)/sample_rate:.2f}s, sr: {sample_rate}Hz")
         return audio_data, sample_rate
     
     def compute_spectrogram(self, audio_data: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -119,17 +163,47 @@ class SpectrogramGenerator:
         
         # Create Hann window
         window = scipy.signal.windows.hann(nfft)
+
+        use_torch = False
+        torch = None
+        if self.use_gpu:
+            try:
+                import torch  # type: ignore
+                use_torch = torch.cuda.is_available()
+            except Exception:
+                use_torch = False
         
-        # Compute spectrogram using scipy (equivalent to MATLAB spectrogram with 'psd')
-        frequencies, times, Sxx = scipy.signal.spectrogram(
-            audio_data,
-            fs=sample_rate,
-            window=window,
-            noverlap=noverlap,
-            nfft=nfft,
-            scaling='density',  # Power spectral density
-            mode='psd'
-        )
+        if use_torch:
+            # GPU path using torch.stft
+            device = torch.device('cuda')
+            audio_t = torch.from_numpy(audio_data.astype(np.float32, copy=False)).to(device)
+            win_t = torch.from_numpy(window.astype(np.float32, copy=False)).to(device)
+            hop_length = nfft - noverlap
+            spec = torch.stft(
+                audio_t,
+                n_fft=nfft,
+                hop_length=hop_length,
+                window=win_t,
+                center=False,
+                return_complex=True,
+                onesided=True,
+            )
+            power = (spec.real**2 + spec.imag**2).cpu().numpy()
+            # Torch stft returns shape [freq, time]; build freq/time axes to match scipy
+            frequencies = np.linspace(0, sample_rate/2, power.shape[0])
+            times = np.arange(power.shape[1]) * (hop_length / sample_rate)
+            Sxx = power
+        else:
+            # CPU path using scipy (equivalent to MATLAB spectrogram with 'psd')
+            frequencies, times, Sxx = scipy.signal.spectrogram(
+                audio_data,
+                fs=sample_rate,
+                window=window,
+                noverlap=noverlap,
+                nfft=nfft,
+                scaling='density',  # Power spectral density
+                mode='psd'
+            )
         
         # Normalize and convert to dB (following MATLAB: 10*log10(abs(P./max(P,[],'all'))))
         max_power = np.max(np.abs(Sxx))
@@ -141,7 +215,8 @@ class SpectrogramGenerator:
         else:
             power_db_norm = np.full_like(Sxx, -100.0)  # Very low dB value
         
-        logger.info(f"Spectrogram computed: {frequencies.shape[0]} freq bins, {times.shape[0]} time frames")
+        if not self.quiet:
+            self.log.info(f"Spectrogram computed: {frequencies.shape[0]} freq bins, {times.shape[0]} time frames")
         return frequencies, times, Sxx, power_db_norm
     
     def plot_spectrogram(self, frequencies: np.ndarray, times: np.ndarray, 
@@ -195,7 +270,8 @@ class SpectrogramGenerator:
                 save_path = Path(save_path)
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 plt.savefig(save_path, dpi=300, bbox_inches='tight')
-                logger.info(f"Spectrogram plot saved: {save_path}")
+            if not self.quiet:
+                self.log.info(f"Spectrogram plot saved: {save_path}")
         
         return fig
     
@@ -225,7 +301,8 @@ class SpectrogramGenerator:
                 'PdB_norm': power_db_norm
             }
         )
-        logger.info(f"MATLAB data saved: {save_path}")
+        if not self.quiet:
+            self.log.info(f"MATLAB data saved: {save_path}")
     
     def process_single_file(self, audio_path: Union[str, Path], 
                            save_dir: Union[str, Path],
@@ -316,20 +393,41 @@ class SpectrogramGenerator:
             logger.warning(f"No audio files found in {input_dir} with extensions {file_extensions}")
             return []
         
-        logger.info(f"Processing {len(audio_files)} audio files from {input_dir}")
+        if not self.quiet:
+            self.log.info(f"Processing {len(audio_files)} audio files from {input_dir}")
         
         results = []
-        for i, audio_file in enumerate(audio_files, 1):
-            logger.info(f"Processing file {i}/{len(audio_files)}: {audio_file.name}")
-            try:
-                result = self.process_single_file(audio_file, save_dir, save_plot, save_mat)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Error processing {audio_file}: {e}")
-                results.append({
-                    'audio_file': str(audio_file),
-                    'error': str(e)
-                })
+        max_workers = min(8, os.cpu_count() or 4)
+        total = len(audio_files)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {
+                executor.submit(self.process_single_file, audio_file, save_dir, save_plot, save_mat): audio_file
+                for audio_file in audio_files
+            }
+            completed = 0
+            for future in as_completed(future_to_file):
+                audio_file = future_to_file[future]
+                completed += 1
+                try:
+                    result = future.result()
+                    results.append(result)
+                    if not self.quiet:
+                        self.log.info(f"Processed {completed}/{total}: {audio_file.name}")
+                except Exception as e:
+                    if not self.quiet:
+                        self.log.error(f"Error processing {audio_file}: {e}")
+                    results.append({
+                        'audio_file': str(audio_file),
+                        'error': str(e)
+                    })
+                # Lightweight progress bar to stdout
+                bar_len = 20
+                filled = int(bar_len * completed / total)
+                bar = '#' * filled + '-' * (bar_len - filled)
+                sys.stdout.write(f"\rSpectrograms: [{bar}] {completed}/{total}")
+                sys.stdout.flush()
+            sys.stdout.write("\n")
         
-        logger.info(f"Completed processing {len(results)} files")
+        if not self.quiet:
+            self.log.info(f"Completed processing {len(results)} files")
         return results 

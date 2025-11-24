@@ -36,6 +36,7 @@ pip install --no-cache-dir \
     "wandb>=0.15.0" \
     "causal_conv1d>=1.5.0" \
     "onc>=2.3.0" \
+    "dash>=3.3.0" \
     "seaborn>=0.12.0"
 
 echo "[+] Verifying system torch is visible inside the venv..."

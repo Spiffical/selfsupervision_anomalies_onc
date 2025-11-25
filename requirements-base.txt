@@ -30,3 +30,6 @@ wandb>=0.15.0
 interfaces==0.0.4
 model_factory==0.0.8
 wget==3.2 
+
+# For labeling app
+dash>=3.3.0

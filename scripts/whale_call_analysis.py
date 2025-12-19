@@ -66,8 +66,8 @@ _plot_lock = threading.Lock()
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.data.spectrogram_downloader import SpectrogramDownloader
-from utils.audio import SpectrogramGenerator
+from onc_hydrophone_data.data.hydrophone_downloader import HydrophoneDownloader
+from onc_hydrophone_data.audio import SpectrogramGenerator
 from onc import ONC
 
 # Setup logging
@@ -118,7 +118,7 @@ class FinWhaleCallAnalyzer:
         self.load_whale_data()
         
         # Initialize components (use current directory as base for downloads)
-        self.downloader = SpectrogramDownloader(onc_token, ".")
+        self.downloader = HydrophoneDownloader(onc_token, ".")
         self.spectrogram_generator = None
     
     def _create_safe_call_id(self, clip_id, call):

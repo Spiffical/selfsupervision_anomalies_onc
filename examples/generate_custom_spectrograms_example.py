@@ -15,8 +15,8 @@ from pathlib import Path
 # Add parent directory to Python path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.audio import SpectrogramGenerator
-from utils.data.config_utils import DatasetConfig
+from onc_hydrophone_data.audio import SpectrogramGenerator
+from onc_hydrophone_data.data.config_utils import DatasetConfig
 
 def example_basic_usage():
     """Basic example of generating spectrograms from a directory of audio files."""

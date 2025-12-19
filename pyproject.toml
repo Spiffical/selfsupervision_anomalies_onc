@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onc-ssamba"
+version = "0.1.0"
+description = "Self-supervised anomaly detection for ONC hydrophone spectrograms using SSAMBA"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Spencer Bialek"}
+]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "numpy>=1.20.0",
+    "scipy>=1.7.3",
+    "matplotlib>=3.7.0",
+    "h5py>=3.8.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.0.0",
+    "tqdm>=4.65.0",
+    "einops>=0.8.0",
+    "timm>=0.9.0",
+    "wandb>=0.15.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+mamba = [
+    "causal_conv1d>=1.5.0",
+    "mamba_ssm==2.2.5",
+]
+dev = [
+    "ipython>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/OceanNetworksCanada/selfsupervision_anomalies_onc"
+Repository = "https://github.com/OceanNetworksCanada/selfsupervision_anomalies_onc"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["onc_ssamba*"]

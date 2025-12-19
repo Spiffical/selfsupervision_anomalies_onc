@@ -1,9 +1,19 @@
-# Core dependencies - install these first
+# ONC SSAMBA - Self-supervised anomaly detection for hydrophone spectrograms
+# 
+# Install options:
+#   pip install -r requirements.txt                  # Standard install (GPU with CUDA)
+#   pip install -e .                                 # Editable package install
+#   pip install -e ".[mamba]"                        # With Mamba/CUDA dependencies
+#
+# NOTE: mamba_ssm and causal_conv1d must be built from source for your torch/CUDA version.
+# Use --no-binary flag if pip tries to use incompatible prebuilt wheels.
+
+# Core PyTorch
 torch>=2.0.0
 torchaudio>=2.0.0
 numpy>=1.20.0
 
-# Basic data processing and utilities
+# Data processing
 h5py>=3.8.0
 matplotlib>=3.7.0
 pandas>=2.0.0
@@ -11,28 +21,36 @@ scikit-learn>=1.0.0
 tqdm>=4.65.0
 scipy>=1.7.3
 
+# Audio processing
+soundfile>=0.13.1
+librosa>=0.11.0
+
 # ML/DL utilities
-einops==0.8.0
+einops>=0.8.0
 timm>=0.9.0
 
-# Development and visualization
-ipython==8.24.0
+# Development tools
+ipython>=8.0.0
 python-dotenv>=1.0.0
 
-# Specialized packages that depend on torch
-causal_conv1d>=1.5.0
-mamba_ssm
-
-# Monitoring and logging
+# Monitoring
 wandb>=0.15.0
 
-# Audio processing and research tools
-s3prl==0.4.15
-
-# Ocean Networks Canada specific
+# Ocean Networks Canada
 onc>=2.3.0
+onc-hydrophone-data>=0.1.0
 
 # Utilities
 interfaces==0.0.4
 model_factory==0.0.8
 wget==3.2
+
+# Labeling app
+dash>=3.3.0
+
+# Mamba/CUDA dependencies (optional - requires NVIDIA GPU + CUDA toolkit + nvcc)
+# These MUST be built from source to match your torch version:
+#   pip install --no-cache-dir --no-binary causal_conv1d causal_conv1d
+#   pip install --no-cache-dir --no-binary mamba_ssm mamba_ssm==2.2.5
+causal_conv1d>=1.5.0
+mamba_ssm==2.2.5

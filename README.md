@@ -36,34 +36,34 @@ This repository is a personalized fork and significant modification of the origi
 
 The repository is organized as follows:
 
-*   `src/`: Contains the main source code.
-    *   `ssamba/`: The core Python package for this project, including dataset handling (`dataset.py`), model definitions (within `models/`), training and evaluation logic (`traintest.py`, `traintest_mask.py`), and various utilities (`utilities/`).
-    *   `run_supervised.py`: Script for running supervised training/evaluation.
-    *   `run_amba_spectrogram.py`: Script for running self-supervised pre-training or fine-tuning experiments with the SSAMBA model on spectrograms.
+*   `onc_ssamba/`: The core Python package for this project.
+    *   `dataset.py`: Dataset handling for ONC spectrograms
+    *   `models/`: Model definitions (SSAMBA, ViT, etc.)
+    *   `traintest.py`, `traintest_mask.py`: Training and evaluation logic
+    *   `utilities/`: Various utility functions
+*   `src/`: Training entry point scripts.
+    *   `run_supervised.py`: Script for running supervised training/evaluation
+    *   `run_amba_spectrogram.py`: Script for self-supervised pre-training or fine-tuning
 *   `scripts/`: Contains utility and experiment execution scripts.
-    *   Data download: `download_spectrograms.py` (see [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md))
     *   Data preparation: `create_h5_dataset.py`
-    *   Analysis: `analyze_labels.py`, `analyze_val_set.py`
-    *   Local experiment runners: `run_supervised.sh`, `run_amba_spectrogram.sh`, etc.
-*   `notebooks/`: Jupyter notebooks for data exploration, results analysis, and experimentation.
+    *   Analysis: `analyze_labels.py`, `analyze_val_set.py`, `whale_call_analysis.py`
+    *   Local experiment runners: `run_supervised.sh`, `run_amba_spectrogram.sh`
+*   `notebooks/`: Jupyter notebooks for data exploration and analysis
 *   `tools/`: Utility applications and tools.
-    *   `labeling/`: Interactive Dash app for data labeling and annotation.
-*   `utils/`: Utility modules and helper functions.
-    *   `data/`: Data processing utilities including spectrogram downloading, deployment checking, and data manipulation tools.
+    *   `labeling/`: Interactive Dash app for data labeling and annotation
+*   `eval/`: Scripts related to model evaluation
+*   `tests/`: Unit tests for the project
+*   `drac/`: DRAC cluster-specific job submission scripts
 *   `data/`: (Gitignored) Intended for storing local data
-*   `logs/`: (Gitignored) Default directory for log files generated during experiments.
-*   `eval/`: Scripts related to model evaluation.
-*   `tests/`: Unit tests for the project.
-*   `exp/`: (Gitignored) Default directory where experiment outputs (models, results, configs) are saved.
-*   `drac/`: Contains DRAC cluster-specific job submission scripts and configurations for running experiments on Digital Research Alliance of Canada clusters.
+*   `exp/`: (Gitignored) Experiment outputs (models, results, configs)
 
 ## Setup & Installation
 
 ### Dependencies
 
-*   Python 3.8+
-*   PyTorch (see `requirements-base.txt` for version, compatible with CUDA if available)
-*   Other Python packages are listed in `requirements-base.txt` and `requirements-mamba.txt`.
+*   Python 3.9+
+*   PyTorch 2.0+ (compatible with CUDA if available)
+*   See `requirements.txt` for full list
 
 ### Installation Steps
 
@@ -74,51 +74,52 @@ The repository is organized as follows:
     ```
 
 2.  **Set up a Python environment:**
-    It is highly recommended to use a virtual environment (e.g., `conda` or `venv`).
-
-    *Using conda:*
-    ```bash
-    conda create -n ssamba_env python=3.9  # Or your preferred Python version
-    conda activate ssamba_env
-    ```
-
-    *Using venv:*
     ```bash
     python -m venv .venv
     source .venv/bin/activate  # On Windows: .venv\Scripts\activate
     ```
 
-3.  **Install Python packages:**
+3.  **Install the package:**
 
-    **Option A: Automatic Installation (Recommended)**
+    **Option A: Package Install (Recommended)**
+    ```bash
+    # Standard install
+    pip install -e .
+    
+    # With Mamba/CUDA support (Linux + NVIDIA GPU only)
+    pip install -e ".[mamba]"
+    ```
+
+    **Option B: Requirements File**
+    ```bash
+    pip install -r requirements.txt
+    
+    # For Mamba support, uncomment the last two lines in requirements.txt
+    ```
+
+    **Option C: Automatic Script**
     ```bash
     ./install_deps.sh
     ```
-    
-    **Option B: Conda-based Installation (Alternative)**
-    ```bash
-    ./install_deps_conda.sh
+
+4.  **Configure ONC API token:**
+    Create a `.env` file in the project root:
     ```
-    
-    **Option C: Manual Step-by-Step Installation**
-    ```bash
-    # Step 1: Install base dependencies (including PyTorch)
-    pip install -r requirements-base.txt
-    
-    # Step 2: Install mamba-related packages that depend on PyTorch
-    pip install -r requirements-mamba.txt
-    
-    # Step 3: Install additional packages for evaluation
-    pip install seaborn
+    ONC_TOKEN=your_onc_token_here
+    DATA_DIR=./data
     ```
 
-    > **Note**: Dependencies are split into separate files because some packages (`causal_conv1d`, `mamba_ssm`) require PyTorch to be installed first during their build process. The automatic installation script (Option A) will detect your system and install appropriate packages.
+### Using as a Dependency
 
-4.  **Install the project package:**
-    This step makes the `ssamba` module importable in your environment.
-    ```bash
-    pip install .
-    ```
+This package can be installed in other projects:
+
+```bash
+# Install from GitHub
+pip install git+https://github.com/OceanNetworksCanada/selfsupervision_anomalies_onc.git
+
+# Then import
+from onc_ssamba import ONCSpectrogramDataset, create_model
+```
 
 ### Platform Compatibility & Troubleshooting
 
@@ -170,7 +171,7 @@ conda install nvidia::cuda-toolkit=12.1
 
 # Option 2: Manual installation
 # Follow CUDA installation guide for your Linux distribution
-# Then retry: pip install -r requirements-mamba.txt
+# Then retry: pip install -e ".[mamba]"
 ```
 
 **Alternative Installation Methods:**
@@ -179,8 +180,8 @@ conda install nvidia::cuda-toolkit=12.1
 pip install causal_conv1d --no-build-isolation
 pip install mamba_ssm --no-build-isolation
 
-# Or force CPU-only installation
-pip install -r requirements-cpu.txt
+# Or use the base install without Mamba
+pip install -e .
 ```
 
 **Check Your Setup:**
@@ -196,31 +197,30 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 ### ONC Data Download and Preparation
 
-This repository includes comprehensive tools for downloading Ocean Networks Canada (ONC) hydrophone data and preparing it for machine learning workflows. The system supports:
+**📥 Data downloading is handled by a separate package:**
 
-- **🤖 Interactive Downloads**: Smart guidance through device selection and date ranges
-- **🚀 Deployment Validation**: Ensures hydrophones were active during requested periods
-- **📊 Flexible Batch Sizes**: Control spectrograms per request (1-36 spectrograms)
-- **📁 Universal Folder Support**: Works with enhanced, legacy, flat, and nested structures
+👉 **[onc-hydrophone-data](https://github.com/Spiffical/onc-hydrophone-data)** - Tools for downloading ONC spectrograms and audio files
+
+**This repository provides:**
 - **🏷️ Interactive Labeling Tool**: Dash-based app for visual annotation with audio playback
 - **🗂️ HDF5 Dataset Creation**: Convert spectrograms into ML-ready datasets with flexible labeling
 
-**For complete setup, usage examples, and workflow documentation, see: [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md)**
+**For complete documentation, see: [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md)**
 
 #### Quick Start
 
 ```bash
-# Interactive mode - guides you through the entire process
-python scripts/download_spectrograms.py
+# 1. Install the hydrophone data package
+pip install onc-hydrophone-data
 
-# Direct download with custom batch size
-python scripts/download_spectrograms.py --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500 --spectrograms-per-batch 12 --check-deployments
+# 2. Download spectrograms (using onc-hydrophone-data CLI)
+download-hydrophone-data --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500
 
-# Label your spectrograms using the interactive tool (recommended)
+# 3. Label your spectrograms using the interactive tool
 cd tools/labeling && python run.py
 
-# Create HDF5 dataset from downloaded spectrograms
-python scripts/create_h5_dataset.py data/mat/ICLISTENHF6020/ --output datasets/hydrophone_data.h5
+# 4. Create HDF5 dataset from labeled spectrograms
+python scripts/create_h5_dataset.py --h5_filename datasets/hydrophone_data.h5 --data_folders data/mat/ICLISTENHF6020/
 ```
 
 ## Usage

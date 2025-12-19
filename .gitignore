@@ -85,3 +85,8 @@ scripts/test_spectrogram_params.py
 tmp_spec_test/
 notebooks/verify_mat_vs_h5_pipeline.ipynb
 notebooks/labels
+onc_ssamba.egg-info/dependency_links.txt
+onc_ssamba.egg-info/PKG-INFO
+onc_ssamba.egg-info/requires.txt
+onc_ssamba.egg-info/SOURCES.txt
+onc_ssamba.egg-info/top_level.txt

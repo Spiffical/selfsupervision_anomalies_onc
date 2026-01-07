@@ -90,3 +90,6 @@ onc_ssamba.egg-info/PKG-INFO
 onc_ssamba.egg-info/requires.txt
 onc_ssamba.egg-info/SOURCES.txt
 onc_ssamba.egg-info/top_level.txt
+
+notebooks/**/data/
+**-info

@@ -8,6 +8,11 @@ from torch import nn
 from .checkpoint_utils import load_checkpoint, find_latest_checkpoint, setup_model_from_checkpoint
 from ..models import AMBAModel
 import numpy as np
+try:
+    from tqdm.auto import tqdm  # type: ignore
+except Exception:  # pragma: no cover - fallback when tqdm is unavailable
+    def tqdm(x, **kwargs):  # type: ignore
+        return x
 
 def create_model(args):
     """Create and initialize the AMBA model based on task type.
@@ -415,8 +420,20 @@ def training_loop(model, train_loader, optimizer, scheduler, metrics_tracker, tr
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
-    
-    for i, batch_data in enumerate(train_loader):
+    use_tqdm = getattr(args, 'use_tqdm', True)
+    debug = getattr(args, 'debug', False)
+
+    if use_tqdm:
+        iterator = tqdm(
+            train_loader,
+            total=len(train_loader),
+            desc=f"Epoch {epoch}/{args.n_epochs} [train]",
+            dynamic_ncols=True,
+        )
+    else:
+        iterator = train_loader
+
+    for i, batch_data in enumerate(iterator):
         # Handle different return formats from different dataset classes
         if isinstance(batch_data, (list, tuple)):
             audio_input = batch_data[0]
@@ -439,7 +456,8 @@ def training_loop(model, train_loader, optimizer, scheduler, metrics_tracker, tr
             for group_id, param_group in enumerate(optimizer.param_groups):
                 warm_lr = (global_step / 1000) * lr_list[group_id]
                 param_group['lr'] = warm_lr
-                print('Warm-up learning rate is {:f}'.format(param_group['lr']))
+                if debug:
+                    print('Warm-up learning rate is {:f}'.format(param_group['lr']))
 
         # Forward pass
         if 'pretrain' in args.task:
@@ -493,7 +511,9 @@ def training_loop(model, train_loader, optimizer, scheduler, metrics_tracker, tr
         train_meters.update('loss', loss.item(), B)
         
         # Print progress
-        if global_step % args.n_print_steps == 0:
+        if use_tqdm and hasattr(iterator, 'set_postfix'):
+            iterator.set_postfix(loss=train_meters.get_value('loss'), lr=optimizer.param_groups[0]['lr'])
+        elif debug and global_step % args.n_print_steps == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Loss {loss:.4f}\t'.format(
                    epoch, i, len(train_loader),
@@ -519,7 +539,10 @@ def validation_loop(model, val_loader, val_collector, args):
     Returns:
         val_metrics: Dictionary of validation metrics
     """
-    print("[DEBUG] Starting validation loop")
+    debug = getattr(args, 'debug', False)
+    dprint = print if debug else (lambda *a, **k: None)
+
+    dprint("[DEBUG] Starting validation loop")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     val_collector.reset()
@@ -527,27 +550,27 @@ def validation_loop(model, val_loader, val_collector, args):
     with torch.no_grad():
         for batch_data in val_loader:
             # Handle different return formats from dataloader
-            print("[DEBUG] Processing batch with type:", type(batch_data))
+            dprint("[DEBUG] Processing batch with type:", type(batch_data))
             if isinstance(batch_data, (tuple, list)):
                 if len(batch_data) == 3:
                     # Dataset returns (input, label, source)
                     val_input, labels, sources = batch_data
-                    print("[DEBUG] Got sources from batch:", sources[:5])  # Print first 5 sources
+                    dprint("[DEBUG] Got sources from batch:", sources[:5])  # Print first 5 sources
                 elif len(batch_data) == 2:
                     # Dataset returns (input, label)
                     val_input, labels = batch_data
                     sources = None
-                    print("[DEBUG] No sources in batch data")
+                    dprint("[DEBUG] No sources in batch data")
                 else:
                     val_input = batch_data[0]
                     labels = None
                     sources = None
-                    print("[DEBUG] Single item batch, no labels or sources")
+                    dprint("[DEBUG] Single item batch, no labels or sources")
             else:
                 val_input = batch_data
                 labels = None
                 sources = None
-                print("[DEBUG] Single tensor batch, no labels or sources")
+                dprint("[DEBUG] Single tensor batch, no labels or sources")
             
             # Move inputs to device
             val_input = val_input.to(device)
@@ -556,11 +579,11 @@ def validation_loop(model, val_loader, val_collector, args):
             
             # Process sources if available
             if sources is not None:
-                print("[DEBUG] Processing sources")
+                dprint("[DEBUG] Processing sources")
                 # Convert bytes to strings if needed
                 if isinstance(sources[0], bytes):
                     sources = [s.decode('utf-8') for s in sources]
-                    print("[DEBUG] Decoded sources from bytes:", sources[:5])
+                    dprint("[DEBUG] Decoded sources from bytes:", sources[:5])
                 
                 # Extract hydrophone names
                 hydrophone_names = []
@@ -570,24 +593,24 @@ def validation_loop(model, val_loader, val_collector, args):
                         hydrophone_names.append(parts[0])
                     else:
                         hydrophone_names.append(source)
-                print("[DEBUG] Extracted hydrophone names:", hydrophone_names[:5])
+                dprint("[DEBUG] Extracted hydrophone names:", hydrophone_names[:5])
                 sources = hydrophone_names
             
             # Get model output
             if args.task == 'pretrain_mpc':
                 output = model(val_input, args.task, cluster=True, mask_patch=args.mask_patch)
-                print("[DEBUG] Model output type for pretrain_mpc:", type(output))
+                dprint("[DEBUG] Model output type for pretrain_mpc:", type(output))
                 if isinstance(output, tuple):
-                    print("[DEBUG] Output tuple length:", len(output))
+                    dprint("[DEBUG] Output tuple length:", len(output))
             elif args.task == 'pretrain_mpg':
                 output = model(val_input, args.task, cluster=True, mask_patch=args.mask_patch)
             elif args.task == 'pretrain_joint':
                 mpc_output = model(val_input, 'pretrain_mpc', mask_patch=args.mask_patch, cluster=True)
                 mpg_output = model(val_input, 'pretrain_mpg', mask_patch=args.mask_patch, cluster=True)
                 output = (mpc_output, mpg_output)
-                print("[DEBUG] Model output type for pretrain_joint:", type(output))
+                dprint("[DEBUG] Model output type for pretrain_joint:", type(output))
                 if isinstance(output, tuple):
-                    print("[DEBUG] Output tuple length:", len(output))
+                    dprint("[DEBUG] Output tuple length:", len(output))
             else:
                 output = model(val_input, args.task)
                 if isinstance(args.loss_fn, torch.nn.CrossEntropyLoss):
@@ -613,16 +636,16 @@ def validation_loop(model, val_loader, val_collector, args):
                 output = (output, loss)  # Pack output and loss together
             
             # Update metrics
-            print("[DEBUG] Updating metrics collector with sources:", sources[:5] if sources else None)
+            dprint("[DEBUG] Updating metrics collector with sources:", sources[:5] if sources else None)
             val_collector.update(output, labels, sources)
     
     # Compute final metrics
-    print("[DEBUG] Computing final metrics")
+    dprint("[DEBUG] Computing final metrics")
     val_metrics = val_collector.compute_metrics()
-    print("[DEBUG] Validation metrics:", val_metrics)
+    dprint("[DEBUG] Validation metrics:", val_metrics)
     if 'hydrophone_metrics' in val_metrics:
-        print("[DEBUG] Found hydrophone metrics:", list(val_metrics['hydrophone_metrics'].keys()))
+        dprint("[DEBUG] Found hydrophone metrics:", list(val_metrics['hydrophone_metrics'].keys()))
     else:
-        print("[DEBUG] No hydrophone metrics in validation metrics")
+        dprint("[DEBUG] No hydrophone metrics in validation metrics")
     
     return val_metrics 

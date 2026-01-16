@@ -21,6 +21,8 @@ def train(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('running on ' + str(device))
     torch.set_grad_enabled(True)
+    debug = getattr(args, 'debug', False)
+    save_every_epoch = getattr(args, 'save_every_epoch', False)
 
     # Initialize wandb if enabled and not already initialized
     if args.use_wandb and not hasattr(args, 'wandb_initialized'):
@@ -32,7 +34,12 @@ def train(audio_model, train_loader, test_loader, args):
     train_meters = AverageMeterSet()
     multiclass = getattr(args, 'multiclass', False)
     num_classes = getattr(args, 'num_classes', 2)
-    val_collector = ValidationMetricsCollector(task=args.task, multiclass=multiclass, num_classes=num_classes)
+    val_collector = ValidationMetricsCollector(
+        task=args.task,
+        multiclass=multiclass,
+        num_classes=num_classes,
+        debug=debug,
+    )
     
     # Create model if not provided
     if audio_model is None:
@@ -72,8 +79,9 @@ def train(audio_model, train_loader, test_loader, args):
     
     # Note: Step counting for wandb will start from 0 automatically for new runs
     
-    print("Current progress: steps=%s, epochs=%s" % (global_step, epoch))
-    print("Starting training...")
+    if debug:
+        print("Current progress: steps=%s, epochs=%s" % (global_step, epoch))
+        print("Starting training...")
     
     while epoch < args.n_epochs + 1:
         begin_time = time.time()
@@ -92,7 +100,8 @@ def train(audio_model, train_loader, test_loader, args):
         )
         
         # Validation loop
-        print('Starting validation...')
+        if debug:
+            print('Starting validation...')
         val_metrics = validation_loop(
             model=audio_model,
             val_loader=test_loader,
@@ -165,19 +174,20 @@ def train(audio_model, train_loader, test_loader, args):
                 is_best=True
             )
 
-        # Save periodic checkpoint
-        save_checkpoint(
-            model=audio_model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            metrics_tracker=metrics_tracker,
-            args=args,
-            exp_dir=args.exp_dir,
-            epoch=epoch,
-            global_step=global_step,
-            val_metrics=val_metrics,
-            is_best=False
-        )
+        # Save periodic checkpoint if enabled
+        if save_every_epoch:
+            save_checkpoint(
+                model=audio_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                metrics_tracker=metrics_tracker,
+                args=args,
+                exp_dir=args.exp_dir,
+                epoch=epoch,
+                global_step=global_step,
+                val_metrics=val_metrics,
+                is_best=False
+            )
 
         # Update learning rate
         if args.adaptschedule:
@@ -188,7 +198,19 @@ def train(audio_model, train_loader, test_loader, args):
         metrics_tracker.save_progress(epoch, global_step, epoch)
 
         finish_time = time.time()
-        print('Epoch {} completed in {:.3f} seconds'.format(epoch, finish_time - begin_time))
+        metric_name = args.main_metric if hasattr(args, 'main_metric') else None
+        metric_val = val_metrics.get(metric_name) if metric_name else None
+        metric_str = f"{metric_name}: {metric_val:.4f}" if metric_val is not None else "metric: n/a"
+        print(
+            "Epoch {}/{} - train loss: {:.4f} | val loss: {:.4f} | {} ({:.2f}s)".format(
+                epoch,
+                args.n_epochs,
+                train_metrics.get('loss', float('nan')),
+                val_metrics.get('loss', float('nan')),
+                metric_str,
+                finish_time - begin_time,
+            )
+        )
 
         # Reset metrics for next epoch
         train_meters.reset()

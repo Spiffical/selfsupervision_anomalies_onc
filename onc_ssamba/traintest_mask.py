@@ -25,6 +25,7 @@ import pickle
 def trainmask(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('Now running on : ' + str(device))
+    debug = getattr(args, 'debug', False)
 
     # Initialize wandb if enabled and not already initialized
     if args.use_wandb and not hasattr(args, 'wandb_initialized'):
@@ -36,7 +37,12 @@ def trainmask(audio_model, train_loader, test_loader, args):
     train_meters = AverageMeterSet()
     multiclass = getattr(args, 'multiclass', False)
     num_classes = getattr(args, 'num_classes', 2)
-    val_collector = ValidationMetricsCollector(task=args.task, multiclass=multiclass, num_classes=num_classes)
+    val_collector = ValidationMetricsCollector(
+        task=args.task,
+        multiclass=multiclass,
+        num_classes=num_classes,
+        debug=debug,
+    )
     
     # Create model if not provided
     if audio_model is None:

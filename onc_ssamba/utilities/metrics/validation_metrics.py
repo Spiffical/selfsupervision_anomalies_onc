@@ -37,12 +37,13 @@ def calculate_binary_metrics(predictions, targets, threshold=0.5):
 class ValidationMetricsCollector:
     """Class to collect and process validation metrics."""
     
-    def __init__(self, task=None, multiclass=False, num_classes=2):
+    def __init__(self, task=None, multiclass=False, num_classes=2, debug=False):
         """Initialize metrics collector."""
         self.reset()
         self.task = task
         self.multiclass = multiclass
         self.num_classes = num_classes
+        self.debug = debug
     
     def reset(self):
         """Reset all metrics."""
@@ -52,24 +53,28 @@ class ValidationMetricsCollector:
         self.acc_list = []
         self.nce_list = []
         self.loss_list = []  # Add loss list for finetuning
+
+    def _debug(self, *args, **kwargs):
+        if self.debug:
+            print(*args, **kwargs)
         
     def update(self, output, labels, sources=None):
         """Update metrics with a new batch of outputs."""
-        print("[DEBUG] Processing batch in ValidationMetricsCollector.update")
-        print(f"[DEBUG] Task: {self.task}")
-        print(f"[DEBUG] Output type: {type(output)}")
+        self._debug("[DEBUG] Processing batch in ValidationMetricsCollector.update")
+        self._debug(f"[DEBUG] Task: {self.task}")
+        self._debug(f"[DEBUG] Output type: {type(output)}")
         if isinstance(output, tuple):
-            print(f"[DEBUG] Output tuple length: {len(output)}")
+            self._debug(f"[DEBUG] Output tuple length: {len(output)}")
             
         if self.task == 'pretrain_joint':
-            print("[DEBUG] Processing pretrain_joint task")
+            self._debug("[DEBUG] Processing pretrain_joint task")
             mpc_output, mpg_output = output
             
             # Handle MPC output (acc, nce)
             if isinstance(mpc_output, tuple):
                 mpc_acc, mpc_nce = mpc_output
-                print(f"[DEBUG] MPC accuracy: {mpc_acc}")
-                print(f"[DEBUG] MPC NCE loss: {mpc_nce}")
+                self._debug(f"[DEBUG] MPC accuracy: {mpc_acc}")
+                self._debug(f"[DEBUG] MPC NCE loss: {mpc_nce}")
                 
                 # Store accuracy
                 if isinstance(mpc_acc, torch.Tensor):
@@ -98,13 +103,13 @@ class ValidationMetricsCollector:
                 mpg_mse = mpg_output.mean().item()
             else:
                 mpg_mse = float(mpg_output)
-            print(f"[DEBUG] MPG MSE loss: {mpg_mse}")
+            self._debug(f"[DEBUG] MPG MSE loss: {mpg_mse}")
                 
         elif self.task == 'pretrain_mpc':
             if isinstance(output, tuple):
                 acc, nce = output
-                print(f"[DEBUG] MPC accuracy: {acc}")
-                print(f"[DEBUG] MPC NCE loss: {nce}")
+                self._debug(f"[DEBUG] MPC accuracy: {acc}")
+                self._debug(f"[DEBUG] MPC NCE loss: {nce}")
                 
                 # Store accuracy
                 if isinstance(acc, torch.Tensor):
@@ -130,7 +135,7 @@ class ValidationMetricsCollector:
                     
         elif self.task == 'pretrain_mpg':
             mse = output
-            print(f"[DEBUG] MPG MSE loss: {mse}")
+            self._debug(f"[DEBUG] MPG MSE loss: {mse}")
             
             # Store MSE loss
             if isinstance(mse, torch.Tensor):
@@ -156,10 +161,10 @@ class ValidationMetricsCollector:
             else:
                 predictions = output  # Raw logits
             
-            print(f"\n[DEBUG] Model output shape: {predictions.shape}")
-            print(f"Labels shape: {labels.shape}")
-            print(f"Model output stats (raw logits):")
-            print(f"min/max/mean: {predictions.min():.4f}/{predictions.max():.4f}/{predictions.mean():.4f}")
+            self._debug(f"\n[DEBUG] Model output shape: {predictions.shape}")
+            self._debug(f"Labels shape: {labels.shape}")
+            self._debug(f"Model output stats (raw logits):")
+            self._debug(f"min/max/mean: {predictions.min():.4f}/{predictions.max():.4f}/{predictions.mean():.4f}")
             
             # Handle different classification types
             if self.multiclass:
@@ -167,18 +172,18 @@ class ValidationMetricsCollector:
                 probabilities = torch.softmax(predictions, dim=-1)
                 predicted_labels = torch.argmax(probabilities, dim=-1)
                 accuracy = (predicted_labels == labels).float().mean()
-                print(f"Probabilities shape: {probabilities.shape}")
-                print(f"Predicted classes: {predicted_labels[:10]}")  # First 10 predictions
-                print(f"Actual classes: {labels[:10]}")  # First 10 labels
+                self._debug(f"Probabilities shape: {probabilities.shape}")
+                self._debug(f"Predicted classes: {predicted_labels[:10]}")  # First 10 predictions
+                self._debug(f"Actual classes: {labels[:10]}")  # First 10 labels
             else:
                 # For binary, use sigmoid and threshold
                 probabilities = torch.sigmoid(predictions)
                 predicted_labels = (probabilities >= 0.5).float()
                 accuracy = (predicted_labels == labels).float().mean()
-                print(f"Probabilities stats:")
-                print(f"min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
-                print(f"Predicted anomalies: {predicted_labels.sum().item()}/{len(predicted_labels)}")
-                print(f"Actual anomalies: {labels.sum().item()}/{len(predicted_labels)}")
+                self._debug(f"Probabilities stats:")
+                self._debug(f"min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                self._debug(f"Predicted anomalies: {predicted_labels.sum().item()}/{len(predicted_labels)}")
+                self._debug(f"Actual anomalies: {labels.sum().item()}/{len(predicted_labels)}")
             
             self.acc_list.append(accuracy.item())
             
@@ -186,44 +191,44 @@ class ValidationMetricsCollector:
             self.predictions.append(predictions.detach().cpu())
             self.targets.append(labels.detach().cpu())
             
-            print(f"Batch accuracy: {accuracy.item():.4f}")
+            self._debug(f"Batch accuracy: {accuracy.item():.4f}")
         
         # Store sources if provided
         if sources is not None:
-            print(f"[DEBUG] Adding sources to list: {sources[:5]}")
+            self._debug(f"[DEBUG] Adding sources to list: {sources[:5]}")
             self.sources.extend(sources)
     
     def compute_metrics(self):
         """Compute metrics from collected predictions and targets."""
-        print("\n[DEBUG] Computing validation metrics:")
-        print(f"[DEBUG] Task: {self.task}")
-        print(f"[DEBUG] Number of predictions: {len(self.predictions)}")
-        print(f"[DEBUG] Number of targets: {len(self.targets)}")
-        print(f"[DEBUG] Number of sources: {len(self.sources)}")
-        print(f"[DEBUG] Number of accuracy values: {len(self.acc_list)}")
-        print(f"[DEBUG] Number of NCE values: {len(self.nce_list)}")
-        print(f"[DEBUG] Number of loss values: {len(self.loss_list)}")
+        self._debug("\n[DEBUG] Computing validation metrics:")
+        self._debug(f"[DEBUG] Task: {self.task}")
+        self._debug(f"[DEBUG] Number of predictions: {len(self.predictions)}")
+        self._debug(f"[DEBUG] Number of targets: {len(self.targets)}")
+        self._debug(f"[DEBUG] Number of sources: {len(self.sources)}")
+        self._debug(f"[DEBUG] Number of accuracy values: {len(self.acc_list)}")
+        self._debug(f"[DEBUG] Number of NCE values: {len(self.nce_list)}")
+        self._debug(f"[DEBUG] Number of loss values: {len(self.loss_list)}")
         
         metrics = {}
         
         # Calculate mean accuracy if available
         if len(self.acc_list) > 0:
             metrics['acc'] = float(np.mean(self.acc_list))
-            print(f"[DEBUG] Mean accuracy: {metrics['acc']:.4f}")
+            self._debug(f"[DEBUG] Mean accuracy: {metrics['acc']:.4f}")
         
         # Calculate mean loss/nce if available
         if len(self.nce_list) > 0:
             metrics['loss'] = float(np.mean(self.nce_list))
             if self.task in ['pretrain_mpc', 'pretrain_joint']:
                 metrics['nce'] = metrics['loss']  # For MPC tasks, loss is NCE
-            print(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
+            self._debug(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
         elif len(self.loss_list) > 0:  # For finetuning tasks
             metrics['loss'] = float(np.mean(self.loss_list))
-            print(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
+            self._debug(f"[DEBUG] Mean loss: {metrics['loss']:.4f}")
         
         # Calculate per-hydrophone metrics if sources are available
         if len(self.sources) > 0 and len(self.predictions) > 0:
-            print("\n[DEBUG] Computing per-hydrophone metrics")
+            self._debug("\n[DEBUG] Computing per-hydrophone metrics")
             hydrophone_metrics = defaultdict(lambda: {'count': 0, 'values': []})
             
             # Group predictions by hydrophone
@@ -254,22 +259,22 @@ class ValidationMetricsCollector:
                 if self.task == 'pretrain_mpc':
                     hyd_metrics['accuracy'] = np.mean([v['accuracy'] for v in values])
                     hyd_metrics['nce'] = np.mean([v['nce'] for v in values])
-                    print(f"\n[DEBUG] {hydrophone}:")
-                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
-                    print(f"[DEBUG]   Accuracy: {hyd_metrics['accuracy']:.4f}")
-                    print(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
+                    self._debug(f"\n[DEBUG] {hydrophone}:")
+                    self._debug(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    self._debug(f"[DEBUG]   Accuracy: {hyd_metrics['accuracy']:.4f}")
+                    self._debug(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
                 elif self.task == 'pretrain_mpg':
                     hyd_metrics['mse'] = np.mean([v['mse'] for v in values])
-                    print(f"\n[DEBUG] {hydrophone}:")
-                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
-                    print(f"[DEBUG]   MSE: {hyd_metrics['mse']:.4f}")
+                    self._debug(f"\n[DEBUG] {hydrophone}:")
+                    self._debug(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    self._debug(f"[DEBUG]   MSE: {hyd_metrics['mse']:.4f}")
                 elif self.task == 'pretrain_joint':
                     hyd_metrics['mpc_accuracy'] = np.mean([v['mpc_accuracy'] for v in values])
                     hyd_metrics['nce'] = np.mean([v['nce'] for v in values])
-                    print(f"\n[DEBUG] {hydrophone}:")
-                    print(f"[DEBUG]   Samples: {hyd_metrics['count']}")
-                    print(f"[DEBUG]   MPC Accuracy: {hyd_metrics['mpc_accuracy']:.4f}")
-                    print(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
+                    self._debug(f"\n[DEBUG] {hydrophone}:")
+                    self._debug(f"[DEBUG]   Samples: {hyd_metrics['count']}")
+                    self._debug(f"[DEBUG]   MPC Accuracy: {hyd_metrics['mpc_accuracy']:.4f}")
+                    self._debug(f"[DEBUG]   NCE: {hyd_metrics['nce']:.4f}")
                 
                 # Remove the values list to save memory
                 del hyd_metrics['values']
@@ -286,25 +291,25 @@ class ValidationMetricsCollector:
                 # Concatenate all predictions and targets
                 all_predictions = torch.cat(self.predictions, dim=0).numpy()  # Raw logits
                 all_targets = torch.cat(self.targets, dim=0).numpy()
-                print(f"[DEBUG] Total samples: {len(all_predictions)}")
-                print(f"[DEBUG] Predictions shape: {all_predictions.shape}")
-                print(f"[DEBUG] Targets shape: {all_targets.shape}")
+                self._debug(f"[DEBUG] Total samples: {len(all_predictions)}")
+                self._debug(f"[DEBUG] Predictions shape: {all_predictions.shape}")
+                self._debug(f"[DEBUG] Targets shape: {all_targets.shape}")
                 
                 if self.multiclass:
                     # For multiclass classification
                     probabilities = np.exp(all_predictions) / np.sum(np.exp(all_predictions), axis=1, keepdims=True)  # softmax
                     predicted_classes = np.argmax(probabilities, axis=1)
                     
-                    print(f"\n[DEBUG] Multiclass probabilities shape: {probabilities.shape}")
-                    print(f"[DEBUG] Predicted classes: {predicted_classes[:10]}")
-                    print(f"[DEBUG] Actual classes: {all_targets[:10]}")
+                    self._debug(f"\n[DEBUG] Multiclass probabilities shape: {probabilities.shape}")
+                    self._debug(f"[DEBUG] Predicted classes: {predicted_classes[:10]}")
+                    self._debug(f"[DEBUG] Actual classes: {all_targets[:10]}")
                     
                     # For multiclass, calculate macro-averaged metrics
                     try:
                         metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities, multi_class='ovr', average='macro'))
-                        print(f"[DEBUG] AUC (macro): {metrics['auc']:.4f}")
+                        self._debug(f"[DEBUG] AUC (macro): {metrics['auc']:.4f}")
                     except Exception as e:
-                        print(f"[DEBUG] Could not calculate AUC: {e}")
+                        self._debug(f"[DEBUG] Could not calculate AUC: {e}")
                         metrics['auc'] = 0.0
                         
                     # Calculate precision, recall, F2 using macro averaging
@@ -312,11 +317,11 @@ class ValidationMetricsCollector:
                         metrics['precision'] = float(sklearn.metrics.precision_score(all_targets, predicted_classes, average='macro', zero_division=0))
                         metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_classes, average='macro', zero_division=0))
                         metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_classes, beta=2, average='macro', zero_division=0))
-                        print(f"[DEBUG] Precision (macro): {metrics['precision']:.4f}")
-                        print(f"[DEBUG] Recall (macro): {metrics['recall']:.4f}")
-                        print(f"[DEBUG] F2 (macro): {metrics['f2']:.4f}")
+                        self._debug(f"[DEBUG] Precision (macro): {metrics['precision']:.4f}")
+                        self._debug(f"[DEBUG] Recall (macro): {metrics['recall']:.4f}")
+                        self._debug(f"[DEBUG] F2 (macro): {metrics['f2']:.4f}")
                     except Exception as e:
-                        print(f"[DEBUG] Could not calculate metrics: {e}")
+                        self._debug(f"[DEBUG] Could not calculate metrics: {e}")
                         metrics['precision'] = metrics['recall'] = metrics['f2'] = 0.0
                         
                     # Per-class metrics
@@ -340,7 +345,7 @@ class ValidationMetricsCollector:
                             'auc': auc_per_class,
                         }
                     except Exception as e:
-                        print(f"[DEBUG] Failed per-class metrics: {e}")
+                        self._debug(f"[DEBUG] Failed per-class metrics: {e}")
                         metrics['per_class'] = {}
 
                     # For downstream confusion matrix use
@@ -349,15 +354,15 @@ class ValidationMetricsCollector:
                 else:
                     # For binary classification
                     probabilities = 1 / (1 + np.exp(-all_predictions))  # sigmoid
-                    print(f"\n[DEBUG] Probabilities stats:")
-                    print(f"[DEBUG] min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
+                    self._debug(f"\n[DEBUG] Probabilities stats:")
+                    self._debug(f"[DEBUG] min/max/mean: {probabilities.min():.4f}/{probabilities.max():.4f}/{probabilities.mean():.4f}")
                     
                     # Calculate AUC using probabilities
                     try:
                         metrics['auc'] = float(sklearn.metrics.roc_auc_score(all_targets, probabilities))
-                        print(f"[DEBUG] AUC score: {metrics['auc']:.4f}")
+                        self._debug(f"[DEBUG] AUC score: {metrics['auc']:.4f}")
                     except Exception as e:
-                        print(f"[DEBUG] Warning: Failed to calculate AUC: {str(e)}")
+                        self._debug(f"[DEBUG] Warning: Failed to calculate AUC: {str(e)}")
                         metrics['auc'] = 0.0
                     
                     # Calculate precision, recall, and F2 using thresholded probabilities
@@ -366,21 +371,21 @@ class ValidationMetricsCollector:
                     metrics['recall'] = float(sklearn.metrics.recall_score(all_targets, predicted_labels))
                     metrics['f2'] = float(sklearn.metrics.fbeta_score(all_targets, predicted_labels, beta=2))
                     
-                    print(f"[DEBUG] Precision: {metrics['precision']:.4f}")
-                    print(f"[DEBUG] Recall: {metrics['recall']:.4f}")
-                    print(f"[DEBUG] F2 score: {metrics['f2']:.4f}")
+                    self._debug(f"[DEBUG] Precision: {metrics['precision']:.4f}")
+                    self._debug(f"[DEBUG] Recall: {metrics['recall']:.4f}")
+                    self._debug(f"[DEBUG] F2 score: {metrics['f2']:.4f}")
                 
                 # Print confusion matrix (binary or multiclass)
                 try:
                     cm = sklearn.metrics.confusion_matrix(all_targets, predicted_labels)
-                    print("\n[DEBUG] Confusion Matrix:")
-                    print(cm)
+                    self._debug("\n[DEBUG] Confusion Matrix:")
+                    self._debug(cm)
                 except Exception as e:
-                    print(f"[DEBUG] Could not compute confusion matrix: {e}")
+                    self._debug(f"[DEBUG] Could not compute confusion matrix: {e}")
                 
                 # Calculate per-hydrophone metrics if sources are available
                 if len(self.sources) > 0:
-                    print("\n[DEBUG] Computing per-hydrophone metrics")
+                    self._debug("\n[DEBUG] Computing per-hydrophone metrics")
                     # For multiclass, compute metrics using class indices and probabilities
                     if self.multiclass:
                         hydrophone_metrics = defaultdict(lambda: {'count': 0, 'pred_classes': [], 'targets': [], 'probs': []})
@@ -413,7 +418,7 @@ class ValidationMetricsCollector:
                             try:
                                 hyd_auc = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_probs, multi_class='ovr', average='macro'))
                             except Exception as e:
-                                print(f"[DEBUG] Warning: AUC for hydrophone {hydrophone} could not be computed: {e}")
+                                self._debug(f"[DEBUG] Warning: AUC for hydrophone {hydrophone} could not be computed: {e}")
                                 hyd_auc = 0.0
 
                             hydrophone_metrics[hydrophone] = {
@@ -444,7 +449,7 @@ class ValidationMetricsCollector:
                                 hyd_metrics['f2'] = float(sklearn.metrics.fbeta_score(hyd_targets, hyd_pred_labels, beta=2))
                                 hyd_metrics['auc'] = float(sklearn.metrics.roc_auc_score(hyd_targets, hyd_preds))
                             except Exception as e:
-                                print(f"[DEBUG] Warning: Failed to calculate metrics for hydrophone {hydrophone}: {str(e)}")
+                                self._debug(f"[DEBUG] Warning: Failed to calculate metrics for hydrophone {hydrophone}: {str(e)}")
                                 hyd_metrics.update({'precision': 0.0, 'recall': 0.0, 'f2': 0.0, 'auc': 0.0})
 
                             # Convert predictions and targets lists to counts for memory efficiency
@@ -454,10 +459,10 @@ class ValidationMetricsCollector:
                         metrics['hydrophone_metrics'] = dict(hydrophone_metrics)
                     
             except Exception as e:
-                print(f"[DEBUG] Error computing metrics: {str(e)}")
-                print("[DEBUG] Exception details:", e.__class__.__name__)
+                self._debug(f"[DEBUG] Error computing metrics: {str(e)}")
+                self._debug("[DEBUG] Exception details:", e.__class__.__name__)
                 import traceback
-                print("[DEBUG] Traceback:", traceback.format_exc())
+                self._debug("[DEBUG] Traceback:", traceback.format_exc())
                 metrics.update({
                     'auc': 0.0,
                     'precision': 0.0,
@@ -501,7 +506,8 @@ def validate(audio_model, val_loader, args, epoch):
     audio_model = audio_model.to(device)
     audio_model.eval()
 
-    val_collector = ValidationMetricsCollector()
+    debug = getattr(args, 'debug', False)
+    val_collector = ValidationMetricsCollector(debug=debug)
     
     with torch.no_grad():
         for i, (audio_input, labels) in enumerate(val_loader):

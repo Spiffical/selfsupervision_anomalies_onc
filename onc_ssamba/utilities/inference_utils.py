@@ -1,5 +1,7 @@
 from typing import List, Tuple, Optional, Callable
+from pathlib import Path
 import numpy as np
+import pickle
 
 try:
 	import torch
@@ -289,3 +291,199 @@ def run_inference_multiclass(model, data_loader, device, task: str = 'ft_cls', s
 		probs = probs_t.numpy()
 		preds = probs.argmax(axis=1)
 	return targets_cat.numpy(), preds, probs, all_sources
+# ---------------------------------------------------------
+# Simple finetune inference helpers
+# ---------------------------------------------------------
+
+def resolve_finetuned_checkpoint(
+	model_dir,
+	checkpoint_path: Optional[str] = None,
+	task: Optional[str] = None,
+):
+	"""
+	Resolve a finetuned checkpoint path.
+	- If checkpoint_path is provided, validates it exists.
+	- Otherwise, looks for common *best_checkpoint.pth patterns.
+	"""
+	model_dir = Path(model_dir)
+	if checkpoint_path:
+		ckpt = Path(checkpoint_path)
+		if not ckpt.exists():
+			raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+		return ckpt
+	models_dir = model_dir / 'models'
+	candidates: List[Path] = []
+	if task:
+		candidates.append(models_dir / f"{task.replace('_','-')}_best_checkpoint.pth")
+	candidates.extend([
+		models_dir / 'ft-avgtok_best_checkpoint.pth',
+		models_dir / 'ft-cls_best_checkpoint.pth',
+		models_dir / 'best_checkpoint.pth',
+		model_dir / 'ft-avgtok_best_checkpoint.pth',
+		model_dir / 'ft-cls_best_checkpoint.pth',
+		model_dir / 'best_checkpoint.pth',
+	])
+	for p in candidates:
+		if p.exists():
+			return p
+	# Fallback: any best checkpoint, prefer most recently modified
+	best = []
+	if models_dir.exists():
+		best.extend(list(models_dir.glob('*best_checkpoint.pth')))
+	best.extend(list(model_dir.glob('*best_checkpoint.pth')))
+	if best:
+		best.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+		return best[0]
+	# Fallback: latest checkpoint (not necessarily best)
+	try:
+		from .checkpoint_utils import find_latest_checkpoint
+		_, latest = find_latest_checkpoint(str(model_dir), task=task)
+		if latest:
+			return Path(latest)
+	except Exception:
+		pass
+	raise FileNotFoundError(f"No checkpoint found in {model_dir}")
+
+def load_finetuned_model(
+	model_dir,
+	checkpoint_path: Optional[str] = None,
+	device=None,
+	multiclass: bool = True,
+	task: Optional[str] = None,
+):
+	"""
+	Load a finetuned model + args from a model directory.
+	Returns (model, args, checkpoint_path, checkpoint_dict).
+	"""
+	if torch is None:
+		raise RuntimeError("Torch is required for load_finetuned_model but is not available")
+	model_dir = Path(model_dir)
+	args_path = model_dir / 'args.pkl'
+	if not args_path.exists():
+		raise FileNotFoundError(f"args.pkl not found in {model_dir}")
+	with args_path.open('rb') as f:
+		args = pickle.load(f)
+	if multiclass:
+		args.multiclass = True
+	if task:
+		args.task = task
+	args.exp_dir = model_dir
+
+	if device is None:
+		device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+	from .training_utils import create_model
+	model = create_model(args).to(device)
+
+	ckpt_path = resolve_finetuned_checkpoint(model_dir, checkpoint_path, task=getattr(args, 'task', None))
+	from .checkpoint_utils import load_checkpoint
+	checkpoint = load_checkpoint(str(ckpt_path), device)
+	state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+
+	if len(state_dict) > 0:
+		if isinstance(model, torch.nn.DataParallel) and not list(state_dict.keys())[0].startswith('module.'):
+			state_dict = {f"module.{k}": v for k, v in state_dict.items()}
+		elif (not isinstance(model, torch.nn.DataParallel)) and list(state_dict.keys())[0].startswith('module.'):
+			state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+
+	model.load_state_dict(state_dict)
+	model.eval()
+	return model, args, ckpt_path, checkpoint
+
+def predict_mat_paths(
+	model,
+	paths: List[str],
+	args=None,
+	expected_shape: Tuple[int, int] = (854, 1000),
+	target_size: Optional[Tuple[int, int]] = None,
+	dataset_mean: Optional[float] = None,
+	dataset_std: Optional[float] = None,
+	amount: Optional[float] = None,
+	batch_size: int = 32,
+	num_workers: int = 0,
+	device=None,
+	task: Optional[str] = None,
+	h5_like: bool = True,
+	show_progress: bool = False,
+	desc: Optional[str] = None,
+):
+	"""
+	Run inference on a list of .mat paths.
+	Returns (y_true, preds, probs, sources) from run_inference_multiclass.
+	"""
+	if torch is None:
+		raise RuntimeError("Torch is required for predict_mat_paths but is not available")
+	paths = [str(p) for p in paths]
+	if args is not None:
+		if target_size is None:
+			target_size = (getattr(args, 'num_mel_bins', 128), getattr(args, 'target_length', 1024))
+		if dataset_mean is None:
+			dataset_mean = getattr(args, 'dataset_mean', None)
+		if dataset_std is None:
+			dataset_std = getattr(args, 'dataset_std', None)
+		if amount is None:
+			amount = getattr(args, 'amount', 1.0)
+		if task is None:
+			task = getattr(args, 'task', 'ft_cls')
+	if target_size is None:
+		target_size = (128, 1024)
+	if amount is None:
+		amount = 1.0
+	if device is None:
+		try:
+			device = next(model.parameters()).device
+		except Exception:
+			device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+	if h5_like:
+		data_loader = build_mat_dataloader_h5like(
+			paths=paths,
+			expected_shape=expected_shape,
+			target_size=target_size,
+			batch_size=batch_size,
+			num_workers=num_workers,
+			dataset_mean=dataset_mean,
+			dataset_std=dataset_std,
+			amount=amount,
+		)
+	else:
+		data_loader = build_mat_dataloader(
+			paths=paths,
+			expected_shape=expected_shape,
+			target_size=target_size,
+			batch_size=batch_size,
+			num_workers=num_workers,
+			dataset_mean=dataset_mean,
+			dataset_std=dataset_std,
+			amount=amount,
+		)
+
+	return run_inference_multiclass(
+		model=model,
+		data_loader=data_loader,
+		device=device,
+		task=task or 'ft_cls',
+		show_progress=show_progress,
+		desc=desc,
+	)
+
+def predict_mat_dir(
+	model,
+	mat_dir,
+	args=None,
+	pattern: str = '**/*.mat',
+	**kwargs,
+):
+	"""
+	Convenience wrapper for running inference on a directory of .mat files.
+	Returns (paths, y_true, preds, probs, sources).
+	"""
+	mat_dir = Path(mat_dir)
+	paths = sorted([str(p) for p in mat_dir.glob(pattern)])
+	y_true, preds, probs, sources = predict_mat_paths(
+		model=model,
+		paths=paths,
+		args=args,
+		**kwargs,
+	)
+	return paths, y_true, preds, probs, sources

@@ -3,6 +3,7 @@
 import sys
 import os
 import datetime
+import csv
 # sys.path.append(os.path.dirname(os.path.dirname(sys.path[0]))) # Removed this line
 from .utilities import * # Changed to relative import
 from .utilities.metrics.training_metrics import MetricsTracker, AverageMeterSet # Changed to relative import
@@ -16,6 +17,32 @@ import time
 import torch
 from torch import nn
 import numpy as np
+
+
+def _metric_improved(current_value, best_value, mode, min_delta):
+    if best_value is None:
+        return True
+    if mode == "min":
+        return current_value < best_value - min_delta
+    return current_value > best_value + min_delta
+
+
+def _load_metric_history(exp_dir, metric_name):
+    result_path = os.path.join(exp_dir, "result.csv")
+    if not os.path.exists(result_path):
+        return []
+    history = []
+    try:
+        with open(result_path, newline="") as f:
+            for row in csv.DictReader(f):
+                if metric_name not in row or row[metric_name] in ("", None):
+                    continue
+                history.append((int(float(row["epoch"])), float(row[metric_name])))
+    except Exception as exc:
+        print(f"Could not load early stopping history from {result_path}: {exc}")
+        return []
+    return history
+
 
 def train(audio_model, train_loader, test_loader, args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -76,6 +103,36 @@ def train(audio_model, train_loader, test_loader, args):
     # Initialize training state
     global_step = epoch * args.epoch_iter
     start_time = time.time()
+    early_stopping_patience = int(getattr(args, "early_stopping_patience", 0) or 0)
+    early_stopping_metric = getattr(args, "early_stopping_metric", None) or getattr(args, "main_metric", "auc")
+    early_stopping_min_delta = float(getattr(args, "early_stopping_min_delta", 0.0) or 0.0)
+    early_stopping_mode = getattr(args, "early_stopping_mode", None)
+    if early_stopping_mode is None:
+        early_stopping_mode = "min" if early_stopping_metric.endswith("loss") else "max"
+    best_metric_value = None
+    best_metric_epoch = None
+
+    if early_stopping_patience > 0:
+        metric_history = _load_metric_history(args.exp_dir, early_stopping_metric)
+        for metric_epoch, metric_value in metric_history:
+            if _metric_improved(metric_value, best_metric_value, early_stopping_mode, early_stopping_min_delta):
+                best_metric_value = metric_value
+                best_metric_epoch = metric_epoch
+        if best_metric_value is not None:
+            metrics_tracker.best_metrics[early_stopping_metric] = best_metric_value
+            last_metric_epoch = metric_history[-1][0]
+            epochs_without_improvement = last_metric_epoch - best_metric_epoch
+            if epochs_without_improvement >= early_stopping_patience:
+                print(
+                    "Early stopping already satisfied from history: "
+                    f"best {early_stopping_metric}={best_metric_value:.6f} at epoch {best_metric_epoch}; "
+                    f"last epoch {last_metric_epoch}; patience {early_stopping_patience}."
+                )
+                return
+        else:
+            epochs_without_improvement = 0
+    else:
+        epochs_without_improvement = 0
     
     # Note: Step counting for wandb will start from 0 automatically for new runs
     
@@ -111,6 +168,24 @@ def train(audio_model, train_loader, test_loader, args):
         
         # Log metrics
         val_collector.log_metrics(val_metrics, epoch=epoch, prefix="ft_", use_wandb=args.use_wandb)
+        if early_stopping_patience > 0:
+            current_metric = val_metrics.get(early_stopping_metric)
+            if current_metric is None:
+                print(f"Early stopping metric {early_stopping_metric!r} missing; disabling early stopping.")
+                early_stopping_patience = 0
+            else:
+                current_metric = float(current_metric)
+                if _metric_improved(
+                    current_metric,
+                    best_metric_value,
+                    early_stopping_mode,
+                    early_stopping_min_delta,
+                ):
+                    best_metric_value = current_metric
+                    best_metric_epoch = epoch
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement = epoch - (best_metric_epoch or epoch)
         
         # Save results to CSV
         result_dict = {
@@ -211,6 +286,20 @@ def train(audio_model, train_loader, test_loader, args):
                 finish_time - begin_time,
             )
         )
+
+        if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+            print(
+                "Early stopping at epoch {}: best {}={:.6f} at epoch {}; "
+                "no improvement greater than {} for {} epochs.".format(
+                    epoch,
+                    early_stopping_metric,
+                    best_metric_value,
+                    best_metric_epoch,
+                    early_stopping_min_delta,
+                    epochs_without_improvement,
+                )
+            )
+            break
 
         # Reset metrics for next epoch
         train_meters.reset()

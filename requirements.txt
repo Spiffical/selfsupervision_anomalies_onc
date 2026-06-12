@@ -21,10 +21,6 @@ scikit-learn>=1.0.0
 tqdm>=4.65.0
 scipy>=1.7.3
 
-# Audio processing
-soundfile>=0.13.1
-librosa>=0.11.0
-
 # ML/DL utilities
 einops>=0.8.0
 timm>=0.9.0
@@ -36,17 +32,8 @@ python-dotenv>=1.0.0
 # Monitoring
 wandb>=0.15.0
 
-# Ocean Networks Canada
-onc>=2.3.0
-onc-hydrophone-data>=0.1.0
-
-# Utilities
-interfaces==0.0.4
-model_factory==0.0.8
-wget==3.2
-
-# Labeling app
-dash>=3.3.0
+# Tutorial/notebook extras (incl. labeling app + downloader) live in:
+#   pip install -e ".[tutorial]"
 
 # Mamba/CUDA dependencies (optional - requires NVIDIA GPU + CUDA toolkit + nvcc)
 # These MUST be built from source to match your torch version:

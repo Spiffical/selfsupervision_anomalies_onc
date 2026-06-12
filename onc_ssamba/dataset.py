@@ -156,13 +156,13 @@ class ONCSpectrogramDataset(Dataset):
                         # For supervised training/validation, use balanced normal/anomalous
                         if self.split == 'train':
                             n_supervised = min(len(normal_train), len(anomalous_train))
-                            supervised_normal = np.random.choice(normal_train, size=n_supervised, replace=False)
-                            supervised_anomalous = np.random.choice(anomalous_train, size=n_supervised, replace=False)
+                            supervised_normal = rng.choice(normal_train, size=n_supervised, replace=False)
+                            supervised_anomalous = rng.choice(anomalous_train, size=n_supervised, replace=False)
                             self.indices = np.concatenate([supervised_normal, supervised_anomalous])
                         else:  # val
                             n_supervised = min(len(normal_val), len(anomalous_val))
-                            supervised_normal = np.random.choice(normal_val, size=n_supervised, replace=False)
-                            supervised_anomalous = np.random.choice(anomalous_val, size=n_supervised, replace=False)
+                            supervised_normal = rng.choice(normal_val, size=n_supervised, replace=False)
+                            supervised_anomalous = rng.choice(anomalous_val, size=n_supervised, replace=False)
                             self.indices = np.concatenate([supervised_normal, supervised_anomalous])
             
             # Store sample info
@@ -681,4 +681,4 @@ def get_onc_spectrogram_data(
     if excluded_test_dataset is not None:
         return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset, excluded_test_dataset
     else:
-        return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset 
+        return ssl_train_dataset, ssl_val_dataset, test_dataset, train_dataset, val_dataset

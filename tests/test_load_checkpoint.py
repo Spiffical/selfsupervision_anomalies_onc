@@ -114,7 +114,7 @@ def create_model(device, use_data_parallel=True):
         'if_abs_pos_embed': True,
         'if_bimamba': False,
         'if_cls_token': True,
-        'if_devide_out': True,
+        'if_divide_out': True,
         'use_double_cls_token': False,
         'use_middle_cls_token': False
     }

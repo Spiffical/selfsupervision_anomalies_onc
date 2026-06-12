@@ -33,6 +33,15 @@ mamba = [
     "causal_conv1d>=1.5.0",
     "mamba_ssm==2.2.5",
 ]
+tutorial = [
+    "onc-hydrophone-data>=0.1.0",
+    "hydrophone-verification-app @ git+https://github.com/Spiffical/hydrophone-labeling-verification-app.git",
+    "soundfile>=0.13.1",
+    "librosa>=0.11.0",
+    "seaborn>=0.12.0",
+    "opencv-python>=4.10.0.84",
+    "gdown>=4.7.1",
+]
 dev = [
     "ipython>=8.0.0",
 ]

@@ -229,7 +229,7 @@ final_pool_type='none'
 if_abs_pos_embed='true'
 if_bimamba='false'
 if_cls_token='true'
-if_devide_out='true'
+if_divide_out='true'
 use_double_cls_token='false'
 use_middle_cls_token='false'
 
@@ -299,7 +299,7 @@ PYTHON_CMD="python -u -W ignore \"$PYTHON_SCRIPT\" --use_wandb --wandb_entity \"
 --drop_rate ${drop_rate} --norm_epsilon ${norm_epsilon} \
 --if_bidirectional ${if_bidirectional} --final_pool_type ${final_pool_type} \
 --if_abs_pos_embed ${if_abs_pos_embed} --if_bimamba ${if_bimamba} \
---if_cls_token ${if_cls_token} --if_devide_out ${if_devide_out} \
+--if_cls_token ${if_cls_token} --if_divide_out ${if_divide_out} \
 --use_double_cls_token ${use_double_cls_token} --use_middle_cls_token ${use_middle_cls_token} \
 --main_metric ${main_metric}"
 

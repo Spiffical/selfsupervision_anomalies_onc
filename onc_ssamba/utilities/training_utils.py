@@ -42,7 +42,7 @@ def create_model(args):
         'if_rope_residual': args.if_rope_residual,
         'bimamba_type': args.bimamba_type,
         'if_cls_token': args.if_cls_token,
-        'if_devide_out': args.if_devide_out,
+        'if_divide_out': args.if_divide_out,
         'use_double_cls_token': args.use_double_cls_token,
         'use_middle_cls_token': args.use_middle_cls_token,
         'if_bidirectional': args.if_bidirectional,
@@ -59,9 +59,12 @@ def create_model(args):
         label_dim = 1 if args.task == 'ft_cls' and args.n_class == 2 else args.n_class
     
     # For finetuning, try to find pretrained weights
+    allow_random_init_finetune = bool(getattr(args, 'allow_random_init_finetune', False))
     if 'pretrain' not in args.task:
         if hasattr(args, 'pretrained_path') and args.pretrained_path:
             pretrained_path = args.pretrained_path
+        elif allow_random_init_finetune:
+            pretrained_path = None
         else:
             # Look for any pretrained checkpoint in models directory
             models_dir = os.path.join(args.exp_dir, 'models')
@@ -103,7 +106,8 @@ def create_model(args):
             model_size=args.model_size,
             pretrain_stage=False,
             load_pretrained_mdl_path=pretrained_path,
-            vision_mamba_config=vision_mamba_config
+            vision_mamba_config=vision_mamba_config,
+            allow_random_init_finetune=allow_random_init_finetune
         )
 
     return model

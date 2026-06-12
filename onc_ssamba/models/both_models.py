@@ -88,7 +88,8 @@ class AMBAModel(nn.Module):
     def __init__(self, label_dim=527,
                  fshape=128, tshape=2, fstride=128, tstride=2,
                  input_fdim=128, input_tdim=1024, model_size='base',
-                 pretrain_stage=True, load_pretrained_mdl_path=None, vision_mamba_config=None):
+                 pretrain_stage=True, load_pretrained_mdl_path=None, vision_mamba_config=None,
+                 allow_random_init_finetune=False):
         
         print("Vision Mamba Config:", vision_mamba_config)
         super(AMBAModel, self).__init__()
@@ -119,7 +120,7 @@ class AMBAModel(nn.Module):
                 'if_rope': False,
                 'if_rope_residual': False,
                 'if_cls_token': True,
-                'if_devide_out': True,
+                'if_divide_out': True,
                 'use_middle_cls_token': False,
             }
             
@@ -177,7 +178,47 @@ class AMBAModel(nn.Module):
         elif pretrain_stage == False:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if load_pretrained_mdl_path == None:
-                raise ValueError('Please set load_pretrained_mdl_path to load a pretrained models.')
+                if not allow_random_init_finetune:
+                    raise ValueError('Please set load_pretrained_mdl_path to load a pretrained models.')
+                print("Initializing fine-tuning AMBA model from random weights")
+                default_vision_mamba_config = {
+                    'img_size': (input_fdim, input_tdim),
+                    'patch_size': (fshape, tshape),
+                    'stride': (fstride, tstride),
+                    'embed_dim': 768,
+                    'depth': 24,
+                    'rms_norm': True,
+                    'residual_in_fp32': True,
+                    'fused_add_norm': True,
+                    'final_pool_type': 'none',
+                    'if_abs_pos_embed': True,
+                    'if_rope': False,
+                    'if_rope_residual': False,
+                    'bimamba_type': "v2",
+                    'if_cls_token': True,
+                    'if_divide_out': True,
+                    'use_middle_cls_token': False,
+                    'channels': 1,
+                    'num_classes': int(label_dim),
+                }
+                combined_vision_mamba_config = {**default_vision_mamba_config, **(vision_mamba_config or {})}
+                combined_vision_mamba_config.update({
+                    'img_size': (input_fdim, input_tdim),
+                    'patch_size': (fshape, tshape),
+                    'stride': (fstride, tstride),
+                    'channels': 1,
+                    'num_classes': int(label_dim),
+                })
+                if 'bimamba_type' in combined_vision_mamba_config:
+                    del combined_vision_mamba_config['bimamba_type']
+                self.v = VisionMamba(**combined_vision_mamba_config)
+                self.original_embedding_dim = self.v.embed_dim
+                self.cls_token_num = getattr(self.v, 'num_tokens', 1)
+                self.mlp_head = nn.Sequential(
+                    nn.LayerNorm(self.original_embedding_dim),
+                    nn.Linear(self.original_embedding_dim, int(label_dim))
+                )
+                return
             print("Loading pretrained model from:", load_pretrained_mdl_path)
 
             sd = torch.load(load_pretrained_mdl_path, map_location=device, weights_only=False)
@@ -242,7 +283,7 @@ class AMBAModel(nn.Module):
             'if_rope_residual': False,
             'bimamba_type': "v2",
             'if_cls_token': True,
-            'if_devide_out': True,
+            'if_divide_out': True,
             'use_middle_cls_token': True,
         }
             
@@ -321,10 +362,7 @@ class AMBAModel(nn.Module):
             self.cls_token_num = audio_model.module.cls_token_num
 
             # mlp head for fine-tuning
-            # Use num_classes from provided config (passed in from args)
-            out_dim = 1
-            if isinstance(vision_mamba_config, dict):
-                out_dim = int(vision_mamba_config.get('num_classes', 1))
+            out_dim = int(label_dim)
             print(f"[DEBUG] Finetune MLP head out_dim={out_dim}")
             self.mlp_head = nn.Sequential(
                 nn.LayerNorm(self.original_embedding_dim),

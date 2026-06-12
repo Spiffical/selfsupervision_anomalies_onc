@@ -64,7 +64,7 @@ def setup_test_args():
     args.if_abs_pos_embed = True
     args.if_bimamba = False
     args.if_cls_token = True
-    args.if_devide_out = True
+    args.if_divide_out = True
     args.use_double_cls_token = False
     args.use_middle_cls_token = False
     args.drop_path_rate = 0.1
@@ -224,7 +224,7 @@ def test_training(data_path, exp_dir, task='pretrain_joint', use_wandb=True, tin
         'if_abs_pos_embed': args.if_abs_pos_embed,
         'if_bimamba': args.if_bimamba,
         'if_cls_token': args.if_cls_token,
-        'if_devide_out': args.if_devide_out,
+        'if_divide_out': args.if_divide_out,
         'use_double_cls_token': args.use_double_cls_token,
         'use_middle_cls_token': args.use_middle_cls_token,
         'bimamba_type': args.bimamba_type

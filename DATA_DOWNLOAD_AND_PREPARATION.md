@@ -40,7 +40,7 @@ pip install -e .
 
 ## 🏷️ Interactive Spectrogram Labeling Tool
 
-For efficient manual annotation of spectrograms, use the interactive Dash-based labeling application:
+For efficient manual annotation of spectrograms, use the standalone labeling application:
 
 ### ✨ Features
 - **Visual spectrogram display** with integrated audio playback
@@ -53,12 +53,10 @@ For efficient manual annotation of spectrograms, use the interactive Dash-based 
 
 ### 🚀 Quick Start
 ```bash
-# Configure paths in config.yaml, then run:
-cd tools/labeling
-python run.py
+pip install "hydrophone-verification-app @ git+https://github.com/Spiffical/hydrophone-labeling-verification-app.git"
 ```
 
-**For complete setup and usage instructions, see: [tools/labeling/README.md](tools/labeling/README.md)**
+**For complete setup and usage instructions, see the labeling app repo README.**
 
 ---
 
@@ -110,7 +108,7 @@ Place `labels.json` files at any level (checked in order):
 
 **Note:** If a file has an entry in any `labels.json` file (even an empty list `[]`), automatic labeling is **not** applied.
 
-**💡 Labeling App**: Use the interactive labeling tool in `tools/labeling/` for manual annotation!
+**💡 Labeling App**: Use the standalone labeling tool (see repo above) for manual annotation!
 
 ---
 
@@ -135,8 +133,8 @@ python scripts/create_h5_dataset.py --h5_filename datasets/mixed.h5 --data_folde
 # 1. Download data using onc-hydrophone-data repo
 #    See: https://github.com/Spiffical/onc-hydrophone-data
 
-# 2. Label your data using the interactive tool (recommended)
-cd tools/labeling && python run.py
+# 2. Label your data using the standalone labeling tool (recommended)
+#    See: https://github.com/Spiffical/hydrophone-labeling-verification-app
 
 # 3. Create HDF5 dataset
 python scripts/create_h5_dataset.py --h5_filename datasets/my_data.h5 --data_folders data/DEVICE/

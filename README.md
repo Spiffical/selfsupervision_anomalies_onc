@@ -46,11 +46,9 @@ The repository is organized as follows:
     *   `run_amba_spectrogram.py`: Script for self-supervised pre-training or fine-tuning
 *   `scripts/`: Contains utility and experiment execution scripts.
     *   Data preparation: `create_h5_dataset.py`
-    *   Analysis: `analyze_labels.py`, `analyze_val_set.py`, `whale_call_analysis.py`
+    *   Analysis: `analyze_labels.py`, `analyze_val_set.py`
     *   Local experiment runners: `run_supervised.sh`, `run_amba_spectrogram.sh`
 *   `notebooks/`: Jupyter notebooks for data exploration and analysis
-*   `tools/`: Utility applications and tools.
-    *   `labeling/`: Interactive Dash app for data labeling and annotation
 *   `eval/`: Scripts related to model evaluation
 *   `tests/`: Unit tests for the project
 *   `drac/`: DRAC cluster-specific job submission scripts
@@ -88,13 +86,17 @@ The repository is organized as follows:
     
     # With Mamba/CUDA support (Linux + NVIDIA GPU only)
     pip install -e ".[mamba]"
+
+    # Notebook/tutorial extras (labeling app + downloader)
+    pip install -e ".[tutorial]"
     ```
 
     **Option B: Requirements File**
     ```bash
     pip install -r requirements.txt
     
-    # For Mamba support, uncomment the last two lines in requirements.txt
+    # For notebook/tutorial extras:
+    pip install -e ".[tutorial]"
     ```
 
     **Option C: Automatic Script**
@@ -202,8 +204,8 @@ python -c "import torch; print(torch.cuda.is_available())"
 👉 **[onc-hydrophone-data](https://github.com/Spiffical/onc-hydrophone-data)** - Tools for downloading ONC spectrograms and audio files
 
 **This repository provides:**
-- **🏷️ Interactive Labeling Tool**: Dash-based app for visual annotation with audio playback
 - **🗂️ HDF5 Dataset Creation**: Convert spectrograms into ML-ready datasets with flexible labeling
+- **🏷️ Label-format helpers**: Minimal utilities for legacy/hierarchical label compatibility
 
 **For complete documentation, see: [DATA_DOWNLOAD_AND_PREPARATION.md](DATA_DOWNLOAD_AND_PREPARATION.md)**
 
@@ -216,8 +218,9 @@ pip install onc-hydrophone-data
 # 2. Download spectrograms (using onc-hydrophone-data CLI)
 download-hydrophone-data --mode sampling --device ICLISTENHF6020 --start-date 2021 1 1 --threshold 500
 
-# 3. Label your spectrograms using the interactive tool
-cd tools/labeling && python run.py
+# 3. Install + run the labeling app (standalone repo)
+pip install "hydrophone-verification-app @ git+https://github.com/Spiffical/hydrophone-labeling-verification-app.git"
+# See that repo’s README for launch instructions.
 
 # 4. Create HDF5 dataset from labeled spectrograms
 python scripts/create_h5_dataset.py --h5_filename datasets/hydrophone_data.h5 --data_folders data/mat/ICLISTENHF6020/

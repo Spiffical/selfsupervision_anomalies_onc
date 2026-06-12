@@ -68,5 +68,6 @@ if [[ "$OS" == "Darwin" ]] || ! command -v nvcc &> /dev/null; then
 else
     echo "✅ CUDA/Mamba packages built from source"
 fi
+echo "📓 Tutorial extras: pip install -e \".[tutorial]\""
 echo ""
 echo "📦 Package import: from onc_ssamba import ONCSpectrogramDataset, create_model"
